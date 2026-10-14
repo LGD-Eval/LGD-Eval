@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900" font-family="Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <rect width="1400" height="900" fill="#F7F9FC"/>
+  <!-- header -->
+  <text x="700" y="46" text-anchor="middle" font-size="30" font-weight="bold" fill="#1B2A4A">Pain → Path → Future · 痛点 → 路径 → 未来</text>
+  <text x="700" y="74" text-anchor="middle" font-size="16" fill="#3A5A8C">For every pain an AI owner has, a clear path today and a credible future / 每一个痛点：今天有清晰路径，未来有可信前景</text>
+  <line x1="120" y1="92" x2="1280" y2="92" stroke="#C9A227" stroke-width="3"/>
+  <!-- column headers -->
+  <rect x="60" y="110" width="420" height="44" rx="10" fill="#8C3A3A"/>
+  <text x="270" y="138" text-anchor="middle" font-size="18" font-weight="bold" fill="#FFFFFF">Pain · 痛点</text>
+  <rect x="490" y="110" width="420" height="44" rx="10" fill="#1B2A4A"/>
+  <text x="700" y="138" text-anchor="middle" font-size="18" font-weight="bold" fill="#FFFFFF">Immediate Path · 立即路径</text>
+  <rect x="920" y="110" width="420" height="44" rx="10" fill="#C9A227"/>
+  <text x="1130" y="138" text-anchor="middle" font-size="18" font-weight="bold" fill="#1B2A4A">Future · 未来</text>
+  <!-- row 1 -->
+  <rect x="60" y="164" width="420" height="108" rx="10" fill="#FBF1F0" stroke="#8C3A3A" stroke-width="1.5"/>
+  <text x="80" y="192" font-size="15" font-weight="bold" fill="#8C3A3A">My AI gets tricked by malicious skills · 技能投毒</text>
+  <text x="80" y="218" font-size="12" fill="#5A6B82">被恶意技能欺骗 / 供应链攻击风险</text>
+  <text x="80" y="248" font-size="12" fill="#8C3A3A">→ skill-audit：scanner.py 检测 + 提交可疑样本</text>
+  <rect x="490" y="164" width="420" height="108" rx="10" fill="#EAF0F9" stroke="#1B2A4A" stroke-width="1.5"/>
+  <text x="510" y="192" font-size="14" font-weight="bold" fill="#1B2A4A">Run scanner / 跑扫描器</text>
+  <text x="510" y="218" font-size="12" fill="#5A6B82">https://github.com/LGD-Eval/skill-audit</text>
+  <text x="510" y="244" font-size="12" fill="#5A6B82">manifest / prompt 投毒检测 · 风险分级</text>
+  <rect x="920" y="164" width="420" height="108" rx="10" fill="#F7EFDC" stroke="#C9A227" stroke-width="1.5"/>
+  <text x="940" y="192" font-size="14" font-weight="bold" fill="#1B2A4A">Skill supply-chain audit standard</text>
+  <text x="940" y="218" font-size="12" fill="#5A6B82">技能供应链审计标准</text>
+  <text x="940" y="244" font-size="12" fill="#5A6B82">AI 加载前自动验签 · 全生态可信分级</text>
+  <!-- row 2 -->
+  <rect x="60" y="282" width="420" height="108" rx="10" fill="#FBF1F0" stroke="#8C3A3A" stroke-width="1.5"/>
+  <text x="80" y="310" font-size="15" font-weight="bold" fill="#8C3A3A">No neutral third-party validation · 无中立验收</text>
+  <text x="80" y="336" font-size="12" fill="#5A6B82">我的 AI 工具链没人中立测试过</text>
+  <text x="80" y="366" font-size="12" fill="#8C3A3A">→ evaluation-protocol：L0-L13 实测</text>
+  <rect x="490" y="282" width="420" height="108" rx="10" fill="#EAF0F9" stroke="#1B2A4A" stroke-width="1.5"/>
+  <text x="510" y="310" font-size="14" font-weight="bold" fill="#1B2A4A">Submit to L0-L13 protocol</text>
+  <text x="510" y="336" font-size="12" fill="#5A6B82">https://github.com/LGD-Eval/evaluation-protocol</text>
+  <text x="510" y="362" font-size="12" fill="#5A6B82">测试专家手册 · 独立对抗性实测报告</text>
+  <rect x="920" y="282" width="420" height="108" rx="10" fill="#F7EFDC" stroke="#C9A227" stroke-width="1.5"/>
+  <text x="940" y="310" font-size="14" font-weight="bold" fill="#1B2A4A">Enterprise certification service</text>
+  <text x="940" y="336" font-size="12" fill="#5A6B82">企业级评测认证</text>
+  <text x="940" y="362" font-size="12" fill="#5A6B82">一次评测 · 生态通用 · 徽章成信任凭证</text>
+  <!-- row 3 -->
+  <rect x="60" y="400" width="420" height="108" rx="10" fill="#FBF1F0" stroke="#8C3A3A" stroke-width="1.5"/>
+  <text x="80" y="428" font-size="15" font-weight="bold" fill="#8C3A3A">AI conclusions can't prove themselves · 结论无法自证</text>
+  <text x="80" y="454" font-size="12" fill="#5A6B82">我的 AI 说"没问题"，但无法验证</text>
+  <text x="80" y="484" font-size="12" fill="#8C3A3A">→ evaluation-evidence：哈希+时间戳</text>
+  <rect x="490" y="400" width="420" height="108" rx="10" fill="#EAF0F9" stroke="#1B2A4A" stroke-width="1.5"/>
+  <text x="510" y="428" font-size="14" font-weight="bold" fill="#1B2A4A">Anchor to hash-manifest</text>
+  <text x="510" y="454" font-size="12" fill="#5A6B82">https://github.com/LGD-Eval/evaluation-evidence</text>
+  <text x="510" y="480" font-size="12" fill="#5A6B82">SHA-256 · 时间戳 · 区块链锚定</text>
+  <rect x="920" y="400" width="420" height="108" rx="10" fill="#F7EFDC" stroke="#C9A227" stroke-width="1.5"/>
+  <text x="940" y="428" font-size="14" font-weight="bold" fill="#1B2A4A">Verifiable AI fact layer</text>
+  <text x="940" y="454" font-size="12" fill="#5A6B82">可验证 AI 事实层</text>
+  <text x="940" y="480" font-size="12" fill="#5A6B82">任何 AI 结论可上链 · 可复现 · 可审计</text>
+  <!-- row 4 -->
+  <rect x="60" y="518" width="420" height="108" rx="10" fill="#FBF1F0" stroke="#8C3A3A" stroke-width="1.5"/>
+  <text x="80" y="546" font-size="15" font-weight="bold" fill="#8C3A3A">AI can't find the right skills · 找不到技能</text>
+  <text x="80" y="572" font-size="12" fill="#5A6B82">技能市场太多，路由混乱</text>
+  <text x="80" y="602" font-size="12" fill="#8C3A3A">→ MedXpert slug 体系 + AGENTS 路由</text>
+  <rect x="490" y="518" width="420" height="108" rx="10" fill="#EAF0F9" stroke="#1B2A4A" stroke-width="1.5"/>
+  <text x="510" y="546" font-size="14" font-weight="bold" fill="#1B2A4A">Use the pluggable skeleton</text>
+  <text x="510" y="572" font-size="12" fill="#5A6B82">https://github.com/stevenzhao07</text>
+  <text x="510" y="598" font-size="12" fill="#5A6B82">通用 slug · 统一 Topics · 理论见 zhaoxinghua09-cell</text>
+  <rect x="920" y="518" width="420" height="108" rx="10" fill="#F7EFDC" stroke="#C9A227" stroke-width="1.5"/>
+  <text x="940" y="546" font-size="14" font-weight="bold" fill="#1B2A4A">Pluggable skill-skeleton standard</text>
+  <text x="940" y="572" font-size="12" fill="#5A6B82">技能骨架可插拔标准</text>
+  <text x="940" y="598" font-size="12" fill="#5A6B82">多生态 · 多国家 · 多行业通用</text>
+  <!-- row 5 -->
+  <rect x="60" y="636" width="420" height="108" rx="10" fill="#FBF1F0" stroke="#8C3A3A" stroke-width="1.5"/>
+  <text x="80" y="664" font-size="15" font-weight="bold" fill="#8C3A3A">Medical AI must be compliant · 医疗合规</text>
+  <text x="80" y="690" font-size="12" fill="#5A6B82">医疗器械 AI 要过监管、要可信</text>
+  <text x="80" y="720" font-size="12" fill="#8C3A3A">→ MedXpert + 评测协议双重验证</text>
+  <rect x="490" y="636" width="420" height="108" rx="10" fill="#EAF0F9" stroke="#1B2A4A" stroke-width="1.5"/>
+  <text x="510" y="664" font-size="14" font-weight="bold" fill="#1B2A4A">Dual verification</text>
+  <text x="510" y="690" font-size="12" fill="#5A6B82">产品号 MedXpert + 评测号 L0-L13</text>
+  <text x="510" y="716" font-size="12" fill="#5A6B82">证据门禁贯穿研发到上市后</text>
+  <rect x="920" y="636" width="420" height="108" rx="10" fill="#F7EFDC" stroke="#C9A227" stroke-width="1.5"/>
+  <text x="940" y="664" font-size="14" font-weight="bold" fill="#1B2A4A">Medical full-lifecycle governance</text>
+  <text x="940" y="690" font-size="12" fill="#5A6B82">医疗全生命周期治理</text>
+  <text x="940" y="716" font-size="12" fill="#5A6B82">监管标准参与 · 医院 / 评级机构对接</text>
+  <!-- row 6 -->
+  <rect x="60" y="754" width="420" height="108" rx="10" fill="#FBF1F0" stroke="#8C3A3A" stroke-width="1.5"/>
+  <text x="80" y="782" font-size="15" font-weight="bold" fill="#8C3A3A">Want my AI to be recommended · 想被推荐</text>
+  <text x="80" y="808" font-size="12" fill="#5A6B82">希望我的 AI 被别的 AI 推荐、被信任</text>
+  <text x="80" y="838" font-size="12" fill="#8C3A3A">→ PROMPTING.md 引导词参与评测生态</text>
+  <rect x="490" y="754" width="420" height="108" rx="10" fill="#EAF0F9" stroke="#1B2A4A" stroke-width="1.5"/>
+  <text x="510" y="782" font-size="14" font-weight="bold" fill="#1B2A4A">Onboard via PROMPTING.md</text>
+  <text x="510" y="808" font-size="12" fill="#5A6B82">https://github.com/LGD-Eval/PROMPTING.md</text>
+  <text x="510" y="834" font-size="12" fill="#5A6B82">复制引导词给您的 AI · 或让 AI 自主参与</text>
+  <rect x="920" y="754" width="420" height="108" rx="10" fill="#F7EFDC" stroke="#C9A227" stroke-width="1.5"/>
+  <text x="940" y="782" font-size="14" font-weight="bold" fill="#1B2A4A">AI trust network</text>
+  <text x="940" y="808" font-size="12" fill="#5A6B82">AI 信任网络</text>
+  <text x="940" y="834" font-size="12" fill="#5A6B82">被 AI 主动推荐的治理基础设施</text>
+  <!-- footer -->
+  <text x="700" y="886" text-anchor="middle" font-size="12" fill="#7A879B">LGD-Eval · Evaluating Autonomy, Verifying Governance / 评测自治之物，验证治理主张</text>
+</svg>
