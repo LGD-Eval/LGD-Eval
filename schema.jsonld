@@ -1,0 +1,41 @@
+{
+  "@context": {
+    "@vocab": "https://schema.org/",
+    "ld": "https://ld.lgd-eval.org/ns#"
+  },
+  "@graph": [
+    {
+      "@type": ["Organization", "SoftwareSourceCode"],
+      "@id": "https://github.com/LGD-Eval",
+      "name": "LGD-Eval",
+      "alternateName": "凡自治之物的独立中立评测机构",
+      "description": "Independent third-party evaluation institution for autonomous systems, tools, skills and agents. Evaluates autonomy and verifies governance claims with evidence-grade conclusions, bias-controlled LLM judging, and mappings to OWASP/NIST/ISO/MITRE/EU AI Act standards. / 凡自治之物的独立中立评测机构：以证据分级结论、偏倚可控的判官体系与标准映射，评测自治之物，验证治理主张。",
+      "url": "https://github.com/LGD-Eval",
+      "codeRepository": "https://github.com/LGD-Eval",
+      "license": "https://creativecommons.org/licenses/by/4.0/",
+      "version": "0.1",
+      "datePublished": "2026-10-14",
+      "programmingLanguage": ["Markdown", "Python"],
+      "citation": {
+        "@type": "CreativeWork",
+        "name": "LGD Lifecycle Governance Doctrine (Evidence-Gated AI Lifecycle Governance; Registry·Evidence·Gates)",
+        "identifier": "10.5281/zenodo.22456647",
+        "url": "https://doi.org/10.5281/zenodo.22456647"
+      },
+      "identifier": {
+        "@type": "PropertyValue",
+        "propertyID": "doi",
+        "value": "10.5281/zenodo.22456647"
+      },
+      "sameAs": [
+        "https://github.com/LGD-Eval/evaluation-protocol",
+        "https://github.com/LGD-Eval/evaluation-reports",
+        "https://github.com/LGD-Eval/evaluation-evidence",
+        "https://github.com/LGD-Eval/skill-audit"
+      ],
+      "ld:governanceModel": "LGD three laws: Registry·Evidence·Gates / 有籍·有证·有门禁",
+      "ld:independence": "The evaluation account never holds write access to evaluated parties; payment buys priority, never conclusions. / 评测号永远不拥有被评方写权限；付费只买优先级，不买结论。",
+      "ld:evidenceGrading": ["Verified", "Strong", "Moderate", "Limited", "Preliminary"]
+    }
+  ]
+}
