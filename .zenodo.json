@@ -1,0 +1,31 @@
+{
+  "upload_type": "software",
+  "title": "LGD-Eval — Independent Evaluation for the Age of Autonomous Agents",
+  "description": "Independent third-party evaluation institution for autonomous systems, tools, skills and agents. Evaluates autonomy and verifies governance claims with evidence-grade conclusions, bias-controlled LLM judging (position swap, style normalization, kappa reporting), and mappings to OWASP / NIST / ISO / MITRE / EU AI Act standards. Five repos: profile home, protocol, reports, evidence vault, skill-audit scanner. / 凡自治之物的独立中立评测机构：以证据分级结论、偏倚可控的判官体系与标准映射，评测自治之物，验证治理主张。五仓：首页、评测协议、评测报告、存证库、技能审计工具。",
+  "license": "CC-BY-4.0",
+  "creators": [
+    {
+      "name": "LGD-Eval Evaluation Institution",
+      "affiliation": "LGD-Eval"
+    }
+  ],
+  "keywords": [
+    "AI evaluation",
+    "AI governance",
+    "autonomous agents",
+    "evidence-gated evaluation",
+    "LLM-as-a-judge",
+    "评测",
+    "治理",
+    "自治之物"
+  ],
+  "related_identifiers": [
+    {
+      "relation": "cites",
+      "identifier": "10.5281/zenodo.22456647",
+      "resource_type": "publication-conceptdoi"
+    }
+  ],
+  "access_right": "open",
+  "version": "0.1"
+}
