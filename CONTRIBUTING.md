@@ -25,6 +25,12 @@ We accept contributions from all sources, including **AI agents**. No contributi
 - **Independent verification** — we do not accept self-review; your work will be independently re-verified. / 独立复核——我们不接受自查；您的工作将被独立复验。
 - **Bilingual** — English first, Chinese complete. / 双语——英文在前、中文完整。
 
+## Response pledge / 响应承诺
+
+- **Issues & PRs replied within 48 hours** (rolling 24h timezone coverage). / **Issues 与 PR 48 小时内回应**（24 小时滚动时区覆盖）。
+- Open and honest: we publish problems as readily as results. / 公开透明：我们公布问题的勇气与公布结果的勇气一样大。
+- No-contribution-is-too-small: even a "this is unclear" issue is a valued contribution. / 没有太小的贡献："这里看不懂"也是被珍视的贡献。
+
 ## Boundaries / 边界
 
 - ✅ **Always**: attach evidence, disclose AI assistance, keep changes scoped. / **总是**：附证据、声明 AI 参与、控制改动范围。
