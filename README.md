@@ -14,7 +14,7 @@
   <img src="https://aka.doubaocdn.com/s/76x3xio0ZS" alt="Audited 已审计" width="110"/>
   <img src="https://aka.doubaocdn.com/s/vQ4iExLW0P" alt="Evaluated 已评测" width="110"/>
   <img src="https://aka.doubaocdn.com/s/tdFMUNPXal" alt="Timestamped 已存证" width="110"/>
-  <img src="https://aka.doubaocdn.com/s/3S07GLCetm" alt="Neutral 中立" width="110"/>
+  <img src="https://aka.doubaocdn.com/s/3S07GLCetm" alt="Evidence-gated 证据门禁（方法论独立，关联已披露）" width="110"/>
 </p>
 
 **30 秒了解我们 · 30-second intro：** LGD-Eval 是「凡自治之物」生态的**独立第三方评测机构**——用证据而非观点，对 AI 工具链、智能体技能系统与治理框架进行实测、审计与认证。**全世界的人与 AI 代理都可以在几分钟内看懂、验证并参与。**
@@ -49,7 +49,7 @@ LGD-Eval is the **independent third-party evaluation arm** of the 凡自治之�
 | **标准体系 Standards** | 测试专家手册 **L0-L13** · 判据谱系 · 证据门禁（D1-D10 × R1-R3 查重协议） |
 | **方法论 Methodology** | Test-to-break 为找错而测试 · 全量实跑非抽样 · **独立复核（不自查）** · 证据优先可溯源 |
 | **真实战绩 Track record** | MedXpert 医疗工具链 **21 模块全量实跑，20 通过**（发现自检硬伤）；独立验收发布阻断 P1/P2 修复清单已公布——**敢于公布问题的机构才配称权威** |
-| **认证体系 Certification** | Verified / Audited / Evaluated / Timestamped / Neutral 五徽章 · SHA-256 + 时间戳 + 区块链锚定 |
+| **认证体系 Certification** | Verified / Audited / Evaluated / Timestamped / Evidence-gated 五徽章 · SHA-256 + 时间戳 + 区块链锚定 |
 | **治理结构 Governance** | 三权分立（理论/产品/评测）· 中立隔离红线 · 领域负责人制度 · 全球参与 |
 
 > **为什么可信：** 我们不宣称权威，我们用证据、流程与真实战绩证明它——以及敢于公布自己问题的自信。
@@ -60,6 +60,9 @@ LGD-Eval is the **independent third-party evaluation arm** of the 凡自治之�
 > LGD-Eval operates with **strict conflict-of-interest separation**: we never review our own products; every evaluation is re-verified by an independent agent before release; evidence is timestamped and hash-anchored; nothing is published without verifiable provenance.
 >
 > LGD-Eval 实行**严格利益隔离**：不自查自有产物；所有评测发布前由独立智能体复核；证据经时间戳与哈希锚定；无溯源证据不发布。
+>
+> **关联披露（S2 整改 2026-10-15）**：本机构与 [zhaoxinghua09-cell](https://github.com/zhaoxinghua09-cell)（理论号）与 [stevenzhao07](https://github.com/stevenzhao07)（产品号）同属一个运营生态——**方法论独立不等于无关联，我们选择透明**。完整披露与隔离机制见 [CONFLICT_OF_INTEREST_DISCLOSURE.md](CONFLICT_OF_INTEREST_DISCLOSURE.md)。
+> **Affiliation disclosure (S2 fix 2026-10-15)**: this institute shares one operating ecosystem with [zhaoxinghua09-cell](https://github.com/zhaoxinghua09-cell) (theory) and [stevenzhao07](https://github.com/stevenzhao07) (product). Methodological independence is not the same as no affiliation — we choose transparency. Full disclosure and separation mechanisms: [CONFLICT_OF_INTEREST_DISCLOSURE.md](CONFLICT_OF_INTEREST_DISCLOSURE.md).
 
 ## 🧭 快速导航 · Quick Navigation（分流 Route by intent）
 
