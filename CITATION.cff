@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use LGD-Eval's evaluation results or methodology in your work, please cite this repository and, where applicable, the LGD Lifecycle Governance Doctrine."
+title: "LGD-Eval — Independent Evaluation for the Age of Autonomous Agents"
+abstract: "Independent third-party evaluation institution for autonomous systems, tools, skills and agents. Evaluates autonomy and verifies governance claims with evidence-grade conclusions, bias-controlled LLM judging, and mappings to OWASP/NIST/ISO/MITRE/EU AI Act standards. / 凡自治之物的独立中立评测机构：以证据分级结论、偏倚可控的判官体系与标准映射，评测自治之物，验证治理主张。"
+authors:
+  - family-names: "LGD-Eval"
+    given-names: "Evaluation Institution"
+    orcid: ""
+date-released: "2026-10-14"
+version: "0.1"
+license: "CC-BY-4.0"
+keywords:
+  - AI evaluation
+  - AI governance
+  - autonomous agents
+  - evidence-gated evaluation
+  - LLM-as-a-judge
+  - 评测
+  - 治理
+  - 自治之物
+preferred-citation:
+  type: software
+  title: "LGD-Eval — Independent Evaluation for the Age of Autonomous Agents"
+  version: "0.1"
+  year: 2026
+  url: "https://github.com/LGD-Eval"
+related-identifiers:
+  - relation: cites
+    type: doi
+    identifier: "10.5281/zenodo.22456647"
+    description: "LGD Lifecycle Governance Doctrine (concept DOI)"
