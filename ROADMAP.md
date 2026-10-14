@@ -47,7 +47,10 @@ Phase 0 ✅ 已完成 ──► Phase 1 🔄 进行中 ──► Phase 2 ──�
 - [ ] 各技能平台收录同步（ClawHub / LobeHub / Glama / OpenClaw / skillhub / HuggingFace / Gitee / 魔搭）
 
 ### Phase 2 — 服务化（Short-term）
-- [ ] scanner.py 完整版：供应链级投毒检测（多格式、语义级）
+- [ ] scanner.py 完整版：供应链级投毒检测（多格式、语义级；规则库扩至 9 类 × 100+ 模式，映射 OWASP LLM Top10 2025 / Agentic AI 2026——对标 llm-trust-guard / ai-injection-guard）
+- [ ] **指标目录公开**（对标 DeepEval 50+ metrics）：每条指标附判据来源与评分口径（L0-L13 之外的第二公开层）
+- [ ] **评测 CI 门禁**：skill-audit scanner 作为 GitHub Actions 门禁，评测失败阻断合并（对标 DeepEval pytest 门禁）
+- [ ] **Community Arena 众包对抗评测**（对标 LMSYS Chatbot Arena）：评测对象匿名 PK、社区投票、结果上光荣榜——生态引力核心
 - [ ] AI-Readiness 评分对外服务（对标 39 checks × 7 pillars）
 - [ ] 评测认证徽章体系（Evaluated / Audited / Verified 徽章对外发放）
 - [ ] 多语言覆盖（英/中/日/德…）
