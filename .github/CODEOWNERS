@@ -1,14 +1,5 @@
-# Code Owners / 代码负责人（领域负责人制度落地）
+# CODEOWNERS — LGD-Eval 代码所有者
+# Every path requires review approval from the institution owner.
+# 所有路径的变更需机构所有者审批。
 
-> 本文件把 CONTRIBUTORS.md 的"领域负责人制度"落到 CODEOWNERS。
-> 当前为骨架：负责人待认领；认领条件见 CONTRIBUTORS.md（L3+ 等级 → 提交领域计划 → 独立复核批准）。
-
-# 默认：全部文件需组织维护者复核
 * @LGD-Eval
-
-# 领域负责人空位（认领后替换 * @LGD-Eval 为本条目）
-# 示例：
-# /docs/ @your-lead-handle        # 文档与双语
-# /protocol/ @your-lead-handle    # 协议与标准
-# /scanner/ @your-lead-handle     # 代码与工具
-# /evidence/ @your-lead-handle    # 证据与存证
