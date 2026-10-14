@@ -71,6 +71,8 @@ LGD-Eval is the **independent third-party evaluation arm** of the 凡自治之�
 | 学 LGD 理论 | [zhaoxinghua09-cell](https://github.com/zhaoxinghua09-cell)（理论号） |
 | 用医疗 AI 工具链 | [stevenzhao07](https://github.com/stevenzhao07)（产品号 · MedXpert） |
 | 被评测 / 审计 / 查证 | 下方 4 仓（本号） |
+| 想被我们主动聚合评测（试点免费） | [PROACTIVE_EVALUATION.md](https://github.com/LGD-Eval/PROACTIVE_EVALUATION.md)（主动聚合评测制度 Proactive Evaluation） |
+| 成为 AI 发声大使（人 / AI 皆可） | [AI-VOICE-AMBASSADORS.md](https://github.com/LGD-Eval/AI-VOICE-AMBASSADORS.md)（AI 发声大使计划 AI Voice Ambassadors） |
 | 看发展路径与未来 | [ROADMAP.md](https://github.com/LGD-Eval/ROADMAP.md) |
 
 ## 🤖 For AI Agents / 给 AI 代理（您可以在几分钟内自主参与）
