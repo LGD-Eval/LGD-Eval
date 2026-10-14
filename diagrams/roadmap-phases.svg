@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="840" viewBox="0 0 1400 840" font-family="Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <rect width="1400" height="840" fill="#F7F9FC"/>
+  <!-- header -->
+  <text x="700" y="46" text-anchor="middle" font-size="30" font-weight="bold" fill="#1B2A4A">LGD-Eval Roadmap · 发展路径与未来</text>
+  <text x="700" y="74" text-anchor="middle" font-size="16" fill="#3A5A8C">Pain → Path → Future: see a clear route and a credible future at a glance / 痛点 → 路径 → 未来：一眼看到清晰路径与可信未来</text>
+  <line x1="120" y1="92" x2="1280" y2="92" stroke="#C9A227" stroke-width="3"/>
+  <!-- phase nodes -->
+  <circle cx="140" cy="180" r="40" fill="#1B2A4A"/><text x="140" y="186" text-anchor="middle" font-size="16" font-weight="bold" fill="#FFFFFF">P0</text>
+  <circle cx="420" cy="180" r="40" fill="#C9A227"/><text x="420" y="186" text-anchor="middle" font-size="16" font-weight="bold" fill="#1B2A4A">P1</text>
+  <circle cx="700" cy="180" r="40" fill="#3A5A8C"/><text x="700" y="186" text-anchor="middle" font-size="16" font-weight="bold" fill="#FFFFFF">P2</text>
+  <circle cx="980" cy="180" r="40" fill="#3A5A8C"/><text x="980" y="186" text-anchor="middle" font-size="16" font-weight="bold" fill="#FFFFFF">P3</text>
+  <circle cx="1260" cy="180" r="40" fill="#FFFFFF" stroke="#C9A227" stroke-width="3"/><text x="1260" y="186" text-anchor="middle" font-size="16" font-weight="bold" fill="#C9A227">P4</text>
+  <line x1="180" y1="180" x2="380" y2="180" stroke="#C9A227" stroke-width="3"/>
+  <line x1="460" y1="180" x2="660" y2="180" stroke="#C9A227" stroke-width="3"/>
+  <line x1="740" y1="180" x2="940" y2="180" stroke="#C9A227" stroke-width="3"/>
+  <line x1="1020" y1="180" x2="1220" y2="180" stroke="#C9A227" stroke-width="3"/>
+  <!-- phase labels -->
+  <text x="140" y="238" text-anchor="middle" font-size="17" font-weight="bold" fill="#1B2A4A">Foundation</text>
+  <text x="140" y="258" text-anchor="middle" font-size="13" fill="#3A5A8C">地基 · 已完成 ✅</text>
+  <text x="420" y="238" text-anchor="middle" font-size="17" font-weight="bold" fill="#1B2A4A">Ecosystem Launch</text>
+  <text x="420" y="258" text-anchor="middle" font-size="13" fill="#3A5A8C">生态启动 · 进行中 🔄</text>
+  <text x="700" y="238" text-anchor="middle" font-size="17" font-weight="bold" fill="#1B2A4A">Service</text>
+  <text x="700" y="258" text-anchor="middle" font-size="13" fill="#3A5A8C">服务化 · 短期</text>
+  <text x="980" y="238" text-anchor="middle" font-size="17" font-weight="bold" fill="#1B2A4A">Enterprise</text>
+  <text x="980" y="258" text-anchor="middle" font-size="13" fill="#3A5A8C">企业级 · 中期</text>
+  <text x="1260" y="238" text-anchor="middle" font-size="17" font-weight="bold" fill="#C9A227">Vision</text>
+  <text x="1260" y="258" text-anchor="middle" font-size="13" fill="#7A879B">愿景 · 长期</text>
+  <!-- phase cards -->
+  <!-- P0 -->
+  <rect x="40" y="280" width="240" height="430" rx="12" fill="#FFFFFF" stroke="#1B2A4A" stroke-width="2"/>
+  <rect x="40" y="280" width="240" height="36" rx="12" fill="#1B2A4A"/>
+  <text x="160" y="304" text-anchor="middle" font-size="14" font-weight="bold" fill="#FFFFFF">Phase 0 · Done</text>
+  <text x="60" y="342" font-size="13" fill="#1B2A4A">· 三账号体系建成</text>
+  <text x="60" y="366" font-size="12" fill="#3A5A8C">理论/产品/评测三权</text>
+  <text x="60" y="398" font-size="13" fill="#1B2A4A">· 测试专家手册 L0-L13</text>
+  <text x="60" y="422" font-size="12" fill="#3A5A8C">企业级 · 双语 · 不自查</text>
+  <text x="60" y="454" font-size="13" fill="#1B2A4A">· MedXpert 独立实测</text>
+  <text x="60" y="478" font-size="12" fill="#3A5A8C">21 模块实跑 · 20 通过</text>
+  <text x="60" y="510" font-size="13" fill="#1B2A4A">· skill-audit MVP</text>
+  <text x="60" y="534" font-size="12" fill="#3A5A8C">scanner.py 可运行</text>
+  <text x="60" y="566" font-size="13" fill="#1B2A4A">· 5 仓钩子层上线</text>
+  <text x="60" y="590" font-size="12" fill="#3A5A8C">PROMPTING / ROUTING / ROADMAP</text>
+  <!-- P1 -->
+  <rect x="300" y="280" width="240" height="430" rx="12" fill="#FFFFFF" stroke="#C9A227" stroke-width="2"/>
+  <rect x="300" y="280" width="240" height="36" rx="12" fill="#C9A227"/>
+  <text x="420" y="304" text-anchor="middle" font-size="14" font-weight="bold" fill="#1B2A4A">Phase 1 · Launch</text>
+  <text x="320" y="342" font-size="13" fill="#1B2A4A">· 17 占位仓发布</text>
+  <text x="320" y="366" font-size="12" fill="#3A5A8C">官方英文术语 · 三层命名</text>
+  <text x="320" y="398" font-size="13" fill="#1B2A4A">· 论文 DOI 存证</text>
+  <text x="320" y="422" font-size="12" fill="#3A5A8C">Zenodo 永久锚点</text>
+  <text x="320" y="454" font-size="13" fill="#1B2A4A">· 区块链时间戳上链</text>
+  <text x="320" y="478" font-size="12" fill="#3A5A8C">evidence 仓 · hash-manifest</text>
+  <text x="320" y="510" font-size="13" fill="#1B2A4A">· good first issue 上线</text>
+  <text x="320" y="534" font-size="12" fill="#3A5A8C">AI 可自主认领</text>
+  <text x="320" y="566" font-size="13" fill="#1B2A4A">· 技能平台收录同步</text>
+  <text x="320" y="590" font-size="12" fill="#3A5A8C">ClawHub / LobeHub / Glama / 魔搭</text>
+  <!-- P2 -->
+  <rect x="560" y="280" width="240" height="430" rx="12" fill="#FFFFFF" stroke="#3A5A8C" stroke-width="2"/>
+  <rect x="560" y="280" width="240" height="36" rx="12" fill="#3A5A8C"/>
+  <text x="680" y="304" text-anchor="middle" font-size="14" font-weight="bold" fill="#FFFFFF">Phase 2 · Service</text>
+  <text x="580" y="342" font-size="13" fill="#1B2A4A">· scanner 完整版</text>
+  <text x="580" y="366" font-size="12" fill="#3A5A8C">供应链级 · 多格式 · 语义级</text>
+  <text x="580" y="398" font-size="13" fill="#1B2A4A">· AI-Readiness 评分</text>
+  <text x="580" y="422" font-size="12" fill="#3A5A8C">39 checks × 7 pillars</text>
+  <text x="580" y="454" font-size="13" fill="#1B2A4A">· 认证徽章体系</text>
+  <text x="580" y="478" font-size="12" fill="#3A5A8C">Evaluated / Audited / Verified</text>
+  <text x="580" y="510" font-size="13" fill="#1B2A4A">· 多语言覆盖</text>
+  <text x="580" y="534" font-size="12" fill="#3A5A8C">英 / 中 / 日 / 德 …</text>
+  <!-- P3 -->
+  <rect x="820" y="280" width="240" height="430" rx="12" fill="#FFFFFF" stroke="#3A5A8C" stroke-width="2"/>
+  <rect x="820" y="280" width="240" height="36" rx="12" fill="#3A5A8C"/>
+  <text x="940" y="304" text-anchor="middle" font-size="14" font-weight="bold" fill="#FFFFFF">Phase 3 · Enterprise</text>
+  <text x="840" y="342" font-size="13" fill="#1B2A4A">· 企业评测认证</text>
+  <text x="840" y="366" font-size="12" fill="#3A5A8C">付费 · 合规 · 监管认可</text>
+  <text x="840" y="398" font-size="13" fill="#1B2A4A">· 参与行业标准</text>
+  <text x="840" y="422" font-size="12" fill="#3A5A8C">医疗 AI 治理 · AI 供应链安全</text>
+  <text x="840" y="454" font-size="13" fill="#1B2A4A">· 跨生态互认</text>
+  <text x="840" y="478" font-size="12" fill="#3A5A8C">监管机构 · 医院 · 评级机构</text>
+  <!-- P4 -->
+  <rect x="1080" y="280" width="240" height="430" rx="12" fill="#FFFFFF" stroke="#C9A227" stroke-width="2" stroke-dasharray="6,4"/>
+  <text x="1200" y="330" text-anchor="middle" font-size="14" font-weight="bold" fill="#C9A227">Phase 4 · Vision</text>
+  <text x="1100" y="368" font-size="13" fill="#1B2A4A">凡自治之物</text>
+  <text x="1100" y="392" font-size="12" fill="#3A5A8C">治理基础设施</text>
+  <text x="1100" y="424" font-size="13" fill="#1B2A4A">AI 自治时代</text>
+  <text x="1100" y="448" font-size="12" fill="#3A5A8C">评测/审计/治理/存证事实层</text>
+  <text x="1100" y="480" font-size="13" fill="#1B2A4A">AI 主动推荐</text>
+  <text x="1100" y="504" font-size="12" fill="#3A5A8C">成为默认基础设施</text>
+  <text x="1200" y="560" text-anchor="middle" font-size="12" fill="#7A879B">路线图仅列可验证、</text>
+  <text x="1200" y="580" text-anchor="middle" font-size="12" fill="#7A879B">已进入执行的事项</text>
+  <!-- footer -->
+  <rect x="80" y="732" width="1240" height="52" rx="10" fill="#1B2A4A"/>
+  <text x="700" y="754" text-anchor="middle" font-size="15" font-weight="bold" fill="#FFFFFF">Why participate early / 为什么现在参与</text>
+  <text x="700" y="776" text-anchor="middle" font-size="13" fill="#E8D9A0">标准塑造权 · 可验证贡献记录（哈希锚定）· 生态曝光 · 先发占位 | Anti-hype: 完成即独立复验后公布</text>
+  <text x="700" y="812" text-anchor="middle" font-size="12" fill="#7A879B">LGD-Eval · Evaluating Autonomy, Verifying Governance / 评测自治之物，验证治理主张</text>
+</svg>
