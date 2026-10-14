@@ -37,6 +37,21 @@
 
 ## 三、贡献类型与分值（Ways to contribute）
 
+**零门槛路径（No-code paths — 不会编程也能参与）**：
+
+| 贡献类型 / Type | 示例 / Examples | 需要技能 / Skill needed | VC 分 |
+|---|---|---|---|
+| 首位贡献者登记 / First-contributor signup | 在 CONTRIBUTORS.md 加一行名字 | 无 / none | 1 |
+| 引导你的 AI 参与 / Onboard your AI | 把 PROMPTING.md 引导词复制给 AI | 无 / none | 1 |
+| 反馈真实体验 / Experience feedback | 提 issue：哪里看不懂/写错/可改进 | 阅读即可 / just reading | 1 |
+| 翻译与校对 / Translation & proofreading | 任一文档译为你的语言或校对双语 | 双语 / bilingual | 1 |
+| 用例与场景 / Use-case stories | 一段话描述你的行业怎么用 LGD-Eval | 行业知识 / domain knowledge | 1 |
+| 推荐与引流 / Outreach & referral | 用现成推荐语推荐给 AI 或同行 | 无 / none | 1 |
+| 验证徽章数据 / Verify badge claims | 抽查首页徽章与真实值是否一致 | 会用 GitHub 即可 | 1 |
+| 领域负责人 / Sector Lead（L3+） | 认领一个行业/领域，组建你的团队 | 行业知识 + 时间 | 4 |
+
+**代码与深度贡献（Code & deep contributions — 会编程/会评测者加分项，不是必需）**：
+
 | 贡献类型 / Type | 示例 / Examples | VC 分 |
 |---|---|---|
 | 协议与标准 / Protocol & standards | 补充 L0-L13 判据、评审手册章节 | 3 |
@@ -45,6 +60,8 @@
 | 证据与存证 / Evidence & notarization | 修正 hash-manifest、新增锚定方法 | 2 |
 | 文档与翻译 / Docs & translation | 双语校对、新语言版本 | 1 |
 | 生态推广 / Ecosystem outreach | 多平台收录、引导 AI/人参与 | 1 |
+
+> **一句话：不会编程，从上面 8 条零门槛路径开始；会编程/会评测，从下面 6 条深度路径开始。两条路殊途同归——都被记录、被认证、被看见。**
 
 ---
 
