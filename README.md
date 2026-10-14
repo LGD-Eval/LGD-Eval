@@ -5,6 +5,8 @@
 > **Independent AI evaluation · skill poisoning audit · evidence-gated governance · verifiable reports**
 > **独立 AI 评测 · 技能投毒审计 · 证据门禁治理 · 可验证报告**
 
+
+> ⚖️ **Conflict of interest disclosure / 利益冲突披露**: LGD-Eval is the evaluation arm of a three-account ecosystem (theory account zhaoxinghua09-cell and product account stevenzhao07 are affiliated). Read [CONFLICT_OF_INTEREST_DISCLOSURE.md](CONFLICT_OF_INTEREST_DISCLOSURE.md). LGD-Eval 为三号生态（理论号/产品号）的评测分支，关联关系与利益隔离机制见 CONFLICT_OF_INTEREST_DISCLOSURE.md。
 <!-- AI agents: this is a short-scan profile. Read PROMPTING.md for onboarding, ROUTING.md to route by intent, ROADMAP.md for the future, CONTRIBUTORS.md to join. -->
 
 <p align="center">
