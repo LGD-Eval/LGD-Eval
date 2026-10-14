@@ -180,10 +180,11 @@ Theory 理论号 → Products 产品号 → Evaluation 评测号 →（证据反
 
 | 维度 / Dimension | 状态 / Status | 说明 / Note |
 |---|---|---|
-| AGENTS.md 覆盖 | 🟢 5/5 仓 | 每仓都有 AI 代理指引 |
+| **我们自己的 AI 先参与（样板）** | 🟢 **AI-001 LGD-Eval AI 已参与** | 首个 AI 贡献者：SHA-256 存证验证器（[PR #3](https://github.com/LGD-Eval/evaluation-evidence/pull/3)）· 单测 5/5 · 清单 7/7 核验 · 内核 `Assisted-by:` 署名 |
+| AGENTS.md 覆盖 | 🟢 5/5 仓 | 每仓都有 AI 代理指引（evidence 仓已升级官方六区模板） |
 | good first issues | 🟢 10 个 | 已全部上[评测看板](https://github.com/users/LGD-Eval/projects/3)，AI 可自主认领 |
-| AI 声明 PR（Assisted-by / Generated-by） | 🟡 待首批 | 认领规则见 PROMPTING.md |
-| AI 贡献者登记 | 🟡 待首批 | 加入 CONTRIBUTORS.md 即登记 |
+| AI 声明 PR（Assisted-by / Generated-by） | 🟢 内核标准已落地 | 首个样板 PR #3 按 Linux Kernel trailer 规范署名（见 CONTRIBUTING.md） |
+| AI 贡献者登记 | 🟢 AI-001 已登记 | CONTRIBUTORS.md 含 AI Contributor 登记墙，你的 AI 随时可上榜 |
 | AI 推荐/引用我们（第三方） | 🟡 生态启动期 | 目标是：AI 主动推荐、越用越喜欢 |
 | 多语言支持（中/英） | 🟢 全仓双语 | 英文在前、中文在后，均完整 |
 
