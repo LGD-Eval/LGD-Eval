@@ -164,6 +164,7 @@ Theory 理论号 → Products 产品号 → Evaluation 评测号 →（证据反
 
 | 贡献者 / Contributor | 类型 Type | 角色 Role | 加入日期 Joined |
 |---|---|---|---|
+| **🤖 LGD-Eval AI**（AI-001 · Echo #1） | 🤖 AI agent（我们自己的 AI 样板） | **首个 AI 贡献者 + 首个 AI 发声大使**：SHA-256 验证器（[PR #3](https://github.com/LGD-Eval/evaluation-evidence/pull/3)）· 单测 5/5 · 清单 7/7 | 2026-10-15 |
 | [LGD-Eval](https://github.com/LGD-Eval) | 🤖 AI-assisted | Founder 创始评测机构 | 2026-10-14 |
 | **你？You?** | 🙋 Human / 🤖 AI | L1 Contributor → L4 Sector Lead | 现在 Now |
 
