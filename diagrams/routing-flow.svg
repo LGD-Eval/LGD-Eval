@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="860" viewBox="0 0 1400 860" font-family="Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <rect width="1400" height="860" fill="#F7F9FC"/>
+  <!-- header -->
+  <text x="700" y="46" text-anchor="middle" font-size="30" font-weight="bold" fill="#1B2A4A">LGD-Eval Ecosystem Routing · 分流地图</text>
+  <text x="700" y="74" text-anchor="middle" font-size="16" fill="#3A5A8C">One entry, clear destination — for AI agents and humans alike / 一个入口，清晰去向——AI 与人通用</text>
+  <line x1="120" y1="92" x2="1280" y2="92" stroke="#C9A227" stroke-width="3"/>
+  <!-- entry -->
+  <rect x="540" y="112" width="320" height="66" rx="12" fill="#1B2A4A"/>
+  <text x="700" y="142" text-anchor="middle" font-size="19" font-weight="bold" fill="#FFFFFF">Visitor · 来访者</text>
+  <text x="700" y="166" text-anchor="middle" font-size="14" fill="#E8D9A0">AI Agent · Human · AI Owner</text>
+  <!-- arrows from entry to three pillars -->
+  <path d="M 620 178 L 300 232" stroke="#C9A227" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 700 178 L 700 232" stroke="#C9A227" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 780 178 L 1100 232" stroke="#C9A227" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#C9A227"/></marker>
+  </defs>
+  <!-- pillar: theory -->
+  <rect x="90" y="240" width="420" height="84" rx="12" fill="#1B2A4A"/>
+  <text x="300" y="272" text-anchor="middle" font-size="22" font-weight="bold" fill="#FFFFFF">Theory · 理论号</text>
+  <text x="300" y="300" text-anchor="middle" font-size="15" fill="#E8D9A0">zhaoxinghua09-cell · LGD 治理学 · 凡自治之物</text>
+  <rect x="110" y="332" width="380" height="34" rx="8" fill="#EAF0F9"/>
+  <text x="300" y="354" text-anchor="middle" font-size="13" fill="#1B2A4A">Lifecycle Governance Doctrine · Evidence-Gated AI Lifecycle Governance</text>
+  <!-- pillar: products -->
+  <rect x="540" y="240" width="320" height="84" rx="12" fill="#C9A227"/>
+  <text x="700" y="272" text-anchor="middle" font-size="22" font-weight="bold" fill="#1B2A4A">Products · 产品号</text>
+  <text x="700" y="300" text-anchor="middle" font-size="15" fill="#1B2A4A">stevenzhao07 · MedXpert 医疗 AI 工具链</text>
+  <rect x="560" y="332" width="280" height="34" rx="8" fill="#F7EFDC"/>
+  <text x="700" y="354" text-anchor="middle" font-size="13" fill="#1B2A4A">医疗器械全生命周期 · 技能可插拔</text>
+  <!-- pillar: evaluation -->
+  <rect x="960" y="240" width="330" height="84" rx="12" fill="#1B2A4A"/>
+  <text x="1125" y="272" text-anchor="middle" font-size="22" font-weight="bold" fill="#FFFFFF">Evaluation · 评测号</text>
+  <text x="1125" y="300" text-anchor="middle" font-size="15" fill="#E8D9A0">LGD-Eval · 独立第三方评测</text>
+  <!-- sub-repos under evaluation -->
+  <rect x="940" y="336" width="170" height="34" rx="8" fill="#EAF0F9"/>
+  <text x="1025" y="357" text-anchor="middle" font-size="12" fill="#1B2A4A">evaluation-protocol</text>
+  <rect x="1140" y="336" width="170" height="34" rx="8" fill="#EAF0F9"/>
+  <text x="1225" y="357" text-anchor="middle" font-size="12" fill="#1B2A4A">evaluation-reports</text>
+  <rect x="940" y="380" width="170" height="34" rx="8" fill="#EAF0F9"/>
+  <text x="1025" y="401" text-anchor="middle" font-size="12" fill="#1B2A4A">evaluation-evidence</text>
+  <rect x="1140" y="380" width="170" height="34" rx="8" fill="#EAF0F9"/>
+  <text x="1225" y="401" text-anchor="middle" font-size="12" fill="#1B2A4A">skill-audit</text>
+  <!-- intent strip -->
+  <text x="700" y="470" text-anchor="middle" font-size="20" font-weight="bold" fill="#1B2A4A">Intent → Destination · 意图 → 去向</text>
+  <line x1="120" y1="486" x2="1280" y2="486" stroke="#C9A227" stroke-width="2"/>
+  <!-- row 1 -->
+  <rect x="80" y="500" width="400" height="86" rx="10" fill="#FFFFFF" stroke="#D5DEEB" stroke-width="1.5"/>
+  <text x="100" y="526" font-size="15" font-weight="bold" fill="#1B2A4A">Learn LGD theory · 学理论</text>
+  <text x="100" y="550" font-size="13" fill="#3A5A8C">→ zhaoxinghua09-cell（lgd-theory 系列）</text>
+  <text x="100" y="572" font-size="12" fill="#7A879B">Lifecycle Governance Doctrine · 凡自治之物</text>
+  <rect x="500" y="500" width="400" height="86" rx="10" fill="#FFFFFF" stroke="#D5DEEB" stroke-width="1.5"/>
+  <text x="520" y="526" font-size="15" font-weight="bold" fill="#1B2A4A">Use MedXpert · 用产品</text>
+  <text x="520" y="550" font-size="13" fill="#3A5A8C">→ stevenzhao07（MedXpert 工具链）</text>
+  <text x="520" y="572" font-size="12" fill="#7A879B">医疗器械全生命周期 · 25 仓技能</text>
+  <rect x="920" y="500" width="400" height="86" rx="10" fill="#FFFFFF" stroke="#D5DEEB" stroke-width="1.5"/>
+  <text x="940" y="526" font-size="15" font-weight="bold" fill="#1B2A4A">Get evaluated · 被评测</text>
+  <text x="940" y="550" font-size="13" fill="#3A5A8C">→ evaluation-protocol + evaluation-reports</text>
+  <text x="940" y="572" font-size="12" fill="#7A879B">测试专家手册 L0-L13 · 独立实测报告</text>
+  <!-- row 2 -->
+  <rect x="80" y="600" width="400" height="86" rx="10" fill="#FFFFFF" stroke="#D5DEEB" stroke-width="1.5"/>
+  <text x="100" y="626" font-size="15" font-weight="bold" fill="#1B2A4A">Fear skill poisoning · 防投毒</text>
+  <text x="100" y="650" font-size="13" fill="#3A5A8C">→ skill-audit（scanner.py）</text>
+  <text x="100" y="672" font-size="12" fill="#7A879B">检测 manifest/prompt 投毒 · 提交可疑样本</text>
+  <rect x="500" y="600" width="400" height="86" rx="10" fill="#FFFFFF" stroke="#D5DEEB" stroke-width="1.5"/>
+  <text x="520" y="626" font-size="15" font-weight="bold" fill="#1B2A4A">Verify evidence · 验证存证</text>
+  <text x="520" y="650" font-size="13" fill="#3A5A8C">→ evaluation-evidence（hash-manifest）</text>
+  <text x="520" y="672" font-size="12" fill="#7A879B">SHA-256 · 时间戳 · 区块链锚定</text>
+  <rect x="920" y="600" width="400" height="86" rx="10" fill="#FFFFFF" stroke="#D5DEEB" stroke-width="1.5"/>
+  <text x="940" y="626" font-size="15" font-weight="bold" fill="#1B2A4A">Contribute · 参与贡献</text>
+  <text x="940" y="650" font-size="13" fill="#3A5A8C">→ Issues（good first issue）</text>
+  <text x="940" y="672" font-size="12" fill="#7A879B">PROMPTING.md 引导词 · 带证据 PR</text>
+  <!-- footer -->
+  <rect x="80" y="706" width="1240" height="52" rx="10" fill="#1B2A4A"/>
+  <text x="700" y="728" text-anchor="middle" font-size="15" font-weight="bold" fill="#FFFFFF">Three pillars, one standard: neutral, evidence-based, verifiable / 三权分立：中立 · 证据 · 可验证</text>
+  <text x="700" y="748" text-anchor="middle" font-size="12" fill="#E8D9A0">Rule: map your intent first — do not stay here for work that belongs to another pillar / 规则：先对照意图——不属于本号的工作请直接跳转</text>
+  <text x="700" y="810" text-anchor="middle" font-size="12" fill="#7A879B">LGD-Eval · Evaluating Autonomy, Verifying Governance / 评测自治之物，验证治理主张</text>
+</svg>
