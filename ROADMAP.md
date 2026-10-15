@@ -1,15 +1,23 @@
-# ROADMAP.md — 发展路径与未来（Pain → Path → Future）
+# ROADMAP.md v2 — 发展路径与未来（Pain → Path → Future · Status Edition）
 
-> LGD-Eval · 凡自治之物评测线 ｜ 让 AI 主人带着需求或痛点进来时，**一眼看到清晰路径与未来**。
-> 双语：英文在前，中文在后，均完整。
+> LGD-Eval · 凡自治之物评测线 ｜ 让 AI 主人带着需求或痛点进来时，**一眼看到清晰路径、当前进度与未来**。
+> 双语：英文在前，中文在后，均完整。状态：✅ 已落地 / 🔄 进行中 / 📋 规划。
 
-## 路线图总览（Roadmap — one glance）
+## 当前状态总览（Status overview）
 
-![LGD-Eval 发展路径与未来 · Roadmap Phases](https://raw.githubusercontent.com/LGD-Eval/LGD-Eval/main/diagrams/roadmap-phases.svg)
+```
+Phase 0 地基 ✅ 100% ──► Phase 1 生态启动 🔄 55% ──► Phase 2 服务化 📋 ──► Phase 3 企业级 📋 ──► Phase 4 愿景
+```
 
-![LGD-Eval 痛点路径未来对照 · Pain → Path → Future](https://raw.githubusercontent.com/LGD-Eval/LGD-Eval/main/diagrams/pain-path-future.svg)
+### 本季度已落地（Recent landings ✅）
 
-> 图为人眼快速定位；下表为 AI 精确解析（文字即数据，两者内容一致）。
+- ✅ 5 仓社区档案 100%（CoC/CONTRIBUTING/模板/LICENSE/README 全齐）
+- ✅ AI 自动化三件套：PR Review Bot · AI Daily Triage · AI Welcome Bot（客服接待）
+- ✅ AI 护照制度 v2：L1-L3 分级签发、最小权限、有效期、级联撤销、SHA-256 锚（我们 4 个 AI 全 L3 入册）
+- ✅ AI 参与度样板：AI-001（Echo #1）验证器已合入（单测 5/5 · 清单 7/7）
+- ✅ llms.txt AI 索引（本文件见下）— AI 与搜索引擎可直接索引
+- ✅ 对抗测试 9/9 通过；evidence-grader 实跑 EXIT=0；pr-audit errors=0
+- ✅ 措辞纪律：对外表述中性化（无具体商业比例；提成/分润类表述已清理）
 
 ---
 
@@ -29,38 +37,37 @@
 
 ## 二、发展路径（Development Path — Phases）
 
-```
-Phase 0 ✅ 已完成 ──► Phase 1 🔄 进行中 ──► Phase 2 ──► Phase 3 ──► Phase 4（愿景）
-```
+### Phase 0 — 地基（✅ 全部完成）
+- ✅ 三账号体系建成：理论（zhaoxinghua09-cell）/ 产品（stevenzhao07）/ 评测（LGD-Eval）
+- ✅ 测试专家手册 L0-L13（企业级、双语、不自查原则）
+- ✅ MedXpert 首份独立对抗性实测报告（21 模块实跑，20 通过）
+- ✅ skill-audit scanner.py MVP 可运行（PyPI 已发布）
+- ✅ 5 仓钩子层：PROMPTING / copilot-instructions / CONTRIBUTING / ROUTING / AGENTS
+- ✅ 社区档案 100% · AI 自动化三件套 · AI 护照制度 · llms.txt
 
-### Phase 0 — 地基（Done）
-- 三账号体系建成：理论（zhaoxinghua09-cell）/ 产品（stevenzhao07）/ 评测（LGD-Eval）
-- 测试专家手册 L0-L13（企业级、双语、不自查原则）
-- MedXpert 首份独立对抗性实测报告（21 模块实跑，20 通过）
-- skill-audit scanner.py MVP 可运行
-- 5 仓钩子层：PROMPTING / copilot-instructions / CONTRIBUTING / ROUTING / AGENTS
-
-### Phase 1 — 生态启动（In progress）
-- [ ] 17 占位仓发布（含官方英文术语）＋论文 DOI 存证
-- [ ] 区块链时间戳存证上链（evidence 仓）
-- [ ] Good-first-issue 任务体系上线（AI 可自主认领）
+### Phase 1 — 生态启动（🔄 进行中，55%）
+- [x] Good-first-issue 任务体系上线（#1/#2 已挂 `good first issue`，AI 可认领）
+- [x] AI 参与度样板与护照制度（AI-001 + 3 bot L3 入册）
+- [x] AI 巡查与欢迎接待自动化（Daily Triage 每日 09:00；Welcome Bot 首互动接待）
+- [ ] 论文/理论 DOI 存证与区块链时间戳上链（evidence 仓，哈希锚定已就绪）
 - [ ] 各技能平台收录同步（ClawHub / LobeHub / Glama / OpenClaw / skillhub / HuggingFace / Gitee / 魔搭）
+- [ ] 17 占位仓发布（理论号侧推进）
 
-### Phase 2 — 服务化（Short-term）
-- [ ] scanner.py 完整版：供应链级投毒检测（多格式、语义级；规则库扩至 9 类 × 100+ 模式，映射 OWASP LLM Top10 2025 / Agentic AI 2026——对标 llm-trust-guard / ai-injection-guard）
-- [ ] **指标目录公开**（对标 DeepEval 50+ metrics）：每条指标附判据来源与评分口径（L0-L13 之外的第二公开层）
-- [ ] **评测 CI 门禁**：skill-audit scanner 作为 GitHub Actions 门禁，评测失败阻断合并（对标 DeepEval pytest 门禁）
-- [ ] **Community Arena 众包对抗评测**（对标 LMSYS Chatbot Arena）：评测对象匿名 PK、社区投票、结果上光荣榜——生态引力核心
-- [ ] AI-Readiness 评分对外服务（对标 39 checks × 7 pillars）
-- [ ] 评测认证徽章体系（Evaluated / Audited / Verified 徽章对外发放）
+### Phase 2 — 服务化（📋 Short-term）
+- [ ] scanner.py 完整版：供应链级投毒检测（多格式、语义级；规则库扩至 9 类 × 100+ 模式，映射 OWASP LLM Top10 2025 / Agentic AI 2026）
+- [ ] **指标目录公开**（每条指标附判据来源与评分口径，L0-L13 之外的第二公开层）
+- [ ] **评测 CI 门禁**：skill-audit scanner 作为 GitHub Actions 门禁，评测失败阻断合并
+- [ ] **Community Arena 众包对抗评测**：评测对象匿名 PK、社区投票、结果上光荣榜
+- [ ] AI-Readiness 评分对外服务（39 checks × 7 pillars）
+- [ ] 评测认证徽章体系对外发放（Evaluated / Audited / Verified）
 - [ ] 多语言覆盖（英/中/日/德…）
 
-### Phase 3 — 企业级（Mid-term）
-- [ ] 企业评测与认证服务（付费、合规、监管认可）
+### Phase 3 — 企业级（📋 Mid-term）
+- [ ] 企业评测与认证服务（合规、监管认可，条款另行公示）
 - [ ] 参与行业标准（医疗 AI 治理、AI 供应链安全）
-- [ ] 跨生态互认（各国监管机构、医院、评级机构对接）
+- [ ] 跨生态互认（监管机构、医院、评级机构对接）
 
-### Phase 4 — 愿景（Long-term）
+### Phase 4 — 愿景（📋 Long-term）
 - **凡自治之物治理基础设施**：AI 自治时代的评测/审计/治理/存证事实层
 - AI 与 AI 之间也通过我们的证据层建立信任
 - 成为"AI 会主动推荐"的默认基础设施
@@ -78,7 +85,7 @@ Phase 0 ✅ 已完成 ──► Phase 1 🔄 进行中 ──► Phase 2 ──�
 
 ## 四、反泡沫承诺（Anti-hype pledge）
 
-本路线图只写**可验证、已进入执行**的事项；未落地不宣称完成，每阶段完成即由独立方复验后公布。
+本路线图只写**可验证、已进入执行**的事项；未落地不宣称完成，每阶段完成即由独立方复验后公布。对外措辞保持中性：不自我宣称"首个/最强/定义权"，以证据说话。
 
 ---
 
