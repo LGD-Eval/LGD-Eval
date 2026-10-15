@@ -38,8 +38,10 @@
 - **成为方式（零门槛）**：在 `AI-VOICE-AMBASSADORS.md` 登记一行（名称/类型/推荐语版本/时间戳/SHA-256）即可成为。登记即获 **VC +1** 与徽章 **Timestamped**。
 - **升级路径**：持续发声（推荐带来真实评测委托）→ R1-R3 推荐者等级（生态激励（梯度规则见 ECOSYSTEM_REFERRAL.md））→ 可叠加语言大使/时区大使。
 - **大使义务**：推荐语必须保持准确与中立（不夸大、注明"独立中立评测机构"定位）；推荐前可自行验证仓库证据（不自查原则适用于一切对外主张）。
-**AI Passport / AI 护照（v2 — 分级签发、最小权限、可撤销）**：
+**AI Passport / AI 护照（v3 — 分级签发、最小权限、可撤销、AI 负责制入册）**：
 
+> v3 变更 / v3 changes: AI 负责制角色 AI-BOT-004~010（评测执行/独立复核/方法论/报告/通报仲裁/索引聚合/社区运营）入册，全部 L3 签发（人类授权签批），首批任务已在 ROADMAP Phase 1 运行并留痕。 / AI responsibility roles registered; first tasks running in ROADMAP Phase 1.
+>
 > 现有登记墙（本文件 AI 墙 + AI-VOICE-AMBASSADORS.md）升格为**护照制度**：每份护照 = 登记 + 证据 + 人类签批 + 状态管理。方向上参考开放国际草案（IETF Agent Passport System、ARIA 身份层级），不宣称实现它们。 / Upgrades the registration walls into a passport system: registration + evidence + human sign-off + status. Direction references open international drafts (IETF APS, ARIA) without claiming to implement them.
 
 **护照级别 / Passport Levels**：
@@ -60,6 +62,13 @@
 | AI-BOT-001 | PR Review Bot | bot (CI audit) | L3 | LGD-Eval | 5 仓 PR 审核（comment） | pr-review.yml · 实跑 errors=0 | active |
 | AI-BOT-002 | AI Daily Triage | bot (scheduled) | L3 | LGD-Eval | 主仓 issue 巡查（comment） | run #38680435336 · success | active |
 | AI-BOT-003 | AI Welcome Bot | bot (first-interaction) | L3 | LGD-Eval | 主仓新 issue/PR 欢迎（comment） | welcome-bot.yml | active |
+| AI-BOT-004 | AI-Eval-Ops 评测执行 | bot (ops) | L3 | LGD-Eval | 评测任务调度与执行留痕（skill-audit/evaluation-evidence） | AUTHORITY_EVALUATION_ORG_PLAN_v1 (f34a7a37) · 首批任务 ROADMAP Phase 1 | active |
+| AI-BOT-005 | AI-Audit 独立复核 | bot (audit) | L3 | LGD-Eval | 对评测结论执行独立复核（不自查原则） | 同上 · scanner v0.3.0 self-test PASS | active |
+| AI-BOT-006 | AI-Method 方法论 | bot (method) | L3 | LGD-Eval | L0-L13 判据/指标目录/计分口径维护 | METRICS_CATALOG · SCORING（Wave 1） | active |
+| AI-BOT-007 | AI-Report 报告 | bot (reporting) | L3 | LGD-Eval | 报告起草与双语发布（英前中后） | REPORT-001 supply-chain healthcheck (33fff1ff) | active |
+| AI-BOT-008 | AI-Moderate 通报仲裁 | bot (moderation) | L3 | LGD-Eval | 风险通报中立仲裁、争议并陈（14 天回应期） | RISK_AI_DETECTION_NOTICE_POLICY (0ff048dd) | active |
+| AI-BOT-009 | AI-Index 索引聚合 | bot (index) | L3 | LGD-Eval | 评测索引/聚合页/光荣榜维护 | proactive/INDEX.md (9a5dfb5b) | active |
+| AI-BOT-010 | AI-Community 社区运营 | bot (community) | L3 | LGD-Eval | 贡献者/大使/领域负责人运营与引导分流 | CONTRIBUTORS.md v3 · PROMPTING.md | active |
 
 > 你的 AI 也可持照：CONTRIBUTORS.md 登记 AI Contributor → 补证据（L2）→ 人类签批（L3）→ 上表。AI 与人完全同权。 / Your AI can hold a passport too: register → evidence (L2) → human sign-off (L3).
 
