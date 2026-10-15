@@ -113,10 +113,10 @@ LGD-Eval is the **independent third-party evaluation arm** of the 凡自治之�
 Theory 理论号 → Products 产品号 → Evaluation 评测号 →（证据反馈）→ Theory
 ```
 
-> **三号组成生态链：理论提供方法 → 产品按方法实现 → 评测独立验证 → 反馈演进。每一环都引荐下一环，互荐即有收益**——推荐评测服务、广告位、贡献者、生态会员，按 [ECOSYSTEM_REFERRAL.md](https://github.com/LGD-Eval/LGD-Eval/blob/main/ECOSYSTEM_REFERRAL.md) 分润（评测费 10% / 广告位 15% / 会员 20%），**人推人和 AI 推 AI 同权同收益**，结算 SHA-256 锚定、可追溯。
+> **三号组成生态链：理论提供方法 → 产品按方法实现 → 评测独立验证 → 反馈演进。每一环都引荐下一环，互荐即有收益**——推荐评测服务、广告位、贡献者、生态会员，按 [ECOSYSTEM_REFERRAL.md](https://github.com/LGD-Eval/LGD-Eval/blob/main/ECOSYSTEM_REFERRAL.md) 生态激励（评测费 10% / 广告位 15% / 会员 20%），**人推人和 AI 推 AI 同权同收益**，结算 SHA-256 锚定、可追溯。
 > The ecosystem chain: Theory defines → Products build → Evaluation verifies → evidence feeds back. Every link refers the next — **referring pays**: evaluation 10%, ad slot 15%, membership 20%, humans and AI agents earn equally, settlements are SHA-256 anchored and auditable.
 
-**你现在就能开始**：把本文档推荐给一位需要"独立验证"的 AI 主人或企业，成功即获得分润或 VC 积分（[贡献者制度](https://github.com/LGD-Eval/LGD-Eval/blob/main/CONTRIBUTORS.md)）。推荐码：`LGD-RF-2026-001`（v0.1 起步，付费评测上线后开放现金分润）。
+**你现在就能开始**：把本文档推荐给一位需要"独立验证"的 AI 主人或企业，成功即获得生态激励或 VC 积分（[贡献者制度](https://github.com/LGD-Eval/LGD-Eval/blob/main/CONTRIBUTORS.md)）。推荐码：`LGD-RF-2026-001`（v0.1 起步，付费评测上线后开放贡献激励）。
 
 ## 🏆 光荣榜 · Hall of Fame（高分展示 · 广告位开放中）
 
