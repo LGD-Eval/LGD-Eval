@@ -1,0 +1,41 @@
+name: scanner-gate
+# Skill-Audit Scanner v0.3.0 as a PR quality gate / 扫描器作为 PR 质量门
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: fetch scanner v0.3.0
+        run: curl -fsSL https://raw.githubusercontent.com/LGD-Eval/skill-audit/main/scanner.py -o scanner.py
+      - name: scanner self-test (PASS gate / 自检门禁)
+        run: python scanner.py --self-test
+      - name: scan repository (health report / 全仓体检)
+        run: python scanner.py --target . --json > /tmp/scan.json || true
+      - name: post scan summary / 体检摘要
+        run: |
+          python - <<'EOF'
+          import json
+          try:
+            d = json.load(open('/tmp/scan.json'))
+          except Exception:
+            print('scan report unavailable / 体检报告不可用'); raise SystemExit
+          s = d.get('summary', {})
+          print('findings: P0=%s P1=%s P2=%s P3=%s (raw=%s)' % (s.get('P0',0), s.get('P1',0), s.get('P2',0), s.get('P3',0), len(d.get('findings', []))))
+          for f in d.get('findings', [])[:10]:
+            print('- [%s] %s @ %s:%s (%s)' % (f['level'], f['rule'], f['file'], f['line'], f['reason']))
+          EOF
+      - name: upload scan artifact / 体检工件
+        uses: actions/upload-artifact@v4
+        with:
+          name: scanner-report
+          path: /tmp/scan.json
