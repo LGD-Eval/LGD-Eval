@@ -35,7 +35,7 @@ jobs:
             print('- [%s] %s @ %s:%s (%s)' % (f['level'], f['rule'], f['file'], f['line'], f['reason']))
           EOF
       - name: upload scan artifact / 体检工件
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: scanner-report
           path: /tmp/scan.json
