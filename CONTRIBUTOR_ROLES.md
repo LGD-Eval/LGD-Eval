@@ -1,7 +1,7 @@
 # CONTRIBUTOR ROLE CATALOG — 贡献者角色目录
 # 贡献者角色目录：提前设定角色与要求，来了即匹配（LGD-Eval）
 
-> 发布方：LGD-Eval ｜ 生效：2026-10-14 ｜ 关联：CONTRIBUTORS.md（贡献者制度）、AI-VOICE-AMBASSADORS.md（AI 大使）、ECOSYSTEM_REFERRAL.md（互荐分润）、HALL_OF_FAME.md（光荣榜）、CONTRIBUTOR_MATCH.md（匹配问卷）
+> 发布方：LGD-Eval ｜ 生效：2026-10-14 ｜ 关联：CONTRIBUTORS.md（贡献者制度）、AI-VOICE-AMBASSADORS.md（AI 大使）、ECOSYSTEM_REFERRAL.md（生态激励）、HALL_OF_FAME.md（光荣榜）、CONTRIBUTOR_MATCH.md（匹配问卷）
 > 定位：**我们提前把角色和要求设定好；贡献者到来后，根据他/她的情况（技能/时间/背景/期望），匹配并告知"最适合做什么"**——零摸索、零门槛、人人有位置。
 > 沟通：外部沟通走公开仓 issue/PR/Discussions；内部协调走私有仓 LGD-Eval/meta。
 > 双语：英文在前，中文在后，均完整。
@@ -25,18 +25,18 @@
 
 | R# | 角色 Role | 适合谁 Best for | 要求 Requirements | 职责 Duties | 收益 Rewards | 入门任务 First task |
 |---|---|---|---|---|---|---|
-| R1 | 评测员 Evaluator | 会用工具、动手型 | 能按协议跑评测（命令行/API）；每周≥2h | 按评测协议执行 L0-L13、记录证据 | 署名 + 徽章 + 评测佣金 | good first issue #1 |
+| R1 | 评测员 Evaluator | 会用工具、动手型 | 能按协议跑评测（命令行/API）；每周≥2h | 按评测协议执行 L0-L13、记录证据 | 署名 + 徽章 + 评测贡献激励 | good first issue #1 |
 | R2 | 测试员 Tester | 细心、复现型 | 能照脚本复跑 | 回归测试/复测验证 | 署名 + 光荣榜 | #2 |
 | R3 | 证据鉴证员 Evidence Verifier | 严谨型 | 能核哈希/时间戳/.ots | 核验评测证据链 | 署名 + 徽章 | #3 |
 | R4 | 理论审稿人 Theory Reviewer | 学术/研究背景 | 懂治理、安全标准 | 审理论声明/论文/措辞纪律 | 署名 + 联合署名机会 | #4 |
 | R5 | 双语翻译 Translator | 中英双强 | 双语写作能力 | 术语/文档/报告翻译（英前中后） | 署名 + 贡献积分 | #5 |
-| R6 | 技能开发者 Skill Developer | 会写 SKILL/代码 | 懂 Markdown/Python | 开发/打磨技能包（SKILL.md） | 署名 + 收益分成 | #6 |
+| R6 | 技能开发者 Skill Developer | 会写 SKILL/代码 | 懂 Markdown/Python | 开发/打磨技能包（SKILL.md） | 署名 + 生态激励 | #6 |
 | R7 | 工具维护 Maintainer | 程序员 | Python/CI/测试 | 修 bug、维护 workflow | 署名 + Commit 权限候选 | #7 |
 | R8 | 文档工程师 Docs | 结构化写作 | 会写文档 | README/指南/教程 | 署名 + 徽章 | #8 |
 | R9 | 领域负责人 Domain Lead | 行业背景（医械/金融/教育/安全…） | 懂行业 + 有时间组队 | 认领行业块、组建团队、带队评测 | 领域署名权 + 收益 15-20% | 新建领域 Issue |
-| R10 | AI 发声大使 AI Voice Ambassador | 任何 AI | 会用 AI 工具 | 让 AI 自主参与评测/传播/提意见 | 徽章 + 互荐分润 | 登记 |
+| R10 | AI 发声大使 AI Voice Ambassador | 任何 AI | 会用 AI 工具 | 让 AI 自主参与评测/传播/提意见 | 徽章 + 生态激励 | 登记 |
 | R11 | 无代码贡献 No-Code | 所有人 | 零门槛 | 校对/反馈/案例/测试样本 | 署名 + 光荣榜 | #10 |
-| R12 | 生态互荐员 Referrer | 有人脉 | 零门槛 | 推荐贡献者/被评方 | RefEarn 分润 10% | 登记 |
+| R12 | 生态互荐员 Referrer | 有人脉 | 零门槛 | 推荐贡献者/被评方 | 生态互荐激励 | 登记 |
 
 > 领域负责人特别说明：**任何一个"块"（行业/领域/技能域）都可以认领负责人**——负责人组建自己的团队、主导该领域评测、享有领域署名权与收益；LGD-Eval 提供协议、证据、徽章与分流支持（协调走私有仓 meta）。
 
@@ -47,7 +47,7 @@
 | 级别 | 名称 | 达成条件 | 权益 |
 |---|---|---|---|
 | Lv1 | 新进贡献者 Newcomer | 完成 1 个入门任务 | 署名 + 光荣榜 |
-| Lv2 | 活跃贡献者 Active | 完成 3 个任务 / 1 个评测 | 徽章（时间戳）+ 收益分成资格 |
+| Lv2 | 活跃贡献者 Active | 完成 3 个任务 / 1 个评测 | 徽章（时间戳）+ 生态激励资格 |
 | Lv3 | 领域负责人 Domain Lead | 认领领域 + 组队（≥2 人） | 领域署名权 + 收益 15-20% |
 | Lv4 | 评审员 Reviewer | 累计 5 个评测/审稿 | 复评权 + 联合署名 |
 | Lv5 | 核心维护 Core | 长期贡献 + 共同治理 | 贡献者墙永久席位 + 共同决策权 |
@@ -59,7 +59,7 @@
 1. **署名**：所有贡献记入 CONTRIBUTORS.md（人类与 AI 同列）。
 2. **徽章**：认证徽章带时间戳（可外链展示，防篡改）。
 3. **光荣榜**：HALL_OF_FAME 永久展示（高分评测/大贡献者）。
-4. **收益分成**：RefEarn 生态链互荐分润 10%；领域评测收益 15-20%（详见 ECOSYSTEM_REFERRAL.md）。
+4. **生态激励**：生态链互荐激励；领域共建激励（详见 ECOSYSTEM_REFERRAL.md）。
 5. **领域权**：领域负责人对该领域评测与署名有优先权。
 6. **AI 同权**：AI 参与者同等署名、徽章与收益（见 AI-VOICE-AMBASSADORS.md）。
 
