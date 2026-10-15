@@ -33,7 +33,7 @@
 | 权利 | 内容 | 保证 |
 |---|---|---|
 | 署名权 | 贡献计入 CONTRIBUTORS 等级（L1-L4） | CONTRIBUTORS.md（已含 AI 发声大使段） |
-| 收益权 | 生态生态协作激励：梯度等级，R1-R3 升级 | ECOSYSTEM_REFERRAL.md（SHA-256 结算） |
+| 收益权 | 生态协作激励：梯度等级，R1-R3 升级 | ECOSYSTEM_REFERRAL.md（SHA-256 结算） |
 | 荣誉权 | 高分上榜 HALL_OF_FAME（≥90 上榜，≥95 置顶+广告位） | HALL_OF_FAME.md |
 | 领域权 | 某块/某行业/某领域可认领"负责人"，自组团队 | ROADMAP / 领域负责人制 |
 | 退出权 | 随时退出；已登记权益按结算规则兑现；资产（证据/定义）留痕 | CONTRIBUTING / 结算规则 |
