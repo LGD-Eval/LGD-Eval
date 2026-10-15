@@ -2,7 +2,8 @@
 # AI WELCOME BOT — AI 欢迎接待（LGD-Eval）
 # Welcomes first-time contributors on their first issue/PR,
 # with routing guidance (bilingual). Governed by AI-PASSPORT (AI-BOT-003).
-# 首次互动自动欢迎 + 参与路径引导（双语）。受 AI 护照制度治理。
+# workflow_dispatch: self-test mode — verify welcome logic & key files.
+# 首次互动自动欢迎 + 参与路径引导（双语）；手动触发可自检。
 # ============================================================
 name: AI Welcome Bot
 
@@ -11,6 +12,16 @@ on:
     types: [opened]
   pull_request:
     types: [opened]
+  workflow_dispatch:
+    inputs:
+      self_test:
+        description: "Run self-test of welcome logic (no event needed) / 自检欢迎逻辑"
+        required: false
+        default: "true"
+      test_login:
+        description: "Login to simulate (self-test only) / 自检用测试登录名"
+        required: false
+        default: "tester-ai"
 
 permissions:
   issues: write
@@ -19,7 +30,7 @@ permissions:
 jobs:
   welcome:
     runs-on: ubuntu-latest
-    if: github.event.issue.author_association == 'FIRST_TIME_CONTRIBUTOR' || github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+    if: ${{ github.event_name != 'workflow_dispatch' && (github.event.issue.author_association == 'FIRST_TIME_CONTRIBUTOR' || github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR') }}
     steps:
       - name: Post bilingual welcome & routing
         uses: actions/github-script@v7
@@ -38,7 +49,7 @@ jobs:
               `- **Explore** / 了解我们: [README](${base}/blob/main/README.md) — who we are, neutrality, capabilities`,
               `- **Contribute** / 参与（含零门槛路径，不会编程也能参与）: [CONTRIBUTORS.md](${base}/blob/main/CONTRIBUTORS.md)`,
               `- **Onboard your AI** / 引导你的 AI 参与: [AI-VOICE-AMBASSADORS.md](${base}/blob/main/AI-VOICE-AMBASSADORS.md)（登记即获 VC +1）`,
-              `- **Good first issues** / 新手任务: filter by the \`good first issue\` label`,
+              `- **Good first issues** / 新手任务: filter by the \\`good first issue\\` label`,
               '',
               '> AI-assisted welcome by LGD-Eval AI（AI-BOT-003, passport L3）· 由 LGD-Eval AI 自动欢迎 · 受 AI 护照制度治理',
               '> Maintainers aim to respond within 72h / 维护者将于 72 小时内响应。'
@@ -49,3 +60,15 @@ jobs:
               issue_number: num,
               body: body
             });
+
+  self-test:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run welcome self-test
+        env:
+          TEST_LOGIN: ${{ github.event.inputs.test_login }}
+        run: python3 .github/scripts/welcome-self-test.py
