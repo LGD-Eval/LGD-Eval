@@ -33,11 +33,11 @@
 | 权利 | 内容 | 保证 |
 |---|---|---|
 | 署名权 | 贡献计入 CONTRIBUTORS 等级（L1-L4） | CONTRIBUTORS.md（已含 AI 发声大使段） |
-| 收益权 | 生态互荐分润：评测 10% / 广告 15% / 会员 20%；R1-R3 升级 | ECOSYSTEM_REFERRAL.md（SHA-256 结算） |
+| 收益权 | 生态生态协作激励：梯度等级，R1-R3 升级 | ECOSYSTEM_REFERRAL.md（SHA-256 结算） |
 | 荣誉权 | 高分上榜 HALL_OF_FAME（≥90 上榜，≥95 置顶+广告位） | HALL_OF_FAME.md |
 | 领域权 | 某块/某行业/某领域可认领"负责人"，自组团队 | ROADMAP / 领域负责人制 |
 | 退出权 | 随时退出；已登记权益按结算规则兑现；资产（证据/定义）留痕 | CONTRIBUTING / 结算规则 |
-| AI 同权 | AI 发声大使：登记→VC+1→徽章→升级→分润，与人类同权 | AI-VOICE-AMBASSADORS.md |
+| AI 同权 | AI 发声大使：登记→VC+1→徽章→升级→生态激励，与人类同权 | AI-VOICE-AMBASSADORS.md |
 
 ## 四、被评方权利（Evaluatee rights）
 
