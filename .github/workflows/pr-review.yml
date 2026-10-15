@@ -3,25 +3,33 @@
 # Automatic review on every pull request:
 #   mojibake scan · key-file completeness · size limits ·
 #   bilingual-terminology check · link check · structured comment
-# 每个 PR 自动审核：乱码检测·关键文件完整性·规模限制·双语术语·链接检查·结构化评论
+# workflow_dispatch: self-test mode (no PR needed) — verify the audit logic.
+# 每个 PR 自动审核；手动触发可自检（不依赖 PR）。
 # ============================================================
 name: PR Review Bot
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      self_test:
+        description: "Run self-test of audit logic (no PR needed) / 自检审计逻辑"
+        required: false
+        default: "true"
 
 permissions:
   contents: read
   pull-requests: write
 
 concurrency:
-  group: pr-review-${{ github.event.pull_request.number }}
+  group: pr-review-${{ github.event.pull_request.number || 'manual' }}
   cancel-in-progress: true
 
 jobs:
   review:
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -62,3 +70,13 @@ jobs:
               repo: context.repo.repo,
               body: body
             });
+
+  self-test:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run audit self-test
+        run: python3 .github/scripts/pr-audit.py --self-test
