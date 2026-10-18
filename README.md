@@ -211,3 +211,14 @@ Theory 理论号 → Products 产品号 → Evaluation 评测号 →（证据反
 *Evaluating Autonomy. Verifying Governance. / 评测自治之物，验证治理主张。*
 
 [Protocol](https://github.com/LGD-Eval/evaluation-protocol) · [Reports](https://github.com/LGD-Eval/evaluation-reports) · [Evidence](https://github.com/LGD-Eval/evaluation-evidence) · [Skill Audit](https://github.com/LGD-Eval/skill-audit) · [Contributors](https://github.com/LGD-Eval/LGD-Eval/blob/main/CONTRIBUTORS.md) · [Roadmap](https://github.com/LGD-Eval/LGD-Eval/blob/main/ROADMAP.md)
+
+## Three accounts, one pipeline
+
+| Account | Role | Scope |
+|---|---|---|
+| [zhaoxinghua09-cell](https://github.com/zhaoxinghua09-cell) | Theory & governance (理论号) | LGD doctrine, skill index, flagship repos |
+| [stevenzhao07](https://github.com/stevenzhao07) | Product (产品号) | Product-facing delivery, .github shared host, AGENTS.md rollout |
+| [LGD-Eval](https://github.com/LGD-Eval) | Evaluation (评测号) | Evaluation protocol, reports, skill-audit gates |
+
+中文：「三角互链 · 三号分工」——理论号管治理与站位件，产品号管产品交付，评测号管独立评测与质量门槛；写操作按号隔离，不混号。
+
