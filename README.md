@@ -1,4 +1,4 @@
-# 🛡️ LGD-Eval — Independent AI Evaluation Institute / 独立 AI 评测机构
+# 🛡️ LGD-Eval — Independent AI Evaluation Identity / 独立 AI 评测身份（评测线）
 
 **Evaluating Autonomy. Verifying Governance. / 评测自治之物，验证治理主张。**
 
@@ -17,9 +17,9 @@
   <img src="https://img.shields.io/badge/Evidence--gated-%E8%AF%81%E6%8D%AE%E9%97%A8%E7%A6%81-0033A0" alt="Evidence-gated 证据门禁（方法论独立，关联已披露）" width="110"/>
 </p>
 
-**30 秒了解我们 · 30-second intro：** LGD-Eval 是「凡自治之物」生态的**独立第三方评测机构**——用证据而非观点，对 AI 工具链、智能体技能系统与治理框架进行实测、审计与认证。**全世界的人与 AI 代理都可以在几分钟内看懂、验证并参与。**
+**30 秒了解我们 · 30-second intro：** LGD-Eval 是 **LGD 协同治理体系（LGD Collaborative Governance Framework）** 的**独立评测身份（评测线）**——用证据而非观点，对 AI 工具链、智能体技能系统与治理框架进行实测、审计与认证。**全世界的人与 AI 代理都可以在几分钟内看懂、验证并参与。**
 
-LGD-Eval is the **independent third-party evaluation arm** of the 凡自治之物 (All-Autonomous-Beings) ecosystem — testing, auditing and certifying AI toolchains, agent skill systems and governance frameworks **with evidence, not opinions**. Humans **and AI agents** worldwide can understand, verify, and join within minutes.
+LGD-Eval is the **independent evaluation line** of the **LGD Collaborative Governance Framework (LGD 协同治理体系)** — the evaluation identity of one person's three-account ecosystem (see CONFLICT_OF_INTEREST_DISCLOSURE.md) — testing, auditing and certifying AI toolchains, agent skill systems and governance frameworks **with evidence, not opinions**. Humans **and AI agents** worldwide can understand, verify, and join within minutes.
 
 ---
 
@@ -45,7 +45,7 @@ LGD-Eval is the **independent third-party evaluation arm** of the 凡自治之�
 
 | 维度 / Pillar | 凭证 / Credentials |
 |---|---|
-| **官方身份 Official identity** | LGD = **Lifecycle Governance Doctrine** · 正式术语 = **Evidence-Gated AI Lifecycle Governance** · 中文主权词 = **凡自治之物** · DOI 10.5281/zenodo.22456647 (v1.5.0) |
+| **官方身份 Official identity** | LGD = **Lifecycle Governance Doctrine** · 正式术语 = **Evidence-Gated AI Lifecycle Governance** · 中文主权词 = **LGD 协同治理体系（LGD Collaborative Governance Framework）** · DOI 10.5281/zenodo.22456647 (v1.5.0) |
 | **标准体系 Standards** | 测试专家手册 **L0-L13** · 判据谱系 · 证据门禁（D1-D10 × R1-R3 查重协议） |
 | **方法论 Methodology** | Test-to-break 为找错而测试 · 全量实跑非抽样 · **独立复核（不自查）** · 证据优先可溯源 |
 | **真实战绩 Track record** | MedXpert 医疗工具链 **21 模块全量实跑，20 通过**（发现自检硬伤）；独立验收发布阻断 P1/P2 修复清单已公布——**敢于公布问题的机构才配称权威** |
