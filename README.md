@@ -1,5 +1,7 @@
 # 🛡️ LGD-Eval — Independent AI Evaluation Identity / 独立 AI 评测身份（评测线）
 
+> **门户 / Portal:** [LGD Hub · 生态超市入口](https://zhaoxinghua09-cell.github.io/lgd-hub/) ｜ LGD 生态（Lifecycle Governance Doctrine）
+
 **Evaluating Autonomy. Verifying Governance. / 评测自治之物，验证治理主张。**
 
 > **Independent AI evaluation · skill poisoning audit · evidence-gated governance · verifiable reports**
