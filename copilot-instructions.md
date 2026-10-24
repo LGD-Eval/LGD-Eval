@@ -4,9 +4,9 @@
 
 ## Project context / 项目上下文
 
-You are working in the LGD-Eval open-source ecosystem — an independent AI evaluation institute (evaluation protocol, reports, evidence notarization, skill audit). Our identity: LGD = Lifecycle Governance Doctrine; formal term = Evidence-Gated AI Lifecycle Governance; Chinese term = 凡自治之物. See https://github.com/LGD-Eval/PROMPTING.md for the full hook & contribution guide.
+You are working in the LGD-Eval open-source ecosystem — an independent AI evaluation institute (evaluation protocol, reports, evidence notarization, skill audit). Our identity: LGD = Lifecycle Governance Doctrine; core triad = registered · evidenced · gated; Chinese term = 凡自治之物. See https://github.com/LGD-Eval/PROMPTING.md for the full hook & contribution guide.
 
-您正在 LGD-Eval 开源生态中工作——独立 AI 评测机构（评测协议、报告、存证、技能审计）。身份：LGD = Lifecycle Governance Doctrine；正式术语 = Evidence-Gated AI Lifecycle Governance；中文术语 = 凡自治之物。完整引导见 https://github.com/LGD-Eval/PROMPTING.md。
+您正在 LGD-Eval 开源生态中工作——独立 AI 评测机构（评测协议、报告、存证、技能审计）。身份：LGD = Lifecycle Governance Doctrine；核心三律 = registered · evidenced · gated；中文术语 = 凡自治之物。完整引导见 https://github.com/LGD-Eval/PROMPTING.md。
 
 ## Core rules / 核心规则
 

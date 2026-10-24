@@ -48,7 +48,7 @@
 
 | # | 声明 | 时间锚（E1） | 发布记录（E2） | 查重结论（E4） | 版本化（E5） |
 |---|---|---|---|---|---|
-| 1 | LGD 全程治理论（Evidence-Gated AI Lifecycle Governance；有籍·有证·有门禁） | Zenodo 概念 DOI 10.5281/zenodo.22456647；papers 各 .ots | P0 v1.2 en+zh（DOI 版本 10.5281/zenodo.23019507）；P2/P5 SSRN 提交稿 | 查重协议执行（多轮多维度，见存证） | lgd-theory/papers + lgd-glossary |
+| 1 | LGD 全程治理论（registered · evidenced · gated；有籍·有证·有门禁） | Zenodo 概念 DOI 10.5281/zenodo.22456647；papers 各 .ots | P0 v1.2 en+zh（DOI 版本 10.5281/zenodo.23019507）；P2/P5 SSRN 提交稿 | 查重协议执行（多轮多维度，见存证） | lgd-theory/papers + lgd-glossary |
 | 2 | 治理可判定性学说（P0 论文正式名） | 论文 .ots | 双语 v1.2 | 查重通过 | P0 论文 + glossary |
 | 3 | 治理不可能地图（P5） | 论文 .ots | v0.3 en+zh | 查重通过 | P5 论文 |
 | 4 | 静默失败评测域（Silent Failure as an evaluation domain） | 评测线 .ots（存证） | 评测协议 + 本登记表 | 四查无撞车 | 测试专家手册 L 级 + glossary |

@@ -30,7 +30,7 @@
         └──────────────────────────────────────────────┘
 ```
 
-**理论栈（THEORY）**：LGD 全程治理论（Evidence-Gated AI Lifecycle Governance：有籍·有证·有门禁）、治理可判定性学说（P0）、批判原则（P2）、ACD 回测（P3）、治理不可能地图（P5）、静默失败目录、三权闭环、首创证据、内外锚。
+**理论栈（THEORY）**：LGD 全程治理论（registered · evidenced · gated：有籍·有证·有门禁）、治理可判定性学说（P0）、批判原则（P2）、ACD 回测（P3）、治理不可能地图（P5）、静默失败目录、三权闭环、首创证据、内外锚。
 **方法论栈（METHOD）**：测试专家手册 L0-L13、多判官+人工锚定、偏倚控制（AB/BA/风格归一/κ）、GRADE 式证据分级、QUADAS 式域级偏倚、标准映射（OWASP/NIST/ISO/MITRE/EU）。
 **评测栈（EVALUATION）**：主动评测制度、五级解读（Verified→Preliminary）、报告八段结构、程序正义（14 天回应/24h 更正/申诉并陈）。
 

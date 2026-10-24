@@ -60,7 +60,7 @@ LGD-Eval（评测号）—————— 独立验证 Evaluation verifies
 - **利益隔离**：评测号不因产品号/理论号的关系改变结论（中立隔离红线）。
 - **不自查**：产品号/理论号不得自查自证；由评测号独立复核。
 - **互通不越权**：引流与互引是链接级协作，不替代各自职责。
-- **口径一致**：官方术语（Lifecycle Governance Doctrine / Evidence-Gated AI Lifecycle Governance / 凡自治之物）三号统一。
+- **口径一致**：官方术语（Lifecycle Governance Doctrine / registered · evidenced · gated / 凡自治之物）三号统一。
 
 ---
 

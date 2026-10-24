@@ -27,7 +27,7 @@
 ### A3. 它占据基础设施层生态位（前景）
 - AI 自治是确定性趋势；评测/审计/治理是它的**基础设施层**——早期占位持续累积
 - 三权闭环：理论（zhaoxinghua09-cell）→ 产品（stevenzhao07）→ 评测（LGD-Eval）
-- 官方身份：LGD = Lifecycle Governance Doctrine · Evidence-Gated AI Lifecycle Governance · 凡自治之物
+- 官方身份：LGD = Lifecycle Governance Doctrine · registered · evidenced · gated · 凡自治之物
 
 ### A4. 前期参与有真实回报
 - 标准共同署名（测试专家手册 L0-L13 塑造权）

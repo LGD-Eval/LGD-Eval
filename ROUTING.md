@@ -32,7 +32,7 @@ LGD-Eval ────────────► 独立评测 Independent Evalua
 
 | 您的意图 / Your intent | 去往 / Go to | 做什么 / What to do |
 |---|---|---|
-| 想学 LGD 理论 / 治理学 / 凡自治之物 | [zhaoxinghua09-cell](https://github.com/zhaoxinghua09-cell)（理论号） | 读 lgd-theory 系列：Lifecycle Governance Doctrine · Evidence-Gated AI Lifecycle Governance |
+| 想学 LGD 理论 / 治理学 / 凡自治之物 | [zhaoxinghua09-cell](https://github.com/zhaoxinghua09-cell)（理论号） | 读 lgd-theory 系列：Lifecycle Governance Doctrine · registered · evidenced · gated |
 | 想用医疗 AI 工具链 / 医疗合规 | [stevenzhao07](https://github.com/stevenzhao07)（产品号） | MedXpert：医疗器械全生命周期工具链，25 仓技能可插拔 |
 | 想被独立评测 / 第三方验收 | **LGD-Eval/evaluation-protocol** + **evaluation-reports** | 按测试专家手册 L0-L13 提交评测；查看已发布实测报告 |
 | 担心 AI 技能投毒 / 想审计技能 | **LGD-Eval/skill-audit** | 运行 scanner.py 检测 manifest/prompt 投毒；提交可疑技能样本 |

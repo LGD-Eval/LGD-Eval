@@ -9,7 +9,7 @@
 
 ## 〇、方法论内核：LGD 三律贯穿一切（The LGD core — our theory as methodology）
 
-> **理论不只在"评什么"里，也在"怎么评"里。** LGD 全程治理论（Evidence-Gated AI Lifecycle Governance · 凡自治之物 · 有籍·有证·有门禁）是评测机构的方法论内核：评测对象按其"自治之物"身份受三律审计；评测过程自身同样受三律约束。
+> **理论不只在"评什么"里，也在"怎么评"里。** LGD 全程治理论（registered · evidenced · gated · 凡自治之物 · 有籍·有证·有门禁）是评测机构的方法论内核：评测对象按其"自治之物"身份受三律审计；评测过程自身同样受三律约束。
 
 ### 0.1 评测对象按三律审计（Audit the object by the three laws）
 
@@ -44,7 +44,7 @@
 | 理论 / 方法论 | 来源（Theoretical source） | 在评测中的用法（How it enters evaluation） |
 |---|---|---|
 | **LGD 三律**（有籍·有证·有门禁） | lgd-theory（DOI 10.5281/zenodo.22456647） | 评测对象三域审计 + 评测过程纪律（见 0.1/0.2） |
-| **Evidence-Gated AI Lifecycle Governance**（证据门禁治理） | lgd-theory（论文正式名） | 报告发布前过"证据充分性门禁"：证据不足不得发布 |
+| **registered · evidenced · gated**（证据门禁治理） | lgd-theory（论文正式名） | 报告发布前过"证据充分性门禁"：证据不足不得发布 |
 | **治理可判定性学说**（P0） | lgd-theory/papers/P0-governance-determinability-doctrine-v1.2 | 判官与评测的**可判定性边界**：什么可判、什么不可判，写进范围声明 |
 | **批判原则：原则不能拯救 AI 治理**（P2） | lgd-theory/papers/P2（SSRN 提交） | 评测只认证据不认声明："宣称即通过"不被采信 |
 | **治理不可能地图**（P5） | lgd-theory/papers/P5-governance-impossibility-map-v0.3 | 评测的**不可判定域自觉**：边界处只给"待定"，不猜测 |
