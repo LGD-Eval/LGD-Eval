@@ -4,7 +4,8 @@
 > Publisher / 发布方：LGD-Eval（评测号，github.com/LGD-Eval）
 > Effective / 生效：2026-10-14（第三方对等监督评估 A 组整改 · 披露型路线）
 > Language policy / 语言政策：英文在前，中文在后，两种语言均完整、不缩写。
-> Scope / 范围：本文件适用于 LGD-Eval 组织全部 5 个公开仓库及其对外发布内容。
+> Scope / 范围：本文件适用于 LGD-Eval 账号下的全部公开仓库及其对外发布内容。账号的公开仓库会增删，本文件不写死仓库数量——实时清单以 GitHub 账号页为准。
+> Scope: this document applies to every public repository under the LGD-Eval account and to everything published from them. The account's repository list changes, so no repository count is hard-coded here; the live list on the GitHub account page is authoritative.
 
 ---
 
@@ -68,9 +69,10 @@
 
 | 时间 | 修正 |
 |---|---|
-| 2026-10-14 | 本文件上线；主仓 README 增加披露链接与定位句；evaluation-protocol README"无利益关系"表述修正为"无控制性利益关系（关联见 COI 披露）"；evaluation-reports README 标注 MedXpert 为关联方评测 |
+| 2026-10-14 | 本文件上线；主仓 README 增加披露链接与定位句；evaluation-protocol README"无利益关系"表述**应**修正为"无控制性利益关系（关联见 COI 披露）"——⚠️ **该项实际未执行**，2026-11-01 外人视角复核时发现并补正；evaluation-reports README 标注 MedXpert 为关联方评测（该项已执行） |
+| 2026-11-01 | 外人视角（未登录访客）复核三项并已修正：① evaluation-protocol README 页首「中立第三方」改为关联关系口径，与本文件第 2、3 节一致；② 主仓 README「从不评测自有产品 / 不自查自有产物」这一**绝对主张**改为「关联产品的评测按同一协议执行并在报告本体标注、且自有产物的评测不由本方自查」，与本文件第 2、3 节一致；③ 上表 2026-10-14 行中「evaluation-protocol README 表述已修正」一句与事实不符，本行予以更正——**披露记录本身出错，比披露缺失更伤信任**。同时主仓 README 的仓库数改为实时徽章，不再写死数字。 |
 
-**披露原则**：宁可公开关联关系并接受对"独立性"的审视，也不以"无关联"字样制造半遮半掩——后者一旦被证伪，损害远大于披露本身。此即 LGD 治理学的透明元方法在本机构的自我应用。
+**披露原则**：宁可公开关联关系并接受对"独立性"的审视，也不以"无关联"字样制造半遮半掩——后者一旦被证伪，损害远大于披露本身。**更正记录同样受此原则约束：发现自己写错就写明写错，不静默覆盖。** 此即 LGD 治理学的透明元方法在本机构的自我应用。
 
 ---
 
