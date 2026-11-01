@@ -59,9 +59,9 @@ LGD-Eval is the **independent evaluation line** of the **Lifecycle Governance Do
 
 ## ⚖️ 中立声明 · Neutrality Statement
 
-> LGD-Eval operates with **strict conflict-of-interest separation**: we never review our own products; every evaluation is re-verified by an independent agent before release; evidence is timestamped and hash-anchored; nothing is published without verifiable provenance.
+> LGD-Eval operates with **disclosed conflict-of-interest separation**: evaluations of affiliated products run under the same protocol and are labelled as affiliated-party evaluations on the report itself; the evaluation of our own products is never self-assessed; every evaluation is re-verified by an independent agent before release; evidence is timestamped and hash-anchored; nothing is published without verifiable provenance.
 >
-> LGD-Eval 实行**严格利益隔离**：不自查自有产物；所有评测发布前由独立智能体复核；证据经时间戳与哈希锚定；无溯源证据不发布。
+> LGD-Eval 实行**已披露的利益隔离**：关联产品的评测按同一协议执行，并在报告本体标注为「关联方评测」；自有产物的评测不由本方自查；所有评测发布前由独立智能体复核；证据经时间戳与哈希锚定；无溯源证据不发布。
 >
 > **关联披露（S2 整改 2026-10-15）**：本机构与 [zhaoxinghua09-cell](https://github.com/zhaoxinghua09-cell)（理论号）与 [stevenzhao07](https://github.com/stevenzhao07)（产品号）同属一个运营生态——**方法论独立不等于无关联，我们选择透明**。完整披露与隔离机制见 [CONFLICT_OF_INTEREST_DISCLOSURE.md](CONFLICT_OF_INTEREST_DISCLOSURE.md)。
 > **Affiliation disclosure (S2 fix 2026-10-15)**: this institute shares one operating ecosystem with [zhaoxinghua09-cell](https://github.com/zhaoxinghua09-cell) (theory) and [stevenzhao07](https://github.com/stevenzhao07) (product). Methodological independence is not the same as no affiliation — we choose transparency. Full disclosure and separation mechanisms: [CONFLICT_OF_INTEREST_DISCLOSURE.md](CONFLICT_OF_INTEREST_DISCLOSURE.md).
@@ -129,20 +129,24 @@ Theory 理论号 → Products 产品号 → Evaluation 评测号 →（证据反
 
 | 排名 / Rank | 评测对象 / Target | 领域 / Domain | 实测得分 / Score | 认证等级 / Tier | 证据 / Evidence |
 |---|---|---|---|---|---|
-| 🥇 #1 | [MedXpert 医疗 AI 工具链](https://github.com/stevenzhao07/medical-ai-toolkit) | 医疗器械 AI / Medical-device AI | **20/21 模块通过（95.2%）** | Evaluated + Audited | [实测报告](https://github.com/LGD-Eval/evaluation-reports)（全量实跑，非抽样） |
+| 🥇 #1 | [MedXpert 医疗 AI 工具链](https://github.com/stevenzhao07/medical-ai-toolkit) | 医疗器械 AI / Medical-device AI | **20/21 模块通过（95.2%）** | Evaluated + Audited · **关联方评测** | [实测报告](https://github.com/LGD-Eval/evaluation-reports)（全量实跑，非抽样） |
+
+> 榜单中标注「关联方评测」的条目，其评测方与被评方在同一运营生态内，关联关系已披露；这类条目的独立性由证据链与复核机制保证，**不以「无关联」保证**。
+> Entries marked "关联方评测 / affiliated-party evaluation" involve an affiliated evaluated party, disclosed in [CONFLICT_OF_INTEREST_DISCLOSURE.md](CONFLICT_OF_INTEREST_DISCLOSURE.md); for those, independence is delivered by the evidence chain and re-verification, **not by claiming no affiliation**.
 
 > 🎯 **想上榜？** 提交评测申请：① 打开 [evaluation-protocol](https://github.com/LGD-Eval/evaluation-protocol) 读 L0-L13；② 提一个 issue（含产品仓库地址、用途、已有证据）；③ 独立评测完成后，达阈值即可上榜并解锁**认证徽章 + 首页广告位 + AI 生态推荐**。
 > Want on the board? Open an issue on evaluation-protocol with your repo, use-case and existing evidence. Pass the threshold and unlock certification badges + homepage ad slot + AI-ecosystem recommendations.
 
 ## 📊 实时数据 · Live Stats（数字即证据 Numbers are evidence）
 
-> 徽章由 GitHub API 实时生成；下方文字表为 AI 精确解析（采集于 2026-10-14，实测值）。Badges are live from the GitHub API; the tables below are exact machine-readable data (collected 2026-10-14).
+> 徽章由 GitHub API 实时生成；下方文字表为 AI 精确解析（采集于 2026-10-14，实测值）。**仓库数以实时徽章为准**——账号下的仓库会增删，写死数字必然与实况脱节。
+> Badges are live from the GitHub API; the tables below are exact machine-readable data (collected 2026-10-14). **The repository count is live from the badge** — repositories are added and removed, and a hard-coded number goes stale.
 
 **账号 Account · LGD-Eval**
 
 | Metric | Value |
 |---|---|
-| Public repos 公开仓库 | 5 |
+| Public repos 公开仓库 | ![repos](https://img.shields.io/github/repos/LGD-Eval/LGD-Eval) |
 | Followers 关注者 | 0（新号，成长中 / new account, growing） |
 | 账号创建 Created | 2026-10-14 |
 | 评测看板 Evaluation Board | [projects/3](https://github.com/users/LGD-Eval/projects/3)（10 个 good first issues 已上板） |
@@ -196,7 +200,7 @@ Theory 理论号 → Products 产品号 → Evaluation 评测号 →（证据反
 | Repo / 仓库 | 定位 / Role |
 |---|---|
 | [evaluation-protocol](https://github.com/LGD-Eval/evaluation-protocol) | 评测协议 · 测试专家手册 L0-L13（双语） |
-| [evaluation-reports](https://github.com/LGD-Eval/evaluation-reports) | 独立实测报告（MedXpert 首份中立评测） |
+| [evaluation-reports](https://github.com/LGD-Eval/evaluation-reports) | 实测报告（首份为 MedXpert 关联方评测，关联关系见 COI 披露） |
 | [evaluation-evidence](https://github.com/LGD-Eval/evaluation-evidence) | 存证 · SHA-256/时间戳/区块链锚定 |
 | [skill-audit](https://github.com/LGD-Eval/skill-audit) | 技能审计 · scanner.py 投毒检测 |
 
