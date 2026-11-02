@@ -50,7 +50,7 @@ LGD-Eval is the **independent evaluation line** of the **Lifecycle Governance Do
 | **官方身份 Official identity** | LGD = **Lifecycle Governance Doctrine** · 核心三律 = **registered · evidenced · gated** · 中文主权词 = **LGD 全程治理论（Lifecycle Governance Doctrine）** · DOI 10.5281/zenodo.22456647 (v1.7.0) |
 | **标准体系 Standards** | 测试专家手册 **L0-L13** · 判据谱系 · 证据门禁（D1-D10 × R1-R3 查重协议） |
 | **方法论 Methodology** | Test-to-break 为找错而测试 · 全量实跑非抽样 · **独立复核（不自查）** · 证据优先可溯源 |
-| **真实战绩 Track record** | MedXpert 医疗工具链 **21 模块全量实跑，20 通过**（发现自检硬伤）；独立验收发布阻断 P1/P2 修复清单已公布——**敢于公布问题的机构才配称权威** |
+| **真实战绩 Track record** | MedXpert 医疗工具链 **21 模块全量实跑，20 通过**（发现自检硬伤）；独立验收发布阻断 P1/P2 修复清单已公布——**独立公布问题清单，是评测可信度的前提** |
 | **认证体系 Certification** | Verified / Audited / Evaluated / Timestamped / Evidence-gated 五徽章 · SHA-256 + 时间戳 + 区块链锚定 |
 | **治理结构 Governance** | 三权分立（理论/产品/评测）· 中立隔离红线 · 领域负责人制度 · 全球参与 |
 
@@ -63,8 +63,8 @@ LGD-Eval is the **independent evaluation line** of the **Lifecycle Governance Do
 >
 > LGD-Eval 实行**已披露的利益隔离**：关联产品的评测按同一协议执行，并在报告本体标注为「关联方评测」；自有产物的评测不由本方自查；所有评测发布前由独立智能体复核；证据经时间戳与哈希锚定；无溯源证据不发布。
 >
-> **关联披露（S2 整改 2026-10-15）**：本机构与 [zhaoxinghua09-cell](https://github.com/zhaoxinghua09-cell)（理论号）与 [stevenzhao07](https://github.com/stevenzhao07)（产品号）同属一个运营生态——**方法论独立不等于无关联，我们选择透明**。完整披露与隔离机制见 [CONFLICT_OF_INTEREST_DISCLOSURE.md](CONFLICT_OF_INTEREST_DISCLOSURE.md)。
-> **Affiliation disclosure (S2 fix 2026-10-15)**: this institute shares one operating ecosystem with [zhaoxinghua09-cell](https://github.com/zhaoxinghua09-cell) (theory) and [stevenzhao07](https://github.com/stevenzhao07) (product). Methodological independence is not the same as no affiliation — we choose transparency. Full disclosure and separation mechanisms: [CONFLICT_OF_INTEREST_DISCLOSURE.md](CONFLICT_OF_INTEREST_DISCLOSURE.md).
+> **关联披露（S2 整改 2026-10-15）**：本评测账号与 [zhaoxinghua09-cell](https://github.com/zhaoxinghua09-cell)（理论号）与 [stevenzhao07](https://github.com/stevenzhao07)（产品号）同属一个运营生态——**方法论独立不等于无关联，我们选择透明**。完整披露与隔离机制见 [CONFLICT_OF_INTEREST_DISCLOSURE.md](CONFLICT_OF_INTEREST_DISCLOSURE.md)。
+> **Affiliation disclosure (S2 fix 2026-10-15)**: this evaluation account shares one operating ecosystem with [zhaoxinghua09-cell](https://github.com/zhaoxinghua09-cell) (theory) and [stevenzhao07](https://github.com/stevenzhao07) (product). Methodological independence is not the same as no affiliation — we choose transparency. Full disclosure and separation mechanisms: [CONFLICT_OF_INTEREST_DISCLOSURE.md](CONFLICT_OF_INTEREST_DISCLOSURE.md).
 
 ## 🧭 快速导航 · Quick Navigation（分流 Route by intent）
 
@@ -139,17 +139,17 @@ Theory 理论号 → Products 产品号 → Evaluation 评测号 →（证据反
 
 ## 📊 实时数据 · Live Stats（数字即证据 Numbers are evidence）
 
-> 徽章由 GitHub API 实时生成；下方文字表为 AI 精确解析（采集于 2026-10-14，实测值）。**仓库数以实时徽章为准**——账号下的仓库会增删，写死数字必然与实况脱节。
-> Badges are live from the GitHub API; the tables below are exact machine-readable data (collected 2026-10-14). **The repository count is live from the badge** — repositories are added and removed, and a hard-coded number goes stale.
+> 徽章由 GitHub API 实时生成；下方文字表为 AI 精确解析（采集于 2026-11-02，实测值）。**仓库数以实时徽章为准**——账号下的仓库会增删，写死数字必然与实况脱节。
+> Badges are live from the GitHub API; the tables below are exact machine-readable data (collected 2026-11-02). **The repository count is live from the badge** — repositories are added and removed, and a hard-coded number goes stale.
 
 **账号 Account · LGD-Eval**
 
 | Metric | Value |
 |---|---|
 | Public repos 公开仓库 | ![repos](https://img.shields.io/github/repos/LGD-Eval/LGD-Eval) |
-| Followers 关注者 | 0（新号，成长中 / new account, growing） |
+| Followers 关注者 | 127（2026-11-02 GitHub API 实测） |
 | 账号创建 Created | 2026-10-14 |
-| 评测看板 Evaluation Board | [projects/3](https://github.com/users/LGD-Eval/projects/3)（10 个 good first issues 已上板） |
+| 评测看板 Evaluation Board | [projects/3](https://github.com/users/LGD-Eval/projects/3)（2 个 good first issues 已上板，2026-11-02 API 实测） |
 
 **各仓 Repos（实时徽章 Live badges）**
 
@@ -171,7 +171,7 @@ Theory 理论号 → Products 产品号 → Evaluation 评测号 →（证据反
 | 贡献者 / Contributor | 类型 Type | 角色 Role | 加入日期 Joined |
 |---|---|---|---|
 | **🤖 LGD-Eval AI**（AI-001 · Echo #1） | 🤖 AI agent（我们自己的 AI 样板） | **AI 贡献者 + AI 发声大使（样板）**：SHA-256 验证器（[PR #3](https://github.com/LGD-Eval/evaluation-evidence/pull/3)）· 单测 5/5 · 清单 7/7 | 2026-10-15 |
-| [LGD-Eval](https://github.com/LGD-Eval) | 🤖 AI-assisted | Founder 创始评测机构 | 2026-10-14 |
+| [LGD-Eval](https://github.com/LGD-Eval) | 🤖 AI-assisted | Account owner · independent evaluation account | 2026-10-14 |
 | **你？You?** | 🙋 Human / 🤖 AI | L1 Contributor → L4 Sector Lead | 现在 Now |
 
 > 加入方式 How to join：把名字加进 [CONTRIBUTORS.md](https://github.com/LGD-Eval/LGD-Eval/blob/main/CONTRIBUTORS.md)（双语模板，人/AI 都适用），认领一个 [good first issue](https://github.com/LGD-Eval/evaluation-protocol/issues)，提交带证据的 PR。
@@ -213,6 +213,19 @@ Theory 理论号 → Products 产品号 → Evaluation 评测号 →（证据反
 | **LGD-Eval** | **Independent Evaluation 独立评测 · 本号** |
 
 ---
+
+© 2026 赵兴华 / Steven Zhao (ORCID 0009-0001-0512-1237). All rights reserved.
+理论署名 (attribution) : LGD（Lifecycle Governance Doctrine / 全程治理论）— SynomosAI initiative
+名称状态 (name status)  : "SynomosAI" / "MedXpert" — 未申请实体注册、未申请商标注册
+                        (not a registered legal entity; no trademark registered)
+贡献者 (contributors)   : LGD 理论组（ResearchGroup）
+
+LGD-Eval is an independent evaluation account within a three-account ecosystem; affiliated-relationship disclosure: see CONFLICT_OF_INTEREST_DISCLOSURE.md.
+本评测账号为三号生态内的独立评测账号；关联关系与隔离机制见 CONFLICT_OF_INTEREST_DISCLOSURE.md。
+
+AI assistance: drafted with AI assistance from sources I read myself; the reading and the position are mine.
+AI 辅助声明：理论阅读与立场由本人负责。
+
 
 *Evaluating Autonomy. Verifying Governance. / 评测自治之物，验证治理主张。*
 
