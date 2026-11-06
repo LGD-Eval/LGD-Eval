@@ -288,7 +288,6 @@ def evaluate_skill(skill_path):
     elapsed = time.time() - start_time
     
     print("=" * 70)
-    print(f"  Trust Score: {score}/100")
     
     if score >= 90:
         grade = "A+"
@@ -306,7 +305,8 @@ def evaluate_skill(skill_path):
         grade = "D"
         emoji = "⚠️"
     
-    print(f"  等级: {emoji} {grade}")
+    # 对外唯一分数：一行给完，不分列其他分数
+    print(f"  LGD Trust Score: {score}/100  {emoji} {grade}")
     print(f"  评测耗时: {elapsed:.2f}s")
     print("=" * 70)
     
@@ -356,16 +356,17 @@ def evaluate_skill(skill_path):
     return score, grade, dims, findings, warnings
 
 def render_ascii_bars(dims):
-    """五维雷达（ASCII 条形图，商店/终端兜底）。"""
+    """扣分明细（得分/满分）。刻意不输出百分比，避免出现第二套分数。"""
     MAXS = {"结构完整性": 25, "目录结构": 15, "文档质量": 20, "安全": 25, "生态兼容性": 15}
     order = ["结构完整性", "目录结构", "文档质量", "安全", "生态兼容性"]
     labels = {"结构完整性": "结构", "目录结构": "目录", "文档质量": "文档", "安全": "安全", "生态兼容性": "生态"}
-    lines = ["  📊 五维雷达（百分制）:"]
+    lines = ["  📋 扣分明细（得分 / 满分）:"]
     for k in order:
-        r = dims.get(k, 0) / MAXS[k] * 100
-        filled = int(round(r / 10))
+        got = dims.get(k, 0)
+        ratio = got / MAXS[k] if MAXS[k] else 0
+        filled = int(round(ratio * 10))
         bar = "█" * filled + "░" * (10 - filled)
-        lines.append(f"    {labels[k]:<4} {bar} {r:.0f}")
+        lines.append(f"    {labels[k]:<4} {bar} {got}/{MAXS[k]}")
     return "\n".join(lines)
 
 
