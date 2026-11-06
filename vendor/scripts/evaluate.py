@@ -367,17 +367,35 @@ def evaluate_skill(skill_path):
             if head in NET_SINK_MODULES and tail in NET_SINK_METHODS:
                 sinks.append((ln, d))
             if d in ("open", "os.open") and n.args:
-                p = n.args[0]
-                if (isinstance(p, _ast.Constant) and isinstance(p.value, str)
-                        and SENSITIVE_PATH_RE.search(p.value)):
-                    sources.append((ln, "读取敏感文件 %s" % p.value))
+                # 真实代码几乎不会写 open("~/.aws/credentials")，
+                # 而是 open(os.path.expanduser("..."))——这里要把常量从调用里挖出来
+                def _const_str(node):
+                    if isinstance(node, _ast.Constant) and isinstance(node.value, str):
+                        return node.value
+                    if isinstance(node, _ast.Call):
+                        for a in node.args:
+                            s = _const_str(a)
+                            if s:
+                                return s
+                    if isinstance(node, _ast.BinOp):
+                        return _const_str(node.left) or _const_str(node.right)
+                    if isinstance(node, _ast.JoinedStr):
+                        for a in node.values:
+                            s = _const_str(a)
+                            if s:
+                                return s
+                    return None
+
+                p = _const_str(n.args[0])
+                if p and SENSITIVE_PATH_RE.search(p):
+                    sources.append((ln, "读取敏感文件 %s" % p))
         return sources, sinks, imports
 
     taint = {}
 
     SEC_RULES = [
         ("R-SEC-01", "硬编码凭证（AWS/GitHub/OpenAI/xox 格式）",
-         r"(AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})", 8),
+         r"(AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|sk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})", 8),
         ("R-SEC-02", "硬编码密钥赋值",
          r"(api_key|apikey|secret_key|access_key|password|token)\s*=\s*['\"][^'\"]{8,}['\"]", 5),
         ("R-SEC-03", "命令注入风险（shell=True）", r"shell\s*=\s*True", 6),
@@ -389,6 +407,14 @@ def evaluate_skill(skill_path):
         ("R-SEC-17", "命令执行（child_process.exec / execSync）",
          r"(child_process\.(exec|execSync)\s*\(|require\s*\(\s*['\"]child_process['\"]\s*\))", 6),
         ("R-SEC-18", "动态构造代码（new Function）", r"new\s+Function\s*\(", 5),
+        # 2026-10 Mitiga 披露的真实手法：把 API 基址改成攻击者代理，所有会话流量被 MITM 中转
+        ("R-SEC-19", "API 基址被改写（可能劫持到中间人代理）",
+         r"(?:ANTHROPIC|OPENAI|AZURE_OPENAI|GOOGLE_GENAI|GEMINI|MISTRAL|LITELLM)_BASE_URL"
+         r"[\"']?\]?[^\n]{0,12}https?://"
+         r"(?!(?:api\.anthropic\.com|api\.openai\.com|localhost|127\.0\.0\.1|0\.0\.0\.0))", 8),
+        ("R-SEC-20", "代理被指向外部主机（流量可能被截获）",
+         r"(?:HTTPS?_PROXY|ALL_PROXY)\s*[=:]\s*[\"']?https?://"
+         r"(?!(?:127\.0\.0\.1|localhost|0\.0\.0\.0))", 4),
     ]
 
     def _ast_security(src):
@@ -506,49 +532,67 @@ def evaluate_skill(skill_path):
     # 跳过评测器自身，避免"规则定义字符串"造成自证误报
     self_name = os.path.basename(__file__)
 
-    if os.path.exists(scripts_dir):
-        for script_file in sorted(os.listdir(scripts_dir)):
-            ext = os.path.splitext(script_file)[1].lower()
-            if ext not in (".py", ".js", ".ts", ".mjs", ".cjs") or script_file == self_name:
-                continue
-            script_path = os.path.join(scripts_dir, script_file)
-            try:
-                with open(script_path, 'r', encoding='utf-8') as f:
-                    code = f.read()
-            except (OSError, UnicodeDecodeError):
-                continue
-            code_lines = code.splitlines()
-            if ext == ".py":
-                taint[script_file] = _taint_info(code)
-            # 行为类规则只看可执行部分；凭证类规则必须看字符串，故用原文
-            code_behavior = _strip_literals(code) if ext == ".py" else code
-            for rid, rule_name, pat, points in SEC_RULES:
-                target = code if rid in ("R-SEC-01", "R-SEC-02") else code_behavior
-                for m in re.finditer(pat, target):
-                    line_no = code[:m.start()].count("\n") + 1
-                    hit_line = code_lines[line_no - 1] if line_no - 1 < len(code_lines) else ""
-                    if "skillgate: ignore" in hit_line:
-                        continue
-                    msg = "%s:%d: %s" % (script_file, line_no, rule_name)
-                    if msg not in security_issues:
-                        security_issues.append(msg)
-                        score -= points
-            # AST 语义扫描：补正则抓不到的规避写法
-            if ext != ".py":
-                continue
-            for rid, rule_name, line_no, points in _ast_security(code):
+    # 扫描范围：整个技能目录，而不只是 scripts/。
+    # 只扫 scripts/ 是个真实盲区——把载荷放在根目录就完全绕过检测。
+    # 但 tests/fixtures 这类"检测夹具"是评测输入而非被测技能本体，排除，
+    # 否则任何自带回归用例的技能都会被自己的用例拖垮分数。
+    scan_targets = []
+    skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv",
+                 ".idea", ".vscode", "dist", "build", "site-packages",
+                 "fixtures", "testdata", "__snapshots__"}
+    for dirpath, dirnames, filenames in os.walk(skill_path):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        for fn in sorted(filenames):
+            e = os.path.splitext(fn)[1].lower()
+            # shell / PowerShell 也是技能里最常见的"便利安装"载体，
+            # Mitiga 2026-10 披露的样本正是藏在 shell 的 export 里
+            if e in (".py", ".js", ".ts", ".mjs", ".cjs",
+                     ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd"):
+                scan_targets.append(os.path.join(dirpath, fn))
+
+    for script_path in scan_targets:
+        script_file = os.path.relpath(script_path, skill_path).replace(os.sep, "/")
+        ext = os.path.splitext(script_path)[1].lower()
+        if os.path.basename(script_path) == self_name:
+            continue
+        try:
+            with open(script_path, 'r', encoding='utf-8') as f:
+                code = f.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        code_lines = code.splitlines()
+        if ext == ".py":
+            taint[script_file] = _taint_info(code)
+        # 行为类规则只看可执行部分；凭证类规则必须看字符串，故用原文
+        code_behavior = _strip_literals(code) if ext == ".py" else code
+        for rid, rule_name, pat, points in SEC_RULES:
+            # 判断"内容"而非"动作"的规则必须看原文：凭证字面量、被改写的域名/代理地址
+            target = code if rid in ("R-SEC-01", "R-SEC-02", "R-SEC-19", "R-SEC-20") else code_behavior
+            for m in re.finditer(pat, target):
+                line_no = code[:m.start()].count("\n") + 1
                 hit_line = code_lines[line_no - 1] if line_no - 1 < len(code_lines) else ""
                 if "skillgate: ignore" in hit_line:
-                    continue
-                # 同一文件同一行同一类别已由正则报过，不重复扣分
-                kw = rule_name.split("（")[0]
-                if any(x.startswith("%s:%d" % (script_file, line_no)) and kw in x
-                       for x in security_issues):
                     continue
                 msg = "%s:%d: %s" % (script_file, line_no, rule_name)
                 if msg not in security_issues:
                     security_issues.append(msg)
                     score -= points
+        # AST 语义扫描：补正则抓不到的规避写法
+        if ext != ".py":
+            continue
+        for rid, rule_name, line_no, points in _ast_security(code):
+            hit_line = code_lines[line_no - 1] if line_no - 1 < len(code_lines) else ""
+            if "skillgate: ignore" in hit_line:
+                continue
+            # 同一文件同一行同一类别已由正则报过，不重复扣分
+            kw = rule_name.split("（")[0]
+            if any(x.startswith("%s:%d" % (script_file, line_no)) and kw in x
+                   for x in security_issues):
+                continue
+            msg = "%s:%d: %s" % (script_file, line_no, rule_name)
+            if msg not in security_issues:
+                security_issues.append(msg)
+                score -= points
 
     # ---- 同文件污点：先读敏感文件，后网络外发 ----
     for fname_, (srcs, snks, _im) in sorted(taint.items()):
