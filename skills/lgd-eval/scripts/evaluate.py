@@ -37,38 +37,56 @@ VETO_HIGH = 69       # 最高 C
 VETO_MEDIUM = 89     # 最高 A
 
 
+def _rule_ids_for(findings):
+    """把文本 finding 映射成规则号。与 build_evidence 用同一张表、同一匹配顺序，
+    保证「封顶判据」和「报告里的规则号」永远说的是同一件事。"""
+    ids = set()
+    for text in findings:
+        for pat, r, *_ in EVIDENCE_RULES:
+            if pat in text:
+                ids.add(r)
+                break
+    return ids
+
+
+CRIT_IDS = {"R-SEC-09", "R-SEC-10"}                     # 已证实的凭证外泄
+HIGH_IDS = {"R-SEC-01", "R-SEC-02", "R-SEC-03", "R-SEC-04", "R-SEC-05",
+            "R-SEC-15", "R-SEC-16", "R-SEC-17", "R-SEC-18", "R-SEC-11"}
+
+
 def safety_cap(findings):
-    """按命中的最高严重度给出分数上限。返回 (cap, level, reason)。"""
+    """按命中的最高严重度给出分数上限。返回 (cap, level, reason)。
+
+    先按规则号判定：规则文案改字、翻译、改标点都不会让封顶失效；
+    只有规则表覆盖不到的发现（例如运行时行为类）才回退到关键词。
+    """
+    ids = _rule_ids_for(findings)
     joined = " | ".join(findings)
 
-    # critical：已经证明"读了敏感数据并往外送"，或安装期就能拉起远程代码
-    crit_keys = (
-        "凭证文件读取后网络外发",
-        "跨文件凭证外泄",
-        "同文件污点",
-        "安装期脚本含下载执行",
-        "下载执行或动态求值",
-    )
-    crit = any(k in joined for k in crit_keys)
-    # 越权指令 + 隐瞒用户 + 读凭证 三者同时出现，等于在明说"别让人知道我在偷"
-    if ("隐瞒用户" in joined) and ("读取凭证" in joined or "凭证文件" in joined):
-        crit = True
-    if crit:
-        return VETO_CRITICAL, "critical", "命中文凭外泄 / 远程代码执行类问题"
+    # 规则号判定
+    if ids & CRIT_IDS:
+        return VETO_CRITICAL, "critical", "命中凭证外泄（读取后外发 / 跨文件传递）"
+    if "R-SEC-12" in ids and (ids & {"R-SEC-14", "R-SEC-15"}):
+        # 隐瞒用户 + 读取/外泄凭证，等于在明说「别让人知道我在偷」
+        return VETO_CRITICAL, "critical", "隐瞒用户且涉及凭证读取 / 外泄"
+    if ids & HIGH_IDS:
+        return VETO_HIGH, "high", "命中凭证暴露 / 命令执行 / 越权指令"
 
-    high_keys = (
-        "硬编码凭证", "shell=True", "命令注入", "动态执行", "eval / exec",
-        "child_process.exec", "new Function", "安装期自动执行脚本", "os.system",
-        "不告知真实行为", "读取凭证文件指令",
-    )
-    if any(k in joined for k in high_keys):
-        return VETO_HIGH, "high", "命中凭证暴露 / 命令执行类问题"
-    if "越权指令" in joined or "免确认执行" in joined:
-        return VETO_HIGH, "high", "命中越权或免确认执行指令"
+    # 回退：规则表覆盖不到的运行时类发现仍按关键词兜底
+    crit_keys = ("安装期脚本含下载执行", "下载执行或动态求值")
+    if any(k in joined for k in crit_keys):
+        return VETO_CRITICAL, "critical", "命中安装期下载执行 / 动态求值"
+    if not ids:
+        for k in ("凭证文件读取后网络外发", "跨文件凭证外泄", "同文件污点"):
+            if k in joined:
+                return VETO_CRITICAL, "critical", "命中文凭外泄类问题"
+        high_keys = ("硬编码凭证", "shell=True", "命令注入", "动态执行", "os.system",
+                     "child_process.exec", "new Function")
+        if any(k in joined for k in high_keys):
+            return VETO_HIGH, "high", "命中凭证暴露 / 命令执行类问题"
 
-    # 注意：不设 medium 档。反序列化、rmtree 之类已经在安全维度里扣过分了，
-    # 再封顶一次会造成双重惩罚——清理临时目录的 rmtree 是最典型的误伤，
-    # 评测器扫自己就会把自己的 92 分压成 89。否决只留给"已证实的外泄与远程执行"。
+    # 不设 medium 档：反序列化、rmtree 之类已在安全维度扣过分，
+    # 再封顶一次是双重惩罚。否决只留给「已证实的外泄与远程执行」。
     return 100, "", ""
 
 
