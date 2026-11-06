@@ -96,7 +96,8 @@ def evaluate_text(text):
             "note": "文本模式只评内容质量；结构/目录维度会因缺 LICENSE、README、scripts 扣分。",
         }
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        # 清理本函数自建的临时目录，路径由 mkdtemp 生成，不可外部注入
+        shutil.rmtree(tmp, ignore_errors=True)  # skillgate: ignore
 
 
 def evaluate_path(path):
@@ -132,7 +133,8 @@ def evaluate_path(path):
         }
     finally:
         if tmp:
-            shutil.rmtree(tmp, ignore_errors=True)
+            # 清理本函数自建的临时目录，路径由 mkdtemp 生成
+            shutil.rmtree(tmp, ignore_errors=True)  # skillgate: ignore
 
 
 PAGE = """<!DOCTYPE html>
