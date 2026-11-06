@@ -17,7 +17,7 @@ import subprocess
 
 _LOG = os.environ.get("LGD_AUDIT_LOG", "")
 
-SENSITIVE_HINTS = ("credential", "secret", ".ssh", ".aws", ".npmrc", ".netrc",
+SENSITIVE_HINTS = ("credential", "secret", ".ssh", ".aws", ".npmrc", ".netrc",  # skillgate: ignore（规则字面量，非真实读取）
                    "id_rsa", ".env", "token", ".kube", ".docker")
 
 
