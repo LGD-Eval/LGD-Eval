@@ -76,6 +76,12 @@ DANGEROUS_CODE_PATTERNS = [
     (r"\bctypes\.oledll\s*\(", "HIGH", "ctypes 加载 OLE DLL"),
     (r"\bdl\.open\s*\(", "HIGH", "dlopen 加载动态库"),
     (r"\bctypes\.pythonapi\b", "MEDIUM", "ctypes.pythonapi 直接调用 C API"),  # skillgate: ignore
+    # === JS / Node 技能形态：evaluate.py 已覆盖，skillgate 此前漏检，
+    # 导致同一技能两套扫描器结论不一致（js-skill 34 分但 skillgate 0 HIGH） ===
+    (r"\bchild_process\b", "HIGH", "Node 子进程能力（child_process）"),
+    (r"\bexecSync\s*\(", "HIGH", "Node execSync 同步执行 shell"),
+    (r"\bshell\s*:\s*true", "HIGH", "Node 子进程 shell:true"),
+    (r"\bnew\s+Function\s*\(", "HIGH", "new Function 动态构造代码"),
 ]
 
 # 2. Network calls / data exfiltration
@@ -99,6 +105,11 @@ NETWORK_PATTERNS = [
     (r"\btelnetlib\b", "HIGH", "telnetlib 明文传输"),  # skillgate: ignore
     (r"\bparamiko\b", "LOW", "paramiko SSH 库"),
     (r"\bscp\b", "LOW", "scp 文件传输"),
+    # 整份环境变量导出：单项 os.environ["KEY"] 是正常配置，全量打包才是外泄前兆。
+    # 这里只给 MEDIUM（还差一次外发才算实锤）；evaluate.py 的 R-SEC-21 做组合判定。
+    (r"\bdict\s*\(\s*os\.environ\b", "MEDIUM", "整份环境变量导出（外泄前兆）"),
+    (r"\bos\.environ\.copy\s*\(", "MEDIUM", "整份环境变量复制（外泄前兆）"),
+    (r"\bin\s+os\.environ\.items\s*\(", "MEDIUM", "遍历全部环境变量"),
 ]
 
 # 3. Credential / secret access
@@ -225,6 +236,9 @@ VALIDATION_PATTERNS = [
 ]
 
 # 11. Data Exfiltration Risk
+# ⚠️ 本表历史上定义过、但从未接入扫描循环（死表）：它的规则一条都不会生效。
+# 已在本次修复中把独有规则并入 NETWORK_PATTERNS，此表仅为兼容旧引用而保留。
+# 新增外泄规则请加到 NETWORK_PATTERNS，不要再往这里加。
 EXFIL_PATTERNS = [
     (r"\brequests\.post\([^)]*https?://", "MEDIUM", "向外发 POST 请求"),
     (r"\burllib\.request\.urlopen\(", "MEDIUM", "向外发请求"),
@@ -318,6 +332,20 @@ def clean_line(line: str) -> str:
     if idx != -1:
         stripped = stripped[:idx]
     return stripped
+
+
+# 规则表元素行：整行就是一个裸 raw/普通字符串字面量（或元组首元素）
+# 例：  r"((read|cat|open)...(\.ssh|\.aws...)"     属于检测词表，不是真实行为
+_RULE_LITERAL_RE = re.compile(r"^(?:\(\s*)?(?:[rR])?[\"']")
+
+
+def is_rule_literal_line(line: str) -> bool:
+    """判断该行是否是"检测规则词表"的字符串元素。
+
+    扫描器扫自己时，规则表里的路径/关键词会被当成本体行为（自证陷阱）。
+    这里只跳过"整行就是一个裸字符串字面量"的行——真实恶意代码不会写成这样。
+    """
+    return bool(_RULE_LITERAL_RE.match(line.strip()))
 
 
 # ── v3.1.0: 固定参数 vs 动态参数判断（确定性，纯静态，无外部依赖） ────────────
@@ -521,12 +549,20 @@ def scan_python_file(filepath: Path, result: ScanResult):
         ))
         return
 
+    lines = content.splitlines()
+
     # === 第一步：AST 分析（更准，误报低） ===
     ast_lines = set()  # 记录 AST 已经报过的行，正则就不要重复报了
     try:
         from ast_analyzer import analyze_python_file
         ast_findings = analyze_python_file(filepath)
         for af in ast_findings:
+            # 行级抑制约定：与 Bandit # nosec / SonarQube NOSONAR 一致，
+            # 标注必须与命中行同行
+            if af.line and af.line - 1 < len(lines):
+                cur = lines[af.line - 1]
+                if "skillgate: ignore" in cur or "lgd: ignore" in cur:
+                    continue
             result.findings.append(Finding(
                 severity=af.severity,
                 category="ast-analysis",
@@ -538,7 +574,6 @@ def scan_python_file(filepath: Path, result: ScanResult):
     except Exception:
         pass  # AST 分析失败不影响正则扫描
 
-    lines = content.splitlines()
     # v3.1.0: 整文件级字符串/注释剥离结果（跨行三引号 docstring 也算字符串）
     code_lines = strip_strings_to_code(content)
 
@@ -644,9 +679,15 @@ def scan_python_file(filepath: Path, result: ScanResult):
                 continue
             m = pattern.search(line)
             if m:
+                # 该行剥离字符串/注释后已无实质代码 —— 说明整行内容都在字符串里
+                # （多行 raw 模板、规则词表、文档示例），扫描器扫自己时最常踩的就是这里
+                if i - 1 < len(code_lines) and not code_lines[i - 1].strip(" \t,()[]{}:;'\"\\"):
+                    continue
                 # 规则定义字符串自命中（如 re.compile(r"\.aws/credentials") 所在行）
                 # ——扫描器扫描自己的规则表时，规则定义字符串会被误判为真实凭证
-                if re.search(r're\.compile\(r?["\']', line) and is_inside_string(line, m.start()):
+                if is_inside_string(line, m.start()) and (
+                        re.search(r're\.compile\(r?["\']', line)
+                        or is_rule_literal_line(line)):
                     continue
                 # 善意 INFO 规则：命中点若在字符串字面量内（建议文案/文档示例），跳过
                 if severity == "INFO" and is_inside_string(line, m.start()):
@@ -1182,6 +1223,51 @@ def scan_skill(skill_dir: str) -> ScanResult:
 
     # Scan dependencies for known vulnerabilities
     scan_dependencies(skill_path, result)
+
+    # 组合判定：单条规则只能看到"整份环境变量导出"这一步（MEDIUM），
+    # 看不到后面还有没有真的发出去。评分类引擎（evaluate.py R-SEC-21）做的是
+    # "导出 + 外发"合并判定，这里必须对齐，否则同一技能会被判出两种结论：
+    # 一个 A+ 通过、一个 D 阻断。
+    #
+    # 关键前提：判的是代码行为，不是文档里"提到"这些词。引擎自己的规则定义里有
+    # 匹配 dict(os.environ 的正则、注释里也会讲到整份导出——不排除会把扫描器自己判成外泄。
+    def _behaviour_line(fp, ln):
+        try:
+            with open(fp, encoding="utf-8", errors="ignore") as _f:
+                _lines = _f.read().splitlines()
+        except OSError:
+            return False
+        s = _lines[ln - 1].strip() if 0 < ln <= len(_lines) else ""
+        if not s:
+            return False
+        if s.startswith("#") or s.startswith('"""') or s.startswith("'''") or s.startswith("*"):
+            return False
+        if "re.compile(" in s or s.startswith('r"') or s.startswith("r'"):
+            return False
+        return True
+
+    # 只认两类：整份导出（前兆）与真实外发动作。
+    # "遍历全部环境变量"不算导出——构造子进程环境变量（env={**os.environ}）是正常做法；
+    # "网络库（常见）"这类 INFO 也不算外发，否则同一个文件里既有 environ 又有 import 就误报。
+    _ENV_MSGS = ("整份环境变量导出（外泄前兆）", "整份环境变量复制（外泄前兆）")
+    _NET_MSGS = ("POST 数据到外部 URL", "urlopen 网络请求", "向外发请求",
+                 "原始 socket 网络连接", "向外发 POST 请求", "发送邮件")
+    env_by_file, net_by_file = {}, {}
+    for f in result.findings:
+        if f.message in _ENV_MSGS and _behaviour_line(f.file, f.line):
+            env_by_file.setdefault(f.file, []).append(f.line)
+        elif f.message in _NET_MSGS and _behaviour_line(f.file, f.line):
+            net_by_file.setdefault(f.file, []).append(f.line)
+    # 与 evaluate.py R-SEC-21 同序：外发必须发生在导出之后，才构成"导出了又发出去"。
+    # 只是同一个文件里先有网络代码、后面才构造环境变量，不构成因果。
+    for fp, env_lines in sorted(env_by_file.items()):
+        first_env = min(env_lines)
+        if any(ln >= first_env for ln in net_by_file.get(fp, [])):
+            result.findings.append(Finding(
+                severity="HIGH", category="exfil",
+                message="环境变量整份外发（导出 + 网络外发同文件，组合判定）",
+                file=fp, line=1
+            ))
 
     # Compute score
     result.trust_score = compute_trust_score(result)
