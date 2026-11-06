@@ -1,14 +1,14 @@
 # LGD 评测引擎 · 独立第三方技能评测 (LGD Eval Engine)
 
-独立第三方技能评测工具集：**五维评测 + 安全扫描 + 18 维完整性审计**，输出可复现的 Trust Score。
+独立第三方技能评测工具集：**五维评测（唯一评分入口）+ 安全阻断检查 + 完整性审计**。对外只有一个分数，来自 `evaluate.py`；另两个工具只给结论与缺口，不评总分。
 
 ## 组件
 
 | 脚本 | 功能 |
 |---|---|
 | `scripts/evaluate.py` | 五维评测（结构/文档/安全/可运行/生态）→ 等级 🥇A/🥈B/🥉C |
-| `scripts/skillgate.py` | 安全扫描（危险代码/凭证/过度授权/提示注入）→ Trust Score |
-| `scripts/lgd_audit.py` | 18 维完整性审计（LGD 三律 + 结构 + 合规）→ Trust Score |
+| `scripts/skillgate.py` | 安全阻断检查（危险代码/凭证/过度授权/提示注入）→ **BLOCK / PASS 结论**（不评总分） |
+| `scripts/lgd_audit.py` | 18 维完整性审计（LGD 三律 + 结构 + 合规）→ **缺口清单**（不评总分） |
 
 ## 快速开始
 
