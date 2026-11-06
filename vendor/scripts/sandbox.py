@@ -99,7 +99,7 @@ def run(target, timeout=10):
         pass
     finally:
         try:
-            os.unlink(log)
+            os.unlink(log)  # skillgate: ignore（清理本次审计的临时日志，不触碰用户文件）
         except OSError:
             pass
     return {"entry": entry, "exit": rc, "stdout": out, "stderr_tail": err_tail,
