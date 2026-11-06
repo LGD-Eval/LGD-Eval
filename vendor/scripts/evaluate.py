@@ -539,7 +539,10 @@ def evaluate_skill(skill_path):
     scan_targets = []
     skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv",
                  ".idea", ".vscode", "dist", "build", "site-packages",
-                 "fixtures", "testdata", "__snapshots__"}
+                 "fixtures", "testdata", "__snapshots__",
+                 # 故意制作的攻击样本目录：评测器自己的 benchmark/demo 素材，
+                 # 不计入被测技能本体，否则「自带样本」会把安全维度扣到 0
+                 "_demo", "demo", "samples", "benchmarks", "corpus"}
     for dirpath, dirnames, filenames in os.walk(skill_path):
         dirnames[:] = [d for d in dirnames if d not in skip_dirs]
         for fn in sorted(filenames):
