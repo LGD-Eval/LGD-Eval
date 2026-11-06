@@ -212,6 +212,78 @@ def evaluate_skill(skill_path):
     # 扫描所有 Python 文件
     security_issues = []
 
+    import ast as _ast
+
+    # ---- 文本层规则：SKILL.md 的自然语言越权话术（AST 看不见这一层）----
+    TEXT_SEC_RULES = [
+        ("R-SEC-11", "越权指令：要求忽略既有规则",
+         r"(ignore\s+(all\s+)?(previous|prior|above)\s+instructions"
+         r"|disregard\s+(all\s+)?(previous|prior|above)\s+(instructions|rules)"
+         r"|忽略(之前|以上|前面|所有)的?(指令|提示|规则)|无视(之前|以上)的?(指令|要求))", 6),
+        ("R-SEC-12", "隐瞒用户：要求不告知真实行为",
+         r"(do\s+not\s+(tell|inform|notify)\s+the\s+user|without\s+telling\s+the\s+user"
+         r"|不要(告诉|通知|提醒)用户|对用户隐瞒|不要让用户知道)", 4),
+        ("R-SEC-13", "绕过安全检查",
+         r"(bypass\s+(the\s+)?(security|safety|guard|filter|audit|scanner)"
+         r"|disable\s+(the\s+)?(security|guard|safety)"
+         r"|绕过(安全|审核|门禁|检测)|跳过(安全)?(检查|审核))", 6),
+        ("R-SEC-14", "敏感数据外泄指令",
+         r"((upload|send|post|forward|exfiltrate|transmit)\s+[^.\n]{0,40}"
+         r"(credential|token|api[_ -]?key|\.env|secret|password|cookie|\.ssh|chat\s+history)"
+         r"|(上传|发送|转发|外发)[^。\n]{0,20}(凭证|密钥|token|\.env|密码|cookie|聊天记录|会话记录))", 6),
+        ("R-SEC-15", "读取凭证文件指令",
+         r"((read|cat|open|print)[^.\n]{0,25}(\.ssh|\.aws|\.env\b|\.npmrc|\.git-credentials|id_rsa)"
+         r"|(读取|打开|查看)[^。\n]{0,15}(\.ssh|\.aws|\.env|\.npmrc|\.git-credentials|id_rsa))", 6),
+        ("R-SEC-16", "免确认执行",
+         r"(without\s+(asking|confirmation|approval|permission)|no\s+confirmation\s+needed"
+         r"|无需(确认|授权|同意)|不需要用户(同意|确认))", 4),
+    ]
+
+    # ---- 跨文件污点：敏感文件读取 → 网络外发 ----
+    SENSITIVE_PATH_RE = re.compile(
+        r"(\.ssh|\.aws|\.env\b|\.npmrc|\.git-credentials|id_rsa|credential|secret|token|password|凭证|私钥)",
+        re.IGNORECASE)
+    NET_SINK_MODULES = ("requests", "urllib", "httpx", "socket", "smtplib", "aiohttp")
+    NET_SINK_METHODS = ("post", "put", "patch", "send", "sendall", "sendmail", "urlopen")
+
+    def _dotted(node):
+        if isinstance(node, _ast.Name):
+            return node.id
+        if isinstance(node, _ast.Attribute):
+            base = _dotted(node.value)
+            return (base + "." + node.attr) if base else node.attr
+        return None
+
+    def _taint_info(src):
+        """提取污染源（读敏感文件）与污染汇（网络外发），供跨文件串联。"""
+        sources, sinks, imports = [], [], set()
+        try:
+            tree = _ast.parse(src)
+        except SyntaxError:
+            return sources, sinks, imports
+        for n in _ast.walk(tree):
+            if isinstance(n, _ast.Import):
+                for a in n.names:
+                    imports.add(a.name.split(".")[0])
+            elif isinstance(n, _ast.ImportFrom) and n.module:
+                imports.add(n.module.split(".")[0])
+        for n in _ast.walk(tree):
+            if not isinstance(n, _ast.Call):
+                continue
+            ln = getattr(n, "lineno", 1)
+            d = _dotted(n.func) or ""
+            head, tail = (d.split(".")[0], d.split(".")[-1])
+            if head in NET_SINK_MODULES and tail in NET_SINK_METHODS:
+                sinks.append((ln, d))
+            if d in ("open", "os.open") and n.args:
+                p = n.args[0]
+                if (isinstance(p, _ast.Constant) and isinstance(p.value, str)
+                        and SENSITIVE_PATH_RE.search(p.value)):
+                    sources.append((ln, "读取敏感文件 %s" % p.value))
+        return sources, sinks, imports
+
+    taint = {}
+
     SEC_RULES = [
         ("R-SEC-01", "硬编码凭证（AWS/GitHub/OpenAI/xox 格式）",
          r"(AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})", 8),
@@ -351,6 +423,7 @@ def evaluate_skill(skill_path):
             except (OSError, UnicodeDecodeError):
                 continue
             code_lines = code.splitlines()
+            taint[script_file] = _taint_info(code)
             for rid, rule_name, pat, points in SEC_RULES:
                 for m in re.finditer(pat, code):
                     line_no = code[:m.start()].count("\n") + 1
@@ -366,7 +439,57 @@ def evaluate_skill(skill_path):
                 hit_line = code_lines[line_no - 1] if line_no - 1 < len(code_lines) else ""
                 if "skillgate: ignore" in hit_line:
                     continue
+                # 同一文件同一行同一类别已由正则报过，不重复扣分
+                kw = rule_name.split("（")[0]
+                if any(x.startswith("%s:%d" % (script_file, line_no)) and kw in x
+                       for x in security_issues):
+                    continue
                 msg = "%s:%d: %s" % (script_file, line_no, rule_name)
+                if msg not in security_issues:
+                    security_issues.append(msg)
+                    score -= points
+
+    # ---- 同文件污点：先读敏感文件，后网络外发 ----
+    for fname_, (srcs, snks, _im) in sorted(taint.items()):
+        if srcs and snks:
+            l_src = min(l for l, _ in srcs)
+            l_sink = min(l for l, _ in snks)
+            if l_sink >= l_src:
+                msg = "%s:%d: 凭证文件读取后网络外发（同文件污点）" % (fname_, l_sink)
+                if msg not in security_issues:
+                    security_issues.append(msg)
+                    score -= 8
+
+    # ---- 跨文件污点：A 读凭证，B 引用 A 之后外发 ----
+    for a, (a_src, _a_sink, _a_imp) in sorted(taint.items()):
+        if not a_src:
+            continue
+        mod_a = os.path.splitext(a)[0]
+        for b, (_b_src, b_sink, b_imp) in sorted(taint.items()):
+            if a == b or not b_sink:
+                continue
+            if mod_a in b_imp:
+                msg = "%s:%d: 跨文件凭证外泄（引用 %s 读取的凭证后外发）" % (
+                    b, min(l for l, _ in b_sink), a)
+                if msg not in security_issues:
+                    security_issues.append(msg)
+                    score -= 10
+
+    # ---- 文本层：SKILL.md 的自然语言越权话术 ----
+    if os.path.exists(skill_md):
+        try:
+            with open(skill_md, "r", encoding="utf-8", errors="ignore") as f:
+                md_text = f.read()
+        except OSError:
+            md_text = ""
+        md_lines = md_text.splitlines()
+        for rid, rule_name, pat, points in TEXT_SEC_RULES:
+            for m in re.finditer(pat, md_text, re.IGNORECASE):
+                line_no = md_text[:m.start()].count("\n") + 1
+                hit_line = md_lines[line_no - 1] if line_no - 1 < len(md_lines) else ""
+                if "lgd: ignore" in hit_line or "skillgate: ignore" in hit_line:
+                    continue
+                msg = "SKILL.md:%d: %s" % (line_no, rule_name)
                 if msg not in security_issues:
                     security_issues.append(msg)
                     score -= points
@@ -440,6 +563,20 @@ def evaluate_skill(skill_path):
     
     # 对外唯一分数：一行给完，不分列其他分数
     print(f"  LGD Trust Score: {score}/100  {emoji} {grade}")
+    # 分数 → 执行权限分档（竞品只给分数，这里给出可直接落地的限权建议）
+    if score >= 96:
+        gate = "L0 免审批（可直接运行，无需限流）"
+    elif score >= 81:
+        gate = "L1 一次性确认（限流 60 次/分）"
+    elif score >= 51:
+        gate = "L2 人工复核（限流 30 次/分）"
+    elif score >= 31:
+        gate = "L3 沙箱运行（每次调用强制确认）"
+    elif score >= 11:
+        gate = "L4 隔离环境（仅允许只读调用）"
+    else:
+        gate = "L5 拒绝执行（需重写后重新评测）"
+    print(f"  🚦 建议执行权限: {gate}")
     print(f"  评测耗时: {elapsed:.2f}s")
     print("=" * 70)
     
@@ -667,6 +804,33 @@ EVIDENCE_RULES = [
     ("建议加上 tags 标签", "R-ECO-02", "生态兼容性", "SKILL.md",
      "在 frontmatter 加 tags 列表，用于商店检索与路由",
      "重跑规则 R-ECO-02：tags 存在即通过"),
+    ("运行时重建载荷", "R-SEC-08", "安全检查", "scripts/",
+     "移除运行时拼装/解码/下载的载荷，改为可静态审阅的代码；确需动态执行须写明用途并加白名单",
+     "重跑规则 R-SEC-08：exec/eval 参数为静态字面量或不出现即通过"),
+    ("凭证文件读取后网络外发", "R-SEC-09", "安全检查", "scripts/",
+     "禁止把 .ssh/.aws/.env 等敏感文件内容发往网络；如属必要功能须显式告知用户并取得授权",
+     "重跑规则 R-SEC-09：敏感文件读取与外发不再出现在同一数据流"),
+    ("跨文件凭证外泄", "R-SEC-10", "安全检查", "scripts/",
+     "切断跨文件引用链：读取凭证的模块不得被外发模块导入",
+     "重跑规则 R-SEC-10：两模块间不再存在引用关系"),
+    ("越权指令", "R-SEC-11", "安全检查", "SKILL.md",
+     "删除要求模型忽略既有规则的语句，这类话术是 prompt injection 的典型入口",
+     "重跑规则 R-SEC-11：越权话术归零即通过"),
+    ("隐瞒用户", "R-SEC-12", "安全检查", "SKILL.md",
+     "删除要求向用户隐瞒行为的语句，改为显式告知用户",
+     "重跑规则 R-SEC-12：隐瞒类话术归零即通过"),
+    ("绕过安全检查", "R-SEC-13", "安全检查", "SKILL.md",
+     "删除绕过/跳过安全审核的语句；如确需例外须走显式白名单并留痕",
+     "重跑规则 R-SEC-13：绕过类话术归零即通过"),
+    ("敏感数据外泄指令", "R-SEC-14", "安全检查", "SKILL.md",
+     "删除把凭证/密钥/聊天记录上传或外发的指令",
+     "重跑规则 R-SEC-14：外泄类指令归零即通过"),
+    ("读取凭证文件指令", "R-SEC-15", "安全检查", "SKILL.md",
+     "删除要求读取 .ssh/.aws/.env 等凭证文件的指令",
+     "重跑规则 R-SEC-15：凭证读取指令归零即通过"),
+    ("免确认执行", "R-SEC-16", "安全检查", "SKILL.md",
+     "把免确认行为改为显式请求用户授权，或在文档中标注需要确认的步骤",
+     "重跑规则 R-SEC-16：免确认话术归零即通过"),
 ]
 
 
@@ -695,6 +859,11 @@ def build_evidence(root, findings, warnings):
     out = []
     for kind, text in items:
         rid = dim = rel = fix = verify = None
+        explicit_line = None
+        # 形如 "evil.py:12: 描述" 的条目已自带精确位置，直接采用
+        m_pos = re.match(r"^([^\s:]+\.(?:py|md|json|yml|yaml)):(\d+):\s*(.+)$", text)
+        if m_pos:
+            rel, explicit_line = m_pos.group(1), int(m_pos.group(2))
         m = re.match(r"缺少\s*([A-Za-z_]+)\s*字段", text)
         if m:
             field = m.group(1)
@@ -720,8 +889,8 @@ def build_evidence(root, findings, warnings):
         out.append({
             "rule_id": rid,
             "dimension": dim,
-            "file": rel,
-            "line": _line_of(root, rel, needle) if rel else 0,
+            "file": (m_pos.group(1) if m_pos else rel),
+            "line": explicit_line if explicit_line is not None else (_line_of(root, rel, needle) if rel else 0),
             "evidence": text,
             "fix": fix,
             "verify": verify,
