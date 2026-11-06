@@ -1,0 +1,55 @@
+name: Sign Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to sign'
+        required: true
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  sign:
+    name: cosign keyless sign
+    runs-on: ubuntu-latest
+    steps:
+      - uses: sigstore/cosign-installer@v3
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          mkdir -p dist
+          gh release download "$TAG" --dir dist --repo "${{ github.repository }}"
+          ls -la dist
+      - name: Sign every asset
+        run: |
+          set -e
+          for f in dist/*; do
+            case "$f" in
+              *.sig|*.pem) continue ;;
+            esac
+            COSIGN_EXPERIMENTAL=1 cosign sign-blob --yes \
+              --output-signature "$f.sig" \
+              --output-certificate "$f.pem" "$f"
+          done
+      - name: Upload signatures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh release upload "$TAG" dist/*.sig dist/*.pem --clobber --repo "${{ github.repository }}"
+      - name: Verify roundtrip
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          for f in dist/*.tgz dist/*.zip dist/*.tar.gz; do
+            [ -f "$f" ] || continue
+            cosign verify-blob --certificate "$f.pem" --signature "$f.sig" \
+              --certificate-identity-regexp "https://github.com/${{ github.repository }}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com "$f"
+          done
