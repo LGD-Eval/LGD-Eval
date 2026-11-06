@@ -246,6 +246,41 @@ def evaluate_skill(skill_path):
     NET_SINK_MODULES = ("requests", "urllib", "httpx", "socket", "smtplib", "aiohttp")
     NET_SINK_METHODS = ("post", "put", "patch", "send", "sendall", "sendmail", "urlopen")
 
+    def _strip_literals(src):
+        """把字符串与注释替换成等长空格（保留行号列号），只留可执行代码。
+
+        安全工具自身会把规则名写成字符串（如 'shell=True'、'eval('），
+        若直接对原文跑行为类正则，就会把自己的规则表判成攻击。
+        """
+        import io as _io
+        import tokenize as _tk
+        try:
+            toks = list(_tk.generate_tokens(_io.StringIO(src).readline))
+        except Exception:
+            return src
+        buf = [list(line) for line in src.splitlines(keepends=True)]
+        for t in toks:
+            if t.type not in (_tk.STRING, _tk.COMMENT):
+                continue
+            (sr, sc), (er, ec) = t.start, t.end
+            if sr == er:
+                if 1 <= sr <= len(buf):
+                    row = buf[sr - 1]
+                    for c in range(sc, min(ec, len(row))):
+                        if row[c] != "\n":
+                            row[c] = " "
+            else:
+                for r in range(sr, er + 1):
+                    if not (1 <= r <= len(buf)):
+                        continue
+                    row = buf[r - 1]
+                    a = sc if r == sr else 0
+                    b = ec if r == er else len(row)
+                    for c in range(a, min(b, len(row))):
+                        if row[c] != "\n":
+                            row[c] = " "
+        return "".join("".join(row) for row in buf)
+
     def _dotted(node):
         if isinstance(node, _ast.Name):
             return node.id
@@ -295,6 +330,9 @@ def evaluate_skill(skill_path):
         ("R-SEC-06", "不安全反序列化（pickle / marshal / yaml.load）",
          r"(pickle\.loads|marshal\.loads|yaml\.load)\s*\(", 5),
         ("R-SEC-07", "危险递归删除（shutil.rmtree）", r"shutil\.rmtree\s*\(", 4),
+        ("R-SEC-17", "命令执行（child_process.exec / execSync）",
+         r"(child_process\.(exec|execSync)\s*\(|require\s*\(\s*['\"]child_process['\"]\s*\))", 6),
+        ("R-SEC-18", "动态构造代码（new Function）", r"new\s+Function\s*\(", 5),
     ]
 
     def _ast_security(src):
@@ -414,7 +452,8 @@ def evaluate_skill(skill_path):
 
     if os.path.exists(scripts_dir):
         for script_file in sorted(os.listdir(scripts_dir)):
-            if not script_file.endswith('.py') or script_file == self_name:
+            ext = os.path.splitext(script_file)[1].lower()
+            if ext not in (".py", ".js", ".ts", ".mjs", ".cjs") or script_file == self_name:
                 continue
             script_path = os.path.join(scripts_dir, script_file)
             try:
@@ -423,9 +462,13 @@ def evaluate_skill(skill_path):
             except (OSError, UnicodeDecodeError):
                 continue
             code_lines = code.splitlines()
-            taint[script_file] = _taint_info(code)
+            if ext == ".py":
+                taint[script_file] = _taint_info(code)
+            # 行为类规则只看可执行部分；凭证类规则必须看字符串，故用原文
+            code_behavior = _strip_literals(code) if ext == ".py" else code
             for rid, rule_name, pat, points in SEC_RULES:
-                for m in re.finditer(pat, code):
+                target = code if rid in ("R-SEC-01", "R-SEC-02") else code_behavior
+                for m in re.finditer(pat, target):
                     line_no = code[:m.start()].count("\n") + 1
                     hit_line = code_lines[line_no - 1] if line_no - 1 < len(code_lines) else ""
                     if "skillgate: ignore" in hit_line:
@@ -435,6 +478,8 @@ def evaluate_skill(skill_path):
                         security_issues.append(msg)
                         score -= points
             # AST 语义扫描：补正则抓不到的规避写法
+            if ext != ".py":
+                continue
             for rid, rule_name, line_no, points in _ast_security(code):
                 hit_line = code_lines[line_no - 1] if line_no - 1 < len(code_lines) else ""
                 if "skillgate: ignore" in hit_line:
