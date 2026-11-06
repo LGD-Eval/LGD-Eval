@@ -12,6 +12,8 @@ import re
 import ast
 import json
 import time
+import shutil
+import tempfile
 
 def evaluate_skill(skill_path):
     """评测一个技能。"""
@@ -508,7 +510,17 @@ if __name__ == "__main__":
         print("  python evaluate.py ./my-skill/ --chart --ascii --fix-json fix-plan.json")
         sys.exit(1)
     
-    score, grade, dims, findings, warnings = evaluate_skill(args.skill_path)
+    target = args.skill_path
+    if os.path.isfile(target):
+        # 单文件模式：把单个 SKILL.md / prompt 文件包装成标准技能目录再评，
+        # 让"贴一段内容就评测"与竞品入口对齐，同时保留完整五维口径
+        target = tempfile.mkdtemp(prefix="lgd-eval-file-")
+        shutil.copyfile(args.skill_path, os.path.join(target, "SKILL.md"))
+        print("ℹ️ 单文件模式：已按标准技能目录包装评测（%s）" % os.path.basename(args.skill_path))
+        print("   仅能评文本质量；结构/目录维度会因缺 LICENSE、README、scripts/ 扣分。完整评测请传目录。")
+
+    score, grade, dims, findings, warnings = evaluate_skill(target)
+
     
     if args.ascii:
         print()
