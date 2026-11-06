@@ -17,6 +17,19 @@ import json
 import subprocess
 
 
+def _repo_root():
+    """Locate the repo root by walking up from this script (cwd-independent)."""
+    d = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(5):
+        if os.path.exists(os.path.join(d, "README.md")) or os.path.isdir(os.path.join(d, ".git")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return os.getcwd()
+
+
 def subprocess_check(args):
     r = subprocess.run(args, capture_output=True, text=True)
     if r.returncode != 0:
@@ -69,10 +82,20 @@ def self_test() -> int:
     if not re.search(r"[A-Za-z]{4,}", c2):
         failed.append("T3 english-counterpart regex broken")
 
-    # T4: key files
-    missing = [k for k in ["README.md", "AGENTS.md", "LICENSE", "SECURITY.md"] if not os.path.exists(k)]
-    if len(missing) > 0:
-        failed.append("T4 missing key files in checkout: %s" % missing)
+    # T4: key-file detection logic (synthetic, repo-agnostic).
+    # 自测应验证“缺失检测逻辑”本身，而非强制当前仓库必须含某几个文件——
+    # 否则把脚本跨仓库复用时，会因仓库文档集不同而产生误报（P1-9 健壮化）。
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        open(os.path.join(td, "README.md"), "w", encoding="utf-8").close()
+        present = [k for k in ["README.md", "NONEXISTENT_FILE_XYZ.md"]
+                   if os.path.exists(os.path.join(td, k))]
+        missing = [k for k in ["README.md", "NONEXISTENT_FILE_XYZ.md"]
+                   if not os.path.exists(os.path.join(td, k))]
+        if "NONEXISTENT_FILE_XYZ.md" not in missing:
+            failed.append("T4 missing-file detection logic broken (should flag absent file)")
+        if "README.md" in missing:
+            failed.append("T4 false positive on present file")
 
     # T5: repo name sanity
     repo = os.environ.get("GITHUB_REPOSITORY", "")
@@ -89,6 +112,10 @@ def self_test() -> int:
 def main() -> int:
     if "--self-test" in sys.argv:
         return self_test()
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print("Usage / 用法: python pr-audit.py [--self-test]")
+        print("  CI 模式依赖 GITHUB_* 环境变量；本地无 git 时回退为遍历 '.' 列出变更文件。")
+        return 0
 
     base = os.environ.get("GITHUB_BASE_REF", "main") or "main"
     head = os.environ.get("GITHUB_SHA", "HEAD") or "HEAD"
@@ -99,11 +126,13 @@ def main() -> int:
     try:
         changed = subprocess_check(["git", "diff", "--name-only", "origin/%s...%s" % (base, head)])
     except Exception as e:
+        # 无 git 回退：以仓库根为基准列出全部文件（P1-9 健壮化，避免路径拼接越界）
         changed = []
         for root, dirs, files in os.walk("."):
             dirs[:] = [d for d in dirs if d != ".git"]
             for f in files:
-                changed.append(os.path.join(root, f).replace(os.sep, "/")[2:] if os.path.join(root, f).startswith("./") else os.path.join(root, f).replace(os.sep, "/").lstrip("./"))
+                rel = os.path.relpath(os.path.join(root, f), ".").replace(os.sep, "/")
+                changed.append(rel)
     changed = [c for c in changed if c.strip()]
     changed_md = [c for c in changed if c.lower().endswith((".md", ".txt", ".cff", ".jsonld", ".yml", ".yaml"))]
     issues.append("Changed files (%d): %s" % (len(changed), ", ".join(changed[:20]) or "none"))
@@ -112,7 +141,10 @@ def main() -> int:
     for f in changed_md:
         scan_file(f, BAD, errors, changed_md)
 
-    KEYFILES = ["README.md", "AGENTS.md", "LICENSE", "SECURITY.md"]
+    # 关键文件清单：仓库无关最小通用集，可用 PR_AUDIT_KEYFILES 环境变量按仓库覆盖
+    # （如 hub 设 PR_AUDIT_KEYFILES=README.md,AGENTS.md,LICENSE,SECURITY.md 恢复更严格检查）。
+    _key_env = os.environ.get("PR_AUDIT_KEYFILES", "README.md,LICENSE")
+    KEYFILES = [k.strip() for k in _key_env.split(",") if k.strip()]
     for k in KEYFILES:
         if not os.path.exists(k):
             issues.append("Missing key file/关键文件缺失: %s" % k)
