@@ -320,6 +320,20 @@ def clean_line(line: str) -> str:
     return stripped
 
 
+# 规则表元素行：整行就是一个裸 raw/普通字符串字面量（或元组首元素）
+# 例：  r"((read|cat|open)...(\.ssh|\.aws...)"     属于检测词表，不是真实行为
+_RULE_LITERAL_RE = re.compile(r"^(?:\(\s*)?(?:[rR])?[\"']")
+
+
+def is_rule_literal_line(line: str) -> bool:
+    """判断该行是否是"检测规则词表"的字符串元素。
+
+    扫描器扫自己时，规则表里的路径/关键词会被当成本体行为（自证陷阱）。
+    这里只跳过"整行就是一个裸字符串字面量"的行——真实恶意代码不会写成这样。
+    """
+    return bool(_RULE_LITERAL_RE.match(line.strip()))
+
+
 # ── v3.1.0: 固定参数 vs 动态参数判断（确定性，纯静态，无外部依赖） ────────────
 
 def _strip_comment(line: str) -> str:
@@ -521,12 +535,20 @@ def scan_python_file(filepath: Path, result: ScanResult):
         ))
         return
 
+    lines = content.splitlines()
+
     # === 第一步：AST 分析（更准，误报低） ===
     ast_lines = set()  # 记录 AST 已经报过的行，正则就不要重复报了
     try:
         from ast_analyzer import analyze_python_file
         ast_findings = analyze_python_file(filepath)
         for af in ast_findings:
+            # 行级抑制约定：与 Bandit # nosec / SonarQube NOSONAR 一致，
+            # 标注必须与命中行同行
+            if af.line and af.line - 1 < len(lines):
+                cur = lines[af.line - 1]
+                if "skillgate: ignore" in cur or "lgd: ignore" in cur:
+                    continue
             result.findings.append(Finding(
                 severity=af.severity,
                 category="ast-analysis",
@@ -538,7 +560,6 @@ def scan_python_file(filepath: Path, result: ScanResult):
     except Exception:
         pass  # AST 分析失败不影响正则扫描
 
-    lines = content.splitlines()
     # v3.1.0: 整文件级字符串/注释剥离结果（跨行三引号 docstring 也算字符串）
     code_lines = strip_strings_to_code(content)
 
@@ -644,9 +665,15 @@ def scan_python_file(filepath: Path, result: ScanResult):
                 continue
             m = pattern.search(line)
             if m:
+                # 该行剥离字符串/注释后已无实质代码 —— 说明整行内容都在字符串里
+                # （多行 raw 模板、规则词表、文档示例），扫描器扫自己时最常踩的就是这里
+                if i - 1 < len(code_lines) and not code_lines[i - 1].strip(" \t,()[]{}:;'\"\\"):
+                    continue
                 # 规则定义字符串自命中（如 re.compile(r"\.aws/credentials") 所在行）
                 # ——扫描器扫描自己的规则表时，规则定义字符串会被误判为真实凭证
-                if re.search(r're\.compile\(r?["\']', line) and is_inside_string(line, m.start()):
+                if is_inside_string(line, m.start()) and (
+                        re.search(r're\.compile\(r?["\']', line)
+                        or is_rule_literal_line(line)):
                     continue
                 # 善意 INFO 规则：命中点若在字符串字面量内（建议文案/文档示例），跳过
                 if severity == "INFO" and is_inside_string(line, m.start()):
