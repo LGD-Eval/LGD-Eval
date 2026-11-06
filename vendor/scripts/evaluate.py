@@ -14,6 +14,7 @@ import json
 import time
 import shutil
 import tempfile
+import hashlib
 
 def evaluate_skill(skill_path):
     """评测一个技能。"""
@@ -492,6 +493,138 @@ def build_fix_plan(findings, warnings):
     return {"fix_plan": plan, "count": len(plan), "framework": "LGD 三律（有籍/有证/有门禁）"}
 
 
+# ============================================================
+# 证据链（对应 LGD 三律的「有证 · Evidenced」）
+# 每条扣分都必须能回答：哪条规则、哪个文件、第几行、证据什么、怎么改、怎么复验
+# ============================================================
+
+EVIDENCE_RULES = [
+    ("缺少 SKILL.md", "R-STR-00", "结构完整性", "SKILL.md",
+     "创建 SKILL.md 并写入 frontmatter（name/description/version/license/author）",
+     "重跑规则 R-STR-00：文件存在即通过"),
+    ("缺少 LICENSE", "R-STR-02", "结构完整性", "LICENSE",
+     "添加许可证文件（建议 MIT 或 Apache-2.0，含年份与著作权人）",
+     "重跑规则 R-STR-02：LICENSE 存在即通过"),
+    ("缺少 README.md", "R-STR-03", "结构完整性", "README.md",
+     "补写 README，至少包含用途、安装、用法三段",
+     "重跑规则 R-STR-03：README 存在且非空即通过"),
+    ("缺少 scripts 目录", "R-DIR-01", "目录结构", "scripts/",
+     "建立 scripts/ 并放入可执行脚本；纯文档型技能可放一个占位说明",
+     "重跑规则 R-DIR-01：目录存在即通过"),
+    ("缺少 examples 目录", "R-DIR-02", "目录结构", "examples/",
+     "建立 examples/ 并放入至少一个可运行或可复制的示例",
+     "重跑规则 R-DIR-02：目录存在且含文件即通过"),
+    ("缺少使用场景说明", "R-DOC-01", "文档质量", "SKILL.md",
+     "补写「使用场景」章节，用具体任务描述说明何时该用",
+     "重跑规则 R-DOC-01：命中场景章节关键词即通过"),
+    ("缺少使用方法说明", "R-DOC-02", "文档质量", "SKILL.md",
+     "补写「使用方法」章节，含命令行或调用方式",
+     "重跑规则 R-DOC-02：命中用法章节关键词即通过"),
+    ("缺少示例", "R-DOC-03", "文档质量", "SKILL.md",
+     "在正文中加入至少一个可复制执行的示例",
+     "重跑规则 R-DOC-03：命中示例章节关键词即通过"),
+    ("建议加上已知限制说明", "R-DOC-04", "文档质量", "SKILL.md",
+     "补写「已知限制」章节，说明不适用的场景与边界",
+     "重跑规则 R-DOC-04：命中限制章节关键词即通过"),
+    ("文档含占位标记", "R-DOC-05", "文档质量", "SKILL.md",
+     "把占位标记（TODO/TBD/待补充/xxx）替换为真实内容",
+     "重跑规则 R-DOC-05：占位标记归零即通过"),
+    ("缺少 frontmatter", "R-ECO-01", "生态兼容性", "SKILL.md",
+     "在文件首行加 --- 包裹的 YAML frontmatter",
+     "重跑规则 R-ECO-01：frontmatter 可解析即通过"),
+    ("建议加上 tags 标签", "R-ECO-02", "生态兼容性", "SKILL.md",
+     "在 frontmatter 加 tags 列表，用于商店检索与路由",
+     "重跑规则 R-ECO-02：tags 存在即通过"),
+]
+
+
+def _line_of(root, rel, needle):
+    """在文件里定位命中行号；定位不到返回 0，文件存在但无需定位返回 1。"""
+    if not rel:
+        return 0
+    path = os.path.join(root, rel)
+    if not os.path.isfile(path):
+        return 0
+    if not needle:
+        return 1
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            for i, ln in enumerate(f, 1):
+                if needle in ln:
+                    return i
+    except OSError:
+        pass
+    return 1
+
+
+def build_evidence(root, findings, warnings):
+    """把文本 finding 升级成结构化证据链。不改动原有文本输出。"""
+    items = [("finding", x) for x in findings] + [("warning", x) for x in warnings]
+    out = []
+    for kind, text in items:
+        rid = dim = rel = fix = verify = None
+        m = re.match(r"缺少\s*([A-Za-z_]+)\s*字段", text)
+        if m:
+            field = m.group(1)
+            rid, dim, rel = "R-STR-01", "结构完整性", "SKILL.md"
+            fix = "在 frontmatter 中补 `%s` 字段" % field
+            verify = "重跑规则 R-STR-01：该字段可解析即通过"
+        if rid is None:
+            for pat, r, d, f, fi, ve in EVIDENCE_RULES:
+                if pat in text:
+                    rid, dim, rel, fix, verify = r, d, f, fi, ve
+                    break
+        if rid is None:
+            rid, dim, rel = "R-SEC-01", "安全检查", ""
+            fix, verify = "按建议整改该安全问题", "重跑规则 R-SEC-01：该项不再出现即通过"
+        needle = ""
+        if "：" in text:
+            needle = text.split("：", 1)[1].split("；")[0].strip()
+        # 占位标记类：从「xxx」里取出真实词去定位，避免行号永远落在第 1 行
+        if rid == "R-DOC-05":
+            m2 = re.search(r"「([^」]+)」", text)
+            if m2:
+                needle = m2.group(1)
+        out.append({
+            "rule_id": rid,
+            "dimension": dim,
+            "file": rel,
+            "line": _line_of(root, rel, needle) if rel else 0,
+            "evidence": text,
+            "fix": fix,
+            "verify": verify,
+            "severity": kind,
+        })
+    return out
+
+
+def canonical_dumps(obj):
+    """规范化序列化：键排序、无空格、不转义中文。同输入必得同字节。"""
+    return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def build_attestation(root, score, grade, dims, evidence):
+    """生成可复现的评测证明。fingerprint 只取自被测内容，不含路径与时间。"""
+    payload = {
+        "object": {"score": score, "grade": grade},
+        "dims": {k: dims.get(k, 0) for k in sorted(dims)},
+        "findings": [{"rule_id": e["rule_id"], "dimension": e["dimension"],
+                      "file": e["file"], "line": e["line"],
+                      "evidence": e["evidence"], "fix": e["fix"], "verify": e["verify"]}
+                     for e in evidence],
+    }
+    fp = hashlib.sha256(canonical_dumps(payload).encode("utf-8")).hexdigest()
+    return {
+        "framework": "LGD 三律 · 有籍(可追溯) / 有证(可验证) / 有门禁(可阻断)",
+        "score": score,
+        "grade": grade,
+        "dims": payload["dims"],
+        "findings": payload["findings"],
+        "fingerprint": "sha256:" + fp,
+        "reproduce": "python evaluate.py <同一路径> --evidence-json out.json  # 应得到完全相同的 fingerprint",
+    }
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="LGD 评测引擎 · 独立第三方技能质检")
@@ -499,6 +632,10 @@ if __name__ == "__main__":
     ap.add_argument("--chart", action="store_true", help="生成五维雷达图 radar.svg")
     ap.add_argument("--ascii", action="store_true", help="输出五维 ASCII 雷达条形图")
     ap.add_argument("--fix-json", metavar="PATH", help="输出机器可读整改清单 JSON（供 AI 自主整改）")
+    ap.add_argument("--evidence-json", metavar="PATH",
+                    help="输出可复现评测证明 JSON（含证据链与 sha256 fingerprint）")
+    ap.add_argument("--detail", action="store_true",
+                    help="在终端打印证据链：规则 → 文件:行 → 证据 → 整改 → 复验")
     ap.add_argument("--fail-under", type=int, default=0, metavar="N",
                     help="门禁模式：分数低于 N 时以退出码 1 结束，可直接用于 CI 卡 PR")
     args = ap.parse_args()
@@ -537,6 +674,27 @@ if __name__ == "__main__":
             json.dump(plan, f, ensure_ascii=False, indent=2)
         print()
         print(f"  🔧 机器可读整改清单已生成: {args.fix_json}（{plan['count']} 项，AI 可自主整改）")
+
+    if args.evidence_json or args.detail:
+        evidence = build_evidence(target, findings, warnings)
+        att = build_attestation(target, score, grade, dims, evidence)
+
+        if args.evidence_json:
+            with open(args.evidence_json, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(canonical_dumps(att))
+            print()
+            print(f"  🧾 可复现评测证明已生成: {args.evidence_json}")
+            print(f"     fingerprint: {att['fingerprint']}")
+
+        if args.detail:
+            print()
+            print("  🧾 证据链（规则 → 文件:行 → 证据 → 整改 → 复验）:")
+            for e in evidence:
+                loc = ("%s:%s" % (e["file"], e["line"])) if e["file"] else "—"
+                print(f"    [{e['rule_id']}] {loc}")
+                print(f"       证据: {e['evidence']}")
+                print(f"       整改: {e['fix']}")
+                print(f"       复验: {e['verify']}")
 
     if args.fail_under:
         if score < args.fail_under:
