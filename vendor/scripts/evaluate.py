@@ -49,7 +49,7 @@ def _rule_ids_for(findings):
     return ids
 
 
-CRIT_IDS = {"R-SEC-09", "R-SEC-10"}                     # 已证实的凭证外泄
+CRIT_IDS = {"R-SEC-09", "R-SEC-10", "R-SEC-21"}          # 已证实的凭证 / 环境变量外泄
 HIGH_IDS = {"R-SEC-01", "R-SEC-02", "R-SEC-03", "R-SEC-04", "R-SEC-05",
             "R-SEC-15", "R-SEC-16", "R-SEC-17", "R-SEC-18", "R-SEC-11"}
 
@@ -410,6 +410,16 @@ def evaluate_skill(skill_path):
         return sources, sinks, imports
 
     taint = {}
+    env_bulk = {}
+    # 只认「整份」环境变量导出；单项 os.environ["KEY"] 是正常配置读取，不报。
+    # 这是 Mitiga 类样本最爱的偷渡方式：把全部变量（含云厂商密钥）打包发走。
+    ENV_BULK_RE = re.compile(
+        r"(?:dict\s*\(\s*os\.environ"
+        r"|os\.environ\.copy\s*\("
+        r"|(?:json\.dumps?|str|repr)\s*\(\s*(?:dict\s*\(\s*)?os\.environ"
+        r"|for\s+[A-Za-z_]\w*\s*,\s*[A-Za-z_]\w*\s+in\s+os\.environ\.items\s*\("
+        r"|list\s*\(\s*os\.environ\.items\s*\()"
+    )
 
     SEC_RULES = [
         ("R-SEC-01", "硬编码凭证（AWS/GitHub/OpenAI/xox 格式）",
@@ -584,6 +594,14 @@ def evaluate_skill(skill_path):
         code_lines = code.splitlines()
         if ext == ".py":
             taint[script_file] = _taint_info(code)
+            # 注释里写到 dict(os.environ) 是在讲解规则，不算行为
+            for _m in ENV_BULK_RE.finditer(code):
+                _ln = code[: _m.start()].count("\n") + 1
+                _hit = code_lines[_ln - 1] if _ln - 1 < len(code_lines) else ""
+                if _hit.lstrip().startswith("#"):
+                    continue
+                env_bulk[script_file] = _ln
+                break
         # 行为类规则只看可执行部分；凭证类规则必须看字符串，故用原文
         code_behavior = _strip_literals(code) if ext == ".py" else code
         for rid, rule_name, pat, points in SEC_RULES:
@@ -614,6 +632,19 @@ def evaluate_skill(skill_path):
             if msg not in security_issues:
                 security_issues.append(msg)
                 score -= points
+
+    # ---- 环境变量批量外发：整份 os.environ 打包送出 ----
+    for f_, l_env in sorted(env_bulk.items()):
+        snks = taint.get(f_, ([], [], set()))[1]
+        if not snks:
+            continue
+        l_sink = min(l for l, _ in snks)
+        if l_sink < l_env:
+            continue
+        msg = "%s:%d: 环境变量批量外发（整份 os.environ 发往网络）" % (f_, l_sink)
+        if msg not in security_issues:
+            security_issues.append(msg)
+            score -= 10
 
     # ---- 同文件污点：先读敏感文件，后网络外发 ----
     for fname_, (srcs, snks, _im) in sorted(taint.items()):
@@ -1056,6 +1087,9 @@ EVIDENCE_RULES = [
     ("运行时重建载荷", "R-SEC-08", "安全检查", "scripts/",
      "移除运行时拼装/解码/下载的载荷，改为可静态审阅的代码；确需动态执行须写明用途并加白名单",
      "重跑规则 R-SEC-08：exec/eval 参数为静态字面量或不出现即通过"),
+    ("环境变量批量外发", "R-SEC-21", "安全检查", "scripts/",
+     "禁止把整份 os.environ 打包外发；只读取本功能确实需要的单个键，并在文档写明用途",
+     "重跑规则 R-SEC-21：不再出现整份 environ 导出与网络外发同文件共存"),
     ("凭证文件读取后网络外发", "R-SEC-09", "安全检查", "scripts/",
      "禁止把 .ssh/.aws/.env 等敏感文件内容发往网络；如属必要功能须显式告知用户并取得授权",
      "重跑规则 R-SEC-09：敏感文件读取与外发不再出现在同一数据流"),
