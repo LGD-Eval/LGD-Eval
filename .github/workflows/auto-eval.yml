@@ -1,7 +1,8 @@
 name: Auto Eval (skills/lgd-eval)
 
-# 目的：让 skills/lgd-eval 的对外分数永远由 CI 实跑得出，而不是手填。
-# 评测对象是子目录 skills/lgd-eval，用的是同一个 main 分支上的评测引擎。
+# 目的：skills/lgd-eval 的分数必须由 CI 实跑校验，不接受手填漂移。
+# 评测对象：子目录 skills/lgd-eval；评测引擎：同 org 的 LGD-Eval/lgd-gate@main。
+# 门禁语义：低于 90 分（A+ 线）直接让 job 变红，不会再「绿着但分数掉了」。
 
 on:
   push:
@@ -14,19 +15,17 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   eval:
     name: LGD self-evaluation (skills/lgd-eval)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
       - id: lgd
         uses: LGD-Eval/lgd-gate@main
-        continue-on-error: true
         with:
           path: skills/lgd-eval
           threshold: '90'
@@ -40,21 +39,3 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Object: \`skills/lgd-eval\`. Engine: [LGD-Eval/lgd-gate](https://github.com/LGD-Eval/lgd-gate) @main." >> "$GITHUB_STEP_SUMMARY"
           echo "Reproduce locally: \`python3 skills/lgd-eval/scripts/evaluate.py skills/lgd-eval\`" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Refresh score in README
-        if: always()
-        env:
-          LGD_SCORE: ${{ steps.lgd.outputs.score }}
-          LGD_GRADE: ${{ steps.lgd.outputs.grade }}
-        run: |
-          if [ -z "$LGD_SCORE" ]; then echo "no score, skip"; exit 0; fi
-          if [ ! -f README.md ]; then echo "no README, skip"; exit 0; fi
-          sed -i "s|Trust Score: [0-9][0-9]*/100|Trust Score: ${LGD_SCORE}/100|g" README.md
-          if ! grep -q "CI-SCORE" README.md; then
-            printf '\n<!-- CI-SCORE -->\n> 这个分数由 GitHub Actions 每次推送到 main 后实跑得出（评测对象 `skills/lgd-eval`），不是手填。\n> 复跑：`python3 skills/lgd-eval/scripts/evaluate.py skills/lgd-eval`\n<!-- /CI-SCORE -->\n' >> README.md
-          fi
-          git config user.name "lgd-bot"
-          git config user.email "bot@medxpert.cn"
-          git add README.md
-          git commit -m "chore: refresh LGD score [skip ci]" || exit 0
-          git push || true
