@@ -163,6 +163,38 @@ def evaluate_skill(skill_path):
             else:
                 print("  ℹ️ 缺少已知限制说明（可选）")
                 warnings.append("建议加上已知限制说明")
+
+            # 占位内容检测：防止"堆模板刷分"
+            # 章节齐但内容是占位的技能，不代表内容真的落地，不应拿满分
+            root = os.path.dirname(skill_md)
+            ph_sources = [('SKILL.md', content)]
+            readme = os.path.join(root, 'README.md')
+            if os.path.exists(readme):
+                try:
+                    ph_sources.append(('README.md', open(readme, 'r', encoding='utf-8').read()))
+                except Exception:
+                    pass
+            ex_dir = os.path.join(root, 'examples')
+            if os.path.isdir(ex_dir):
+                for fn in sorted(os.listdir(ex_dir))[:10]:
+                    fp = os.path.join(ex_dir, fn)
+                    if os.path.isfile(fp) and fn.lower().endswith(('.md', '.txt')):
+                        try:
+                            ph_sources.append(('examples/' + fn, open(fp, 'r', encoding='utf-8').read()))
+                        except Exception:
+                            pass
+            placeholder_hits = []
+            for kw in ('待补充', 'TODO', '本示例为骨架', '占位内容', '占位章节', '<作者名>'):
+                for src, txt in ph_sources:
+                    if kw in txt:
+                        placeholder_hits.append('%s 含「%s」' % (src, kw))
+                        break
+            if placeholder_hits:
+                score -= min(6, 3 * len(placeholder_hits))
+                print("  ⚠️ 发现占位内容 %d 处（结构齐但内容未落地）" % len(placeholder_hits))
+                findings.append("文档含占位标记需替换为真实内容：" + "；".join(placeholder_hits[:3]))
+            else:
+                print("  ✅ 未发现占位内容（章节内容已落地）")
     
     dims['文档质量'] = max(0, 20 - (dim_before - score))
     print()
@@ -380,6 +412,11 @@ def render_radar_svg(dims, out_path):
 def map_fix(issue):
     """把评测发现映射为「动作 + 落点 + 可判定验收」，供 AI 自主整改。"""
     i = issue.lower()
+    # 占位内容优先：内容没落地时先补真实内容，而不是继续加章节
+    if "占位" in i:
+        return ("把占位内容替换为真实内容：示例贴一次真实输入输出，限制写真实做不到的事，README 写明真实安装命令与输出",
+                "SKILL.md / README.md / examples/",
+                "全目录检索不到 '待补充' / 'TODO' / '本示例为骨架' / '<作者名>' 等占位词")
     # frontmatter 字段优先：'缺少 license 字段' 不能当成缺 LICENSE 文件
     if "字段" in i or "frontmatter" in i:
         return ("补齐 SKILL.md frontmatter 五个必填字段：name、description、version、license、author",
