@@ -1,87 +1,114 @@
 ---
-name: lgd-eval
-description: LGD 独立第三方技能评测引擎。给 AI 技能打一个 0-100 的总分（LGD Trust Score），并给出可追溯的证据链、可复现的指纹、可阻断的发布门禁。当需要判断一个技能"做得够不够好、能不能发布、改完有没有变好"时使用。
+name: lgd-eval-engine
+description: 独立第三方技能评测引擎：安全扫描 + 18 维审计 + 五维评分，输出可复现的 Trust Score 与改进清单。当用户说"这个技能安全吗""会不会乱动我的文件""给我打个分""这个值多少分""帮我评测这个技能""上架前体检一下""这两个哪个更该先修"时使用。触发词：技能评测、安全扫描、打个分、评分、体检、审计、Trust Score、上架前检查。
 version: 1.0.0
 license: MIT
 author: LGD-Eval
-tags: [evaluation, quality-gate, skill-audit, trust-score, evidence-chain]
+tags:
+  - evaluation
+  - security
+  - audit
+  - trust
+  - lgd
 ---
 
-# LGD-Eval · 独立第三方技能评测
+# LGD 评测引擎 · 独立第三方技能评测
 
-## 使用场景
+## When to Use
 
-- 技能发布前做质量门禁，避免把半成品推到商店或 npm
-- 评审别人的技能：不只看"安不安全"，还要看"做得够不够好"
-- 改完之后复跑，确认分数真的涨了（而不是自我感觉良好）
+- 你想独立评测一个 AI Agent 技能的安全性和质量
+- 你想在发布技能前做一次上架体检
+- 你想给一个技能打 Trust Score
+- 你想做第三方安全审计
 
-## 核心原则：只给一个分数
+## 引擎组成（scripts/）
 
-对外只有一个分数：
-
-```
-LGD Trust Score: 89/100  🥇 A
-```
-
-五维（结构 25 / 目录 15 / 文档 20 / 安全 25 / 生态 15）只作为**扣分明细**展示，形如 `25/25`，不换算百分比，不产生第二套分数。
+| 脚本 | 功能 |
+|---|---|
+| `skillgate.py` | 安全与质量扫描门禁：危险代码/硬编码密钥/网络泄漏/结构检查，Exit Code 门禁（0=通过，1=失败） |
+| `lgd_audit.py` | 18 维度全方位审查：结构、数值诚实、红队模拟、LGD 三律、生态互链、HHH 对齐等 |
+| `evaluate.py` | 五维评分：结构完整性(25) + 目录结构(15) + 文档质量(20) + 安全检查(25) + 生态兼容(15)，输出 Trust Score |
 
 ## 使用方法
 
+### 方式一：五维评分（推荐入口）
+
 ```bash
-# 评测一个技能目录
-python3 scripts/evaluate.py <技能目录>
-
-# 扣分明细（得分/满分）
-python3 scripts/evaluate.py <技能目录> --ascii
-
-# 证据链：规则 → 文件:行 → 证据 → 整改 → 复验
-python3 scripts/evaluate.py <技能目录> --detail
-
-# 可复现证明：含 sha256 指纹，同输入必得同字节
-python3 scripts/evaluate.py <技能目录> --evidence-json attestation.json
-
-# 门禁模式：低于阈值以退出码 1 结束，可直接接 CI
-python3 scripts/evaluate.py <技能目录> --fail-under 90
-
-# MCP 服务评测
-python3 scripts/evaluate.py --help
+python scripts/evaluate.py <技能目录>
 ```
 
-## 输出示例
+输出：Trust Score（0-100）、等级（A+ / A / B / C / D）、发现项、改进建议。
 
-```
-  LGD Trust Score: 89/100  🥇 A
+### 方式一·B：CI 门禁（卡 PR）
 
-📋 扣分明细（得分 / 满分）
-  结构   ██████████ 25/25
-  目录   █████░░░░░ 7/15
-  文档   ████████░░ 17/20
-  安全   ██████████ 25/25
-  生态   ██████████ 15/15
-
-🧾 证据链（规则 → 文件:行 → 证据 → 整改 → 复验）
-  [R-DOC-05] SKILL.md:8
-     证据: 文档含占位标记需替换为真实内容：SKILL.md 含「待补充」
-     整改: 把占位标记（TODO/TBD/待补充/xxx）替换为真实内容
-     复验: 重跑规则 R-DOC-05：占位标记归零即通过
+```bash
+python scripts/evaluate.py <技能目录> --fail-under 90 --fix-json fix-plan.json
 ```
 
-## LGD 三律
+分数低于阈值直接以退出码 1 结束，可直接写进 GitHub Actions 卡住不合格的 PR；
+`--fix-json` 同时产出「缺口 + 整改动作 + 可判定验收」清单，交给 AI 或人逐项改，改完再跑一次即闭环。
 
-- **有籍**：每条扣分带 `rule_id` + 文件 + 行号，可追溯
-- **有证**：每条扣分带证据原文与 sha256 指纹，可被第三方复现
-- **有门禁**：`--fail-under` 退出码 + 每条规则的复验指令，可阻断发布
+### 方式一·C：自动施工（AI 自主改善闭环）
 
-## 已知限制
+```bash
+python scripts/autofix.py <技能目录> --target 90
+```
 
-- 安全维度是**快筛**，不是安全审计；确认性结论请配合专业工具
-- 单文件模式只能评文本质量，结构/目录维度会因缺 LICENSE、README 而扣分
-- 评分只取决于内容，与作者、品牌、star 数无关
-- 不评运行时行为（agent 轨迹、工具调用正确性），那是另一类平台的事
+自动读整改清单并执行**结构性修复**（补 frontmatter 五字段、LICENSE、README、scripts/、examples/、四类章节），每轮改完重新评测，直到达标，最多 4 轮。
 
-## 更多
+边界（这是它可信的原因）：
 
-- 仓库：https://github.com/LGD-Eval/lgd-eval
-- 评测引擎源码：https://github.com/LGD-Eval/lgd-gate
-- 分数榜：https://github.com/LGD-Eval/evaluation-evidence/blob/main/scores.md
-- 官网：https://medxpert.cn/lgd/
+- **只补结构合规，不编造内容。** 自动生成的示例与 README 带占位标记，评测器会识别为「内容未落地」并扣分，所以最多拿到 A+（97），拿不到满分。
+- **满分留给真实内容。** 需要把示例换成一次真实输入输出、限制写成真实做不到的事，才可能到 100。
+- 无法机械判定的项自动跳过并列出，不假装已修复。
+
+### 方式二：18 维度全方位审计
+
+```bash
+python scripts/lgd_audit.py <技能目录>
+python scripts/lgd_audit.py <技能目录> --internal   # 内部技能模式
+```
+
+### 方式三：安全扫描门禁
+
+```bash
+python scripts/skillgate.py scan <技能目录>
+python scripts/skillgate.py scan <技能目录> --format markdown --output report.md
+```
+
+## 示例
+
+- **示例评测报告**：`examples/example-report.md` —— 对一个「会议纪要」技能跑出的完整报告（安全门禁 91/A+、五维 96/A+、缺口与整改建议、可复现声明）。
+- **五维雷达样式**：`examples/radar-example.svg` —— 报告中五维条/雷达的视觉参考。
+
+示例报告可直接作为对外展示模板：同一输入 → 同一输出，行号与文件路径均可对照源码核查。
+
+## 交付标准
+
+- 输出结构化评测报告：总分、等级、各维度明细、发现项清单、改进建议
+- 每个发现项标注严重级别（CRITICAL/HIGH/MEDIUM/LOW）与扣分影响
+- 明确给出"是否可以上架/发布"的门禁结论
+
+## 安全维度定位（重要边界）
+
+本引擎的「安全 25 分」是**发布前快筛**，用于在打包、上架之前兜住明显问题，不是专业安全审计：
+
+- 覆盖：危险代码模式、硬编码密钥、可疑网络外发、文件系统越权、结构风险。
+- 不覆盖：深度语义攻击链、供应链投毒、混淆载荷还原、运行时行为。
+- 需要深度审计时叠加专用引擎：SkillScanner（49 条规则 / 11 类威胁 / APPROVE-CAUTION-REJECT 三档裁决）、AgentShield（`npx @elliotllliu/agentshield scan --json --fail-under`）、SafeSkill（Yara/AST/LLM 组合）。
+- 不要把本引擎的 100 分读成「绝对安全」：它只代表「在这套快筛规则下未命中」。
+
+## 公开评分卡
+
+```bash
+python scripts/scorecard.py <技能目录...> --out score --index scores.md
+```
+
+为每个技能包生成独立 Markdown 评分卡（总分 / 五维明细 / 发现的问题 / 整改清单 / 三律 / 复跑命令），并生成索引页。每页都是可被搜索引擎与 AI 直接抓取的独立 URL，解决「评测结果只活在一次对话里、外人看不到」的问题。
+
+## Known Limits
+
+- 静态分析，不实际运行被评测技能
+- 主要检查常见模式，不保证 100% 覆盖
+- 独立第三方评测，结论仅供参考
+- 若用户提供的是单个文件而非目录，需要先整理成标准技能目录结构再评测
