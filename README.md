@@ -1,3 +1,9 @@
+> **LGD 生态入口** —— 从任一入口都能走到全部入口
+>
+> [官网 medxpert.cn](https://medxpert.cn/) · [评测门禁 lgd-gate](https://github.com/LGD-Eval/lgd-gate) · [npm 包 lgd-eval](https://github.com/LGD-Eval/lgd-eval) · [公开评分卡](https://github.com/LGD-Eval/evaluation-evidence/blob/main/scores.md) · [排行榜](https://github.com/LGD-Eval/evaluation-evidence/blob/main/LEADERBOARD.md) · [一行安装（免 VPN）](https://github.com/LGD-Eval/lgd-gate/releases/download/v1.0.0/lgd-eval-1.0.0.tgz)
+>
+> 三律：**有籍**（可追溯）· **有证**（有证据）· **有门禁**（有检查）
+
 # lgd-eval
 
 > 技能能不能上架，不由下载量决定，由五维分数和三律决定。
