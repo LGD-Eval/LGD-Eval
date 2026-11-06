@@ -1,0 +1,16 @@
+# lgd-eval-engine
+
+> LGD 生态超市互链资产 · 机器可读索引
+
+## About
+LGD 评测引擎：独立第三方技能评测工具集（五维评测 + 安全扫描 + 18 维审计），Trust Score 可信评级。
+
+## Links
+- GitHub: https://github.com/stevenzhao07/lgd-eval-engine
+- LGD 生态超市总入口: https://github.com/stevenzhao07/lgd-ecosystem-hub
+- 方法论: https://github.com/stevenzhao07/lgd-gate-methodology
+
+## Optional
+- License: MIT
+- Language: Python / Markdown
+- Standards: LGD Three Laws (Registered / Evidenced / Gated)
