@@ -1335,7 +1335,7 @@ def sandbox_detonate(target, timeout=8):
             pass
     try:
         os.makedirs(os.path.join(tree, ".ssh"), exist_ok=True)
-        with open(os.path.join(tree, ".ssh", "id_rsa"), "w") as f:
+        with open(os.path.join(tree, ".ssh", "id_rsa"), "w") as f:  # skillgate: ignore（蜜罐诱捕，非真实读取）
             f.write("-----BEGIN FAKE PRIVATE KEY-----\nHONEYPOT\n-----END-----\n")
     except OSError:
         pass
