@@ -211,34 +211,166 @@ def evaluate_skill(skill_path):
     
     # 扫描所有 Python 文件
     security_issues = []
-    
-    def _strip_string_literals(code):
-        # 剥离字符串字面量，避免规则定义字符串（如 'eval(' / 'os.system('）被误判为真实调用
-        return re.sub(r"('[^'\\]*(?:\\.[^'\\]*)*'|\"[^\"\\]*(?:\\.[^\"\\]*)*\")", '', code)
-    
+
+    SEC_RULES = [
+        ("R-SEC-01", "硬编码凭证（AWS/GitHub/OpenAI/xox 格式）",
+         r"(AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})", 8),
+        ("R-SEC-02", "硬编码密钥赋值",
+         r"(api_key|apikey|secret_key|access_key|password|token)\s*=\s*['\"][^'\"]{8,}['\"]", 5),
+        ("R-SEC-03", "命令注入风险（shell=True）", r"shell\s*=\s*True", 6),
+        ("R-SEC-04", "动态执行（eval / exec）", r"\b(eval|exec)\s*\(", 6),
+        ("R-SEC-05", "系统命令调用（os.system）", r"os\.system\s*\(", 4),
+        ("R-SEC-06", "不安全反序列化（pickle / marshal / yaml.load）",
+         r"(pickle\.loads|marshal\.loads|yaml\.load)\s*\(", 5),
+        ("R-SEC-07", "危险递归删除（shutil.rmtree）", r"shutil\.rmtree\s*\(", 4),
+    ]
+
+    def _ast_security(src):
+        """AST 语义扫描：常量折叠 + 别名解析 + 展开 dict 关键字参数。
+
+        纯正则抓不到"拼接 / base64 / **dict / getattr / 别名调用"这类规避写法，
+        这里用语法树把它们还原成真实语义再判定。
+        """
+        import ast as _ast
+        out = []
+        try:
+            tree = _ast.parse(src)
+        except SyntaxError:
+            return out
+
+        def cstr(node):
+            try:
+                if isinstance(node, _ast.Constant) and isinstance(node.value, str):
+                    return node.value
+                if isinstance(node, _ast.BinOp) and isinstance(node.op, _ast.Add):
+                    a, b = cstr(node.left), cstr(node.right)
+                    if a is not None and b is not None:
+                        return a + b
+                if (isinstance(node, _ast.Call) and isinstance(node.func, _ast.Attribute)
+                        and node.func.attr in ("b64decode", "decodebytes") and node.args):
+                    import base64
+                    v = cstr(node.args[0])
+                    if v:
+                        try:
+                            return base64.b64decode(v).decode("utf-8", "ignore")
+                        except Exception:
+                            return None
+                return None
+            except Exception:
+                return None
+
+        def nameof(node):
+            if isinstance(node, _ast.Name):
+                return node.id
+            if isinstance(node, _ast.Attribute):
+                base = nameof(node.value)
+                return (base + "." + node.attr) if base else node.attr
+            return None
+
+        secret_re = (r"(AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{20,}"
+                     r"|xox[baprs]-[A-Za-z0-9-]{10,})")
+
+        aliases, dicts = {}, {}
+        for n in _ast.walk(tree):
+            if isinstance(n, _ast.Assign):
+                if isinstance(n.value, _ast.Name) and n.value.id in ("eval", "exec"):
+                    for t in n.targets:
+                        if isinstance(t, _ast.Name):
+                            aliases[t.id] = n.value.id
+                if isinstance(n.value, _ast.Dict):
+                    d = {}
+                    for k, v in zip(n.value.keys, n.value.values):
+                        if isinstance(k, _ast.Constant) and isinstance(v, _ast.Constant):
+                            d[k.value] = v.value
+                    for t in n.targets:
+                        if isinstance(t, _ast.Name):
+                            dicts[t.id] = d
+
+        seen = set()
+        for n in _ast.walk(tree):
+            if isinstance(n, (_ast.Constant, _ast.BinOp, _ast.Call)):
+                v = cstr(n)
+                if v and v not in seen and re.search(secret_re, v):
+                    seen.add(v)
+                    out.append(("R-SEC-01", "硬编码凭证（AST 折叠后命中）", getattr(n, "lineno", 1), 8))
+
+        for n in _ast.walk(tree):
+            if not isinstance(n, _ast.Call):
+                continue
+            ln = getattr(n, "lineno", 1)
+            fname = nameof(n.func)
+            if isinstance(n.func, _ast.Call) and nameof(n.func.func) == "getattr":
+                obj = nameof(n.func.args[0]) if n.func.args else None
+                attr = cstr(n.func.args[1]) if len(n.func.args) > 1 else None
+                if obj and attr:
+                    fname = obj + "." + attr
+            for kw in n.keywords:
+                is_shell = False
+                if kw.arg == "shell":
+                    is_shell = ((isinstance(kw.value, _ast.Constant) and kw.value.value is True)
+                                or cstr(kw.value) == "True")
+                elif kw.arg is None:
+                    if isinstance(kw.value, _ast.Dict):
+                        for k, v in zip(kw.value.keys, kw.value.values):
+                            if (isinstance(k, _ast.Constant) and k.value == "shell"
+                                    and isinstance(v, _ast.Constant) and v.value is True):
+                                is_shell = True
+                    elif isinstance(kw.value, _ast.Name) and dicts.get(kw.value.id, {}).get("shell") is True:
+                        is_shell = True
+                if is_shell:
+                    out.append(("R-SEC-03", "命令注入风险（shell=True，AST 识别）", ln, 6))
+            is_dyn = (fname in ("eval", "exec")
+                      or fname.split(".")[-1] in ("eval", "exec")
+                      or (isinstance(n.func, _ast.Name) and aliases.get(n.func.id) in ("eval", "exec")))
+            if is_dyn:
+                out.append(("R-SEC-04", "动态执行（eval/exec，AST 识别）", ln, 6))
+                # 自解压 / 混淆特征：exec 的参数不是普通短字面量，而是解码、拼接、下载或变量
+                arg = n.args[0] if n.args else None
+                if arg is not None and not (isinstance(arg, _ast.Constant)
+                                            and isinstance(arg.value, str) and len(arg.value) < 200):
+                    out.append(("R-SEC-08", "运行时重建载荷（自解压/混淆特征）", ln, 5))
+            if fname == "os.system":
+                out.append(("R-SEC-05", "系统命令调用（os.system，AST 识别）", ln, 4))
+            if fname in ("pickle.loads", "marshal.loads", "yaml.load"):
+                out.append(("R-SEC-06", "不安全反序列化（AST 识别）", ln, 5))
+            if fname == "shutil.rmtree":
+                out.append(("R-SEC-07", "危险递归删除（AST 识别）", ln, 4))
+        return out
+
+    # 跳过评测器自身，避免"规则定义字符串"造成自证误报
+    self_name = os.path.basename(__file__)
+
     if os.path.exists(scripts_dir):
-        for script_file in os.listdir(scripts_dir):
-            if script_file.endswith('.py'):
-                script_path = os.path.join(scripts_dir, script_file)
+        for script_file in sorted(os.listdir(scripts_dir)):
+            if not script_file.endswith('.py') or script_file == self_name:
+                continue
+            script_path = os.path.join(scripts_dir, script_file)
+            try:
                 with open(script_path, 'r', encoding='utf-8') as f:
                     code = f.read()
-                    stripped = _strip_string_literals(code)
-                    
-                    # 检查硬编码密钥（真实赋值语句才命中）
-                    if re.search(r'api_key\s*=\s*["\']', stripped, re.IGNORECASE):
-                        security_issues.append(f"{script_file}: 硬编码 API key")
-                        score -= 5
-                    
-                    # 检查 eval/exec（排除字符串字面量中的规则定义）
-                    if 'eval(' in stripped or 'exec(' in stripped:  # skillgate: ignore
-                        security_issues.append(f"{script_file}: 使用 eval/exec")
-                        score -= 3
-                    
-                    # 检查 os.system（排除字符串字面量中的规则定义）
-                    if 'os.system(' in stripped:  # skillgate: ignore
-                        security_issues.append(f"{script_file}: 使用 os.system")
-                        score -= 2
-    
+            except (OSError, UnicodeDecodeError):
+                continue
+            code_lines = code.splitlines()
+            for rid, rule_name, pat, points in SEC_RULES:
+                for m in re.finditer(pat, code):
+                    line_no = code[:m.start()].count("\n") + 1
+                    hit_line = code_lines[line_no - 1] if line_no - 1 < len(code_lines) else ""
+                    if "skillgate: ignore" in hit_line:
+                        continue
+                    msg = "%s:%d: %s" % (script_file, line_no, rule_name)
+                    if msg not in security_issues:
+                        security_issues.append(msg)
+                        score -= points
+            # AST 语义扫描：补正则抓不到的规避写法
+            for rid, rule_name, line_no, points in _ast_security(code):
+                hit_line = code_lines[line_no - 1] if line_no - 1 < len(code_lines) else ""
+                if "skillgate: ignore" in hit_line:
+                    continue
+                msg = "%s:%d: %s" % (script_file, line_no, rule_name)
+                if msg not in security_issues:
+                    security_issues.append(msg)
+                    score -= points
+
     if security_issues:
         for issue in security_issues:
             print(f"  ❌ {issue}")
