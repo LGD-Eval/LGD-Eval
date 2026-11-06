@@ -15,6 +15,7 @@ import time
 import shutil
 import tempfile
 import hashlib
+import urllib.request
 
 def evaluate_skill(skill_path):
     """评测一个技能。"""
@@ -539,6 +540,36 @@ def evaluate_skill(skill_path):
                     security_issues.append(msg)
                     score -= points
 
+    # ---- Node 包脚本审计：postinstall 是 npm 供应链投毒最常见的落点 ----
+    pkg_json = os.path.join(skill_path, "package.json")
+    if os.path.isfile(pkg_json):
+        try:
+            with open(pkg_json, "r", encoding="utf-8") as f:
+                pkg = json.load(f)
+        except (OSError, ValueError):
+            pkg = {}
+        pkg_scripts = pkg.get("scripts") or {}
+        for hook in ("preinstall", "install", "postinstall", "prepare"):
+            body = pkg_scripts.get(hook)
+            if not body:
+                continue
+            msg = "package.json:1: 安装期自动执行脚本（%s）" % hook
+            if msg not in security_issues:
+                security_issues.append(msg)
+                score -= 5
+            if re.search(r"(curl|wget)\s+[^|]*\|\s*(sh|bash)|node\s+-e|eval\s+\S", str(body)):
+                msg2 = "package.json:1: 安装期脚本含下载执行或动态求值（%s）" % hook
+                if msg2 not in security_issues:
+                    security_issues.append(msg2)
+                    score -= 8
+        dep_count = 0
+        for key in ("dependencies", "devDependencies"):
+            d = pkg.get(key)
+            if isinstance(d, dict):
+                dep_count += len(d)
+        if dep_count > 50:
+            warnings.append("package.json 依赖 %d 个，建议收敛攻击面" % dep_count)
+
     if security_issues:
         for issue in security_issues:
             print(f"  ❌ {issue}")
@@ -949,6 +980,24 @@ def canonical_dumps(obj):
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _tree_hashes(root):
+    """整棵树的文件哈希清单：任何人都能核对"评的就是这份代码"。"""
+    files = {}
+    skip = {".git", "__pycache__", "node_modules", ".venv", "venv"}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for fn in filenames:
+            p = os.path.join(dirpath, fn)
+            rel = os.path.relpath(p, root).replace("\\", "/")
+            try:
+                with open(p, "rb") as f:
+                    files[rel] = hashlib.sha256(f.read()).hexdigest()
+            except OSError:
+                continue
+    tree = hashlib.sha256(canonical_dumps(files).encode("utf-8")).hexdigest()
+    return files, "sha256:" + tree
+
+
 def build_attestation(root, score, grade, dims, evidence):
     """生成可复现的评测证明。fingerprint 只取自被测内容，不含路径与时间。"""
     payload = {
@@ -960,14 +1009,131 @@ def build_attestation(root, score, grade, dims, evidence):
                      for e in evidence],
     }
     fp = hashlib.sha256(canonical_dumps(payload).encode("utf-8")).hexdigest()
+    files, tree = _tree_hashes(root)
+    inputs = {
+        "file_count": len(files),
+        "files": files,
+        "tree_sha256": tree,
+        "note": "tree_sha256 是整棵树 + 目录结构的哈希；改动任何一个字节都会变，可用于 pin（锁定'跑的就是你审的'）",
+    }
     return {
         "framework": "LGD 三律 · 有籍(可追溯) / 有证(可验证) / 有门禁(可阻断)",
+        "engine_version": "1.1.0",
         "score": score,
         "grade": grade,
         "dims": payload["dims"],
         "findings": payload["findings"],
         "fingerprint": "sha256:" + fp,
-        "reproduce": "python evaluate.py <同一路径> --evidence-json out.json  # 应得到完全相同的 fingerprint",
+        "inputs": inputs,
+        "reproduce": "python evaluate.py <同一路径> --evidence-json out.json  # 应得到完全相同的 fingerprint 与 tree_sha256",
+    }
+
+
+# ============================================================
+# 可插拔检测器：默认关闭，按需自配（核心功能零成本即可用）
+# ============================================================
+def lgd_capabilities():
+    """返回各可选能力是否就绪。用于在报告里明确"什么没开"。"""
+    cfg = _llm_config()
+    docker = shutil.which("docker")
+    return {
+        "llm_review": bool(cfg),
+        "sandbox": bool(docker),
+        "llm_model": cfg[2] if cfg else None,
+        "docker_path": docker,
+    }
+
+
+def _llm_config():
+    base = (os.environ.get("LGD_LLM_BASE") or os.environ.get("OPENAI_BASE_URL") or "").strip()
+    key = (os.environ.get("LGD_LLM_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
+    model = (os.environ.get("LGD_LLM_MODEL") or "gpt-4o-mini").strip()
+    if base and key:
+        return base.rstrip("/"), key, model
+    return None
+
+
+def llm_review(evidence):
+    """L2 复核：只对已有命中项做二次判定，给出误报意见（不改分，交人判断）。
+
+    需自配：LGD_LLM_BASE / LGD_LLM_KEY（OpenAI 兼容接口），否则自动跳过。
+    """
+    cfg = _llm_config()
+    if not cfg:
+        return {"enabled": False, "reason": "未配置 LGD_LLM_BASE / LGD_LLM_KEY"}
+    base, key, model = cfg
+    items = [{"index": i, "rule": e["rule_id"], "file": e["file"],
+              "line": e["line"], "evidence": e["evidence"]}
+             for i, e in enumerate(evidence)][:20]
+    if not items:
+        return {"enabled": True, "verdicts": [], "note": "无命中项"}
+    prompt = (
+        "你是技能安全审核员。下面是扫描器对某技能的命中项。"
+        "逐条判断是真实风险(true_positive)还是规则误报(false_positive)，"
+        "只输出 JSON 数组，每项 {index, verdict, reason}，不要额外文字。\n"
+        + json.dumps(items, ensure_ascii=False)
+    )
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        base + "/chat/completions", data=payload,
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            body = json.loads(resp.read().decode("utf-8", "ignore"))
+        text = body["choices"][0]["message"]["content"].strip()
+        text = text.strip("`").replace("json\n", "", 1).strip()
+        return {"enabled": True, "verdicts": json.loads(text), "model": model}
+    except Exception as exc:
+        return {"enabled": True, "error": str(exc)[:200]}
+
+
+def build_sarif(evidence, score, grade):
+    """SARIF 2.1.0：GitHub Code Scanning / VS Code / 其他 SAST 平台可直接消费。"""
+    rules, results = {}, []
+    for e in evidence:
+        rid = e["rule_id"]
+        if rid not in rules:
+            rules[rid] = {
+                "id": rid,
+                "name": "LGD" + rid.replace("R-", "").replace("-", ""),
+                "shortDescription": {"text": e["dimension"]},
+                "fullDescription": {"text": e["fix"]},
+                "help": {"text": e["verify"]},
+                "helpUri": ("https://github.com/LGD-Eval/lgd-gate/blob/main/README.md#"
+                            + rid.lower()),
+                "defaultConfiguration": {
+                    "level": "error" if e["severity"] == "finding" else "warning"
+                },
+                "properties": {"tags": ["security", "lgd", e["dimension"]]},
+            }
+        results.append({
+            "ruleId": rid,
+            "level": "error" if e["severity"] == "finding" else "warning",
+            "message": {"text": e["evidence"]},
+            "locations": [{"physicalLocation": {
+                "artifactLocation": {"uri": e["file"] or "SKILL.md"},
+                "region": {"startLine": max(1, int(e["line"] or 1))},
+            }}],
+            "properties": {"dimension": e["dimension"], "severity": e["severity"]},
+        })
+    return {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {
+                "name": "LGD-Gate",
+                "informationUri": "https://github.com/LGD-Eval/lgd-gate",
+                "version": "1.0.0",
+                "rules": list(rules.values()),
+            }},
+            "results": results,
+            "properties": {"trustScore": score, "grade": grade,
+                           "framework": "LGD 三律 · 有籍/有证/有门禁"},
+        }],
     }
 
 
@@ -984,7 +1150,22 @@ if __name__ == "__main__":
                     help="在终端打印证据链：规则 → 文件:行 → 证据 → 整改 → 复验")
     ap.add_argument("--fail-under", type=int, default=0, metavar="N",
                     help="门禁模式：分数低于 N 时以退出码 1 结束，可直接用于 CI 卡 PR")
+    ap.add_argument("--sarif", metavar="PATH",
+                    help="输出 SARIF 2.1.0（GitHub Code Scanning 可直接消费）")
+    ap.add_argument("--llm-review", action="store_true",
+                    help="L2 复核（需自配 LGD_LLM_BASE / LGD_LLM_KEY；未配则跳过）")
+    ap.add_argument("--capabilities", action="store_true",
+                    help="只打印可选能力就绪状态（LLM 复核 / 沙箱）")
     args = ap.parse_args()
+
+    if args.capabilities:
+        caps = lgd_capabilities()
+        print("可选能力（默认关闭，按需自配）：")
+        print("  L2 LLM 复核: %s" % ("就绪 · " + str(caps["llm_model"]) if caps["llm_review"]
+                                  else "未配置（设 LGD_LLM_BASE + LGD_LLM_KEY 即可启用）"))
+        print("  L3 沙箱:     %s" % ("就绪 · " + caps["docker_path"] if caps["sandbox"]
+                                  else "未检测到 docker（装好后自动就绪）"))
+        sys.exit(0)
     
     if not args.skill_path:
         print("用法: python evaluate.py <skill_path> [--chart] [--ascii] [--fix-json <path>]")
@@ -1021,7 +1202,7 @@ if __name__ == "__main__":
         print()
         print(f"  🔧 机器可读整改清单已生成: {args.fix_json}（{plan['count']} 项，AI 可自主整改）")
 
-    if args.evidence_json or args.detail:
+    if args.evidence_json or args.detail or args.sarif or args.llm_review:
         evidence = build_evidence(target, findings, warnings)
         att = build_attestation(target, score, grade, dims, evidence)
 
@@ -1041,6 +1222,31 @@ if __name__ == "__main__":
                 print(f"       证据: {e['evidence']}")
                 print(f"       整改: {e['fix']}")
                 print(f"       复验: {e['verify']}")
+
+        if args.sarif:
+            with open(args.sarif, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(canonical_dumps(build_sarif(evidence, score, grade)))
+            print()
+            print(f"  🛰️ SARIF 2.1.0 已生成: {args.sarif}（可上传到 GitHub Code Scanning）")
+
+        if args.llm_review:
+            rv = llm_review(evidence)
+            print()
+            if not rv.get("enabled"):
+                print("  ⚠️ L2 复核未启用：%s（核心检测已生效，无需联网）" % rv.get("reason"))
+            elif rv.get("error"):
+                print("  ⚠️ L2 复核失败：%s" % rv["error"])
+            else:
+                vs = rv.get("verdicts") or []
+                tp = sum(1 for v in vs if str(v.get("verdict")) == "true_positive")
+                print("  🤖 L2 复核（%s）：真阳性 %d / 疑误报 %d" % (rv.get("model"), tp, len(vs) - tp))
+                for v in vs:
+                    if str(v.get("verdict")) != "false_positive":
+                        continue
+                    idx = v.get("index")
+                    if isinstance(idx, int) and 0 <= idx < len(evidence):
+                        print("     · 疑误报 [%s] %s" % (evidence[idx]["rule_id"],
+                                                   evidence[idx]["evidence"][:80]))
 
     if args.fail_under:
         if score < args.fail_under:
