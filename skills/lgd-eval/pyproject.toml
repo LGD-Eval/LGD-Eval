@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lgd-gate"
+version = "1.0.0"
+description = "LGD 三律（有籍/有证/有门禁）驱动的开源信任评测与门禁工具集"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["lgd", "security", "trust", "skill", "gate"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --no-header"
