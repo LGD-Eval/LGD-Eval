@@ -1,3 +1,5 @@
+[![Auto Eval: LGD + OpenSSF](https://github.com/LGD-Eval/lgd-eval/actions/workflows/auto-eval.yml/badge.svg)](https://github.com/LGD-Eval/lgd-eval/actions/workflows/auto-eval.yml)
+
 > **LGD 生态入口** —— 从任一入口都能走到全部入口
 >
 > [官网 medxpert.cn](https://medxpert.cn/) · [评测门禁 lgd-gate](https://github.com/LGD-Eval/lgd-gate) · [npm 包 lgd-eval](https://github.com/LGD-Eval/lgd-eval) · [公开评分卡](https://github.com/LGD-Eval/evaluation-evidence/blob/main/scores.md) · [排行榜](https://github.com/LGD-Eval/evaluation-evidence/blob/main/LEADERBOARD.md) · [一行安装（免 VPN）](https://github.com/LGD-Eval/lgd-gate/releases/download/v1.0.0/lgd-eval-1.0.0.tgz)
