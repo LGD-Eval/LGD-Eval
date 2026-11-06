@@ -48,17 +48,11 @@ jobs:
           LGD_GRADE: ${{ steps.lgd.outputs.grade }}
         run: |
           if [ -z "$LGD_SCORE" ]; then echo "no score, skip"; exit 0; fi
-          if [ ! -f README.md ]; then exit 0; fi
-          # 把 README 里所有 "Trust Score: NN/100" 换成 CI 实测值，并留痕
-          sed -i "s|Trust Score: [0-9]\+/100|Trust Score: ${LGD_SCORE}/100|g" README.md
-          sed -i "s|^等级: .*|等级: ${LGD_GRADE}|" README.md
-          cat >> README.md <<'EOF'
-
-<!-- CI-SCORE -->
-> 上面的分数由 GitHub Actions 每次推送到 main 后实跑得出（评测对象：`skills/lgd-eval`），
-> 不是手填。复跑：`python3 skills/lgd-eval/scripts/evaluate.py skills/lgd-eval`
-<!-- /CI-SCORE -->
-EOF
+          if [ ! -f README.md ]; then echo "no README, skip"; exit 0; fi
+          sed -i "s|Trust Score: [0-9][0-9]*/100|Trust Score: ${LGD_SCORE}/100|g" README.md
+          if ! grep -q "CI-SCORE" README.md; then
+            printf '\n<!-- CI-SCORE -->\n> 这个分数由 GitHub Actions 每次推送到 main 后实跑得出（评测对象 `skills/lgd-eval`），不是手填。\n> 复跑：`python3 skills/lgd-eval/scripts/evaluate.py skills/lgd-eval`\n<!-- /CI-SCORE -->\n' >> README.md
+          fi
           git config user.name "lgd-bot"
           git config user.email "bot@medxpert.cn"
           git add README.md
