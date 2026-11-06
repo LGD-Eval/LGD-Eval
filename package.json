@@ -1,0 +1,42 @@
+{
+  "name": "lgd-eval",
+  "version": "1.0.0",
+  "description": "LGD 技能评测引擎：五维评分 + 三律合规 + CI 门禁。评分口径与仓库内 Python 实现完全一致。",
+  "keywords": [
+    "ai-agent",
+    "skill",
+    "evaluation",
+    "security",
+    "trust-score",
+    "lgd",
+    "skill-gate",
+    "ci"
+  ],
+  "homepage": "https://github.com/LGD-Eval/lgd-gate",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LGD-Eval/lgd-gate.git"
+  },
+  "license": "MIT",
+  "author": "SynomosAI / LGD-Eval",
+  "bin": {
+    "lgd-eval": "bin/lgd-eval.js"
+  },
+  "files": [
+    "bin",
+    "vendor",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "scripts": {
+    "selftest": "node bin/lgd-eval.js --version"
+  }
+}
