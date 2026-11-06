@@ -1,109 +1,66 @@
-name: Auto Eval (LGD + OpenSSF)
+name: Auto Eval (skills/lgd-eval)
+
+# 目的：让 skills/lgd-eval 的对外分数永远由 CI 实跑得出，而不是手填。
+# 评测对象是子目录 skills/lgd-eval，用的是同一个 main 分支上的评测引擎。
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
+    paths:
+      - 'skills/lgd-eval/**'
+      - '.github/workflows/auto-eval.yml'
   schedule:
-    - cron: '0 2 * * 1'
+    - cron: '0 3 * * 1'
   workflow_dispatch:
 
 permissions:
   contents: write
-  security-events: write
-  id-token: write
 
 jobs:
-  lgd:
-    name: LGD self-evaluation
+  eval:
+    name: LGD self-evaluation (skills/lgd-eval)
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+
       - id: lgd
         uses: LGD-Eval/lgd-gate@main
         continue-on-error: true
         with:
-          path: .
-          threshold: '60'
+          path: skills/lgd-eval
+          threshold: '90'
+
       - name: Write summary
         if: always()
         run: |
-          echo "### LGD Trust Score" >> "$GITHUB_STEP_SUMMARY"
+          echo "### LGD Trust Score (skills/lgd-eval)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Score: **${{ steps.lgd.outputs.score }}/100**" >> "$GITHUB_STEP_SUMMARY"
+          echo "Score: **${{ steps.lgd.outputs.score }}/100** | Grade: **${{ steps.lgd.outputs.grade }}** | Tier: **${{ steps.lgd.outputs.tier }}**" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Engine: [LGD-Eval/lgd-gate](https://github.com/LGD-Eval/lgd-gate) -- same algorithm as the lgd-eval CLI." >> "$GITHUB_STEP_SUMMARY"
+          echo "Object: \`skills/lgd-eval\`. Engine: [LGD-Eval/lgd-gate](https://github.com/LGD-Eval/lgd-gate) @main." >> "$GITHUB_STEP_SUMMARY"
+          echo "Reproduce locally: \`python3 skills/lgd-eval/scripts/evaluate.py skills/lgd-eval\`" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Refresh score in README
         if: always()
         env:
           LGD_SCORE: ${{ steps.lgd.outputs.score }}
+          LGD_GRADE: ${{ steps.lgd.outputs.grade }}
         run: |
           if [ -z "$LGD_SCORE" ]; then echo "no score, skip"; exit 0; fi
-          if [ -f README.md ]; then
-            if grep -q "LGD-SCORE" README.md; then
-              sed -i "s|<!-- LGD-SCORE -->.*<!-- /LGD-SCORE -->|<!-- LGD-SCORE -->**LGD Trust Score: ${LGD_SCORE}/100**<!-- /LGD-SCORE -->|" README.md
-            else
-              { echo "<!-- LGD-SCORE -->**LGD Trust Score: ${LGD_SCORE}/100**<!-- /LGD-SCORE -->"; echo; cat README.md; } > README.new && mv README.new README.md
-            fi
-            git config user.name "lgd-bot"
-            git config user.email "bot@medxpert.cn"
-            git add README.md
-            git commit -m "chore: refresh LGD score [skip ci]" || exit 0
-            git push || true
-          fi
+          if [ ! -f README.md ]; then exit 0; fi
+          # 把 README 里所有 "Trust Score: NN/100" 换成 CI 实测值，并留痕
+          sed -i "s|Trust Score: [0-9]\+/100|Trust Score: ${LGD_SCORE}/100|g" README.md
+          sed -i "s|^等级: .*|等级: ${LGD_GRADE}|" README.md
+          cat >> README.md <<'EOF'
 
-  scorecard:
-    name: OpenSSF Scorecard
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install scorecard CLI
-        run: |
-          set -e
-          URL=$(curl -sSL https://api.github.com/repos/ossf/scorecard/releases/latest             | grep -o 'https://[^"]*linux_amd64.tar.gz' | head -1)
-          echo "downloading $URL"
-          curl -sSfL -o /tmp/sc.tar.gz "$URL"
-          tar xzf /tmp/sc.tar.gz -C /tmp
-          sudo install /tmp/scorecard /usr/local/bin/scorecard
-          scorecard version || true
-      - name: Run Scorecard
-        env:
-          GITHUB_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          scorecard --repo=github.com/${{ github.repository }}             --format=json --output=/tmp/scorecard.json --show-details || true
-          if [ ! -f /tmp/scorecard.json ]; then echo "scorecard produced no output"; exit 0; fi
-          {
-            echo "### OpenSSF Scorecard"
-            echo ""
-            echo "Score: **$(jq -r '.score' /tmp/scorecard.json) / 10**"
-            echo ""
-            echo "| Check | Score |"
-            echo "|---|---|"
-            jq -r '.checks[] | "| \(.name) | \(.score) |"' /tmp/scorecard.json
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Refresh scorecard in README
-        if: always()
-        run: |
-          [ -f /tmp/scorecard.json ] || exit 0
-          SC=$(jq -r '.score' /tmp/scorecard.json)
-          [ -z "$SC" ] && exit 0
-          if [ -f README.md ]; then
-            if grep -q "SCORECARD-SCORE" README.md; then
-              sed -i "s|<!-- SCORECARD-SCORE -->.*<!-- /SCORECARD-SCORE -->|<!-- SCORECARD-SCORE -->**OpenSSF Scorecard: ${SC}/10**<!-- /SCORECARD-SCORE -->|" README.md
-            else
-              { echo "<!-- SCORECARD-SCORE -->**OpenSSF Scorecard: ${SC}/10**<!-- /SCORECARD-SCORE -->"; echo; cat README.md; } > README.new && mv README.new README.md
-            fi
-            git config user.name "lgd-bot"
-            git config user.email "bot@medxpert.cn"
-            git add README.md
-            git commit -m "chore: refresh scorecard [skip ci]" || exit 0
-            git push || true
-          fi
-      - name: Upload result
-        uses: actions/upload-artifact@v4
-        with:
-          name: scorecard-json
-          path: /tmp/scorecard.json
+<!-- CI-SCORE -->
+> 上面的分数由 GitHub Actions 每次推送到 main 后实跑得出（评测对象：`skills/lgd-eval`），
+> 不是手填。复跑：`python3 skills/lgd-eval/scripts/evaluate.py skills/lgd-eval`
+<!-- /CI-SCORE -->
+EOF
+          git config user.name "lgd-bot"
+          git config user.email "bot@medxpert.cn"
+          git add README.md
+          git commit -m "chore: refresh LGD score [skip ci]" || exit 0
+          git push || true
