@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="520" viewBox="0 0 520 520">
+<rect width="520" height="520" fill="#f8fafc" rx="16"/>
+<text x="260" y="38" text-anchor="middle" font-family="sans-serif" font-size="19" font-weight="bold" fill="#0f172a">LGD 评测 · 五维雷达图</text>
+<polygon points="260.0,220.0 222.0,247.6 236.5,292.4 283.5,292.4 298.0,247.6" fill="none" stroke="#e2e8f0" stroke-width="1"/>
+<polygon points="260.0,180.0 183.9,235.3 213.0,324.7 307.0,324.7 336.1,235.3" fill="none" stroke="#e2e8f0" stroke-width="1"/>
+<polygon points="260.0,140.0 145.9,222.9 189.5,357.1 330.5,357.1 374.1,222.9" fill="none" stroke="#e2e8f0" stroke-width="1"/>
+<polygon points="260.0,100.0 107.8,210.6 166.0,389.4 354.0,389.4 412.2,210.6" fill="none" stroke="#e2e8f0" stroke-width="1"/>
+<polygon points="260.0,60.0 69.8,198.2 142.4,421.8 377.6,421.8 450.2,198.2" fill="none" stroke="#e2e8f0" stroke-width="1"/>
+<line x1="260" y1="260" x2="260.0" y2="60.0" stroke="#cbd5e1" stroke-width="1"/>
+<text x="260.0" y="30.0" text-anchor="middle" font-family="sans-serif" font-size="15" font-weight="bold" fill="#334155">结构</text>
+<text x="260.0" y="94.0" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="bold" fill="#0f172a">25</text>
+<line x1="260" y1="260" x2="69.8" y2="198.2" stroke="#cbd5e1" stroke-width="1"/>
+<text x="41.3" y="188.9" text-anchor="middle" font-family="sans-serif" font-size="15" font-weight="bold" fill="#334155">目录</text>
+<text x="102.1" y="208.7" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="bold" fill="#0f172a">12</text>
+<line x1="260" y1="260" x2="142.4" y2="421.8" stroke="#cbd5e1" stroke-width="1"/>
+<text x="124.8" y="446.1" text-anchor="middle" font-family="sans-serif" font-size="15" font-weight="bold" fill="#334155">文档</text>
+<text x="162.4" y="394.3" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="bold" fill="#0f172a">17</text>
+<line x1="260" y1="260" x2="377.6" y2="421.8" stroke="#cbd5e1" stroke-width="1"/>
+<text x="395.2" y="446.1" text-anchor="middle" font-family="sans-serif" font-size="15" font-weight="bold" fill="#334155">安全</text>
+<text x="357.6" y="394.3" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="bold" fill="#0f172a">25</text>
+<line x1="260" y1="260" x2="450.2" y2="198.2" stroke="#cbd5e1" stroke-width="1"/>
+<text x="478.7" y="188.9" text-anchor="middle" font-family="sans-serif" font-size="15" font-weight="bold" fill="#334155">生态</text>
+<text x="417.9" y="208.7" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="bold" fill="#0f172a">15</text>
+<polygon points="260.0,60.0 107.8,210.6 160.1,397.5 377.6,421.8 450.2,198.2" fill="rgba(37,99,235,0.25)" stroke="#2563eb" stroke-width="3" stroke-linejoin="round"/>
+<circle cx="260.0" cy="60.0" r="5" fill="#2563eb"/>
+<circle cx="107.8" cy="210.6" r="5" fill="#2563eb"/>
+<circle cx="160.1" cy="397.5" r="5" fill="#2563eb"/>
+<circle cx="377.6" cy="421.8" r="5" fill="#2563eb"/>
+<circle cx="450.2" cy="198.2" r="5" fill="#2563eb"/>
+</svg>
