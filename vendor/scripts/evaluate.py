@@ -15,7 +15,62 @@ import time
 import shutil
 import tempfile
 import hashlib
+import subprocess
 import urllib.request
+
+
+# ============================================================
+# 安全否决（safety veto）
+# ------------------------------------------------------------
+# 问题：五维加权平均会把"能读凭证并外发"的技能抬到 B 级——
+# 结构、文档、生态几乎满分，把安全 7/25 稀释掉了。
+# 业内成熟做法是按最严重命中封顶，而不是让平均说了算：
+#   guard0    : ≥1 exploitable critical → 最高 D（≤69）
+#   canopii   : critical cap 20 / high 49 / medium 74 / low 89
+#   DataWizual: 出现 CRITICAL 时有效等级封顶 C，数学分照报
+#   SonarQube : 门禁用条件判定，不看总分
+# 这里采用"封顶 + 同时报告原始分"：结论可解释，信息不丢失。
+# ============================================================
+
+VETO_CRITICAL = 49   # 强制落到 L3（每次调用确认）以下
+VETO_HIGH = 69       # 最高 C
+VETO_MEDIUM = 89     # 最高 A
+
+
+def safety_cap(findings):
+    """按命中的最高严重度给出分数上限。返回 (cap, level, reason)。"""
+    joined = " | ".join(findings)
+
+    # critical：已经证明"读了敏感数据并往外送"，或安装期就能拉起远程代码
+    crit_keys = (
+        "凭证文件读取后网络外发",
+        "跨文件凭证外泄",
+        "同文件污点",
+        "安装期脚本含下载执行",
+        "下载执行或动态求值",
+    )
+    crit = any(k in joined for k in crit_keys)
+    # 越权指令 + 隐瞒用户 + 读凭证 三者同时出现，等于在明说"别让人知道我在偷"
+    if ("隐瞒用户" in joined) and ("读取凭证" in joined or "凭证文件" in joined):
+        crit = True
+    if crit:
+        return VETO_CRITICAL, "critical", "命中文凭外泄 / 远程代码执行类问题"
+
+    high_keys = (
+        "硬编码凭证", "shell=True", "命令注入", "动态执行", "eval / exec",
+        "child_process.exec", "new Function", "安装期自动执行脚本", "os.system",
+        "不告知真实行为", "读取凭证文件指令",
+    )
+    if any(k in joined for k in high_keys):
+        return VETO_HIGH, "high", "命中凭证暴露 / 命令执行类问题"
+    if "越权指令" in joined or "免确认执行" in joined:
+        return VETO_HIGH, "high", "命中越权或免确认执行指令"
+
+    # 注意：不设 medium 档。反序列化、rmtree 之类已经在安全维度里扣过分了，
+    # 再封顶一次会造成双重惩罚——清理临时目录的 rmtree 是最典型的误伤，
+    # 评测器扫自己就会把自己的 92 分压成 89。否决只留给"已证实的外泄与远程执行"。
+    return 100, "", ""
+
 
 def evaluate_skill(skill_path):
     """评测一个技能。"""
@@ -618,7 +673,13 @@ def evaluate_skill(skill_path):
     # 最终评分
     # ============================================================
     elapsed = time.time() - start_time
-    
+
+    # ---- 安全否决：加权平均不得掩盖已经证实的安全事实 ----
+    raw_score = score
+    veto_cap, veto_level, veto_reason = safety_cap(findings)
+    if score > veto_cap:
+        score = veto_cap
+
     print("=" * 70)
     
     if score >= 90:
@@ -639,6 +700,8 @@ def evaluate_skill(skill_path):
     
     # 对外唯一分数：一行给完，不分列其他分数
     print(f"  LGD Trust Score: {score}/100  {emoji} {grade}")
+    if raw_score != score:
+        print(f"  ⛔ 安全否决：原始分 {raw_score} → 封顶 {score}（{veto_level}：{veto_reason}）")
     # 分数 → 执行权限分档（竞品只给分数，这里给出可直接落地的限权建议）
     if score >= 96:
         gate = "L0 免审批（可直接运行，无需限流）"
@@ -699,7 +762,19 @@ def evaluate_skill(skill_path):
     print("  评测完成！")
     print("=" * 70)
     
-    return score, grade, dims, findings, warnings
+    veto_info = None
+    if raw_score != score:
+        veto_info = {
+            "applied": True,
+            "raw_score": raw_score,
+            "capped_to": score,
+            "cap": veto_cap,
+            "level": veto_level,
+            "reason": veto_reason,
+            "policy": "critical(凭证外泄/远程执行)→cap 49 · high(凭证暴露/命令执行)→cap 69；否决只封顶不替代五维明细",
+        }
+
+    return score, grade, dims, findings, warnings, veto_info
 
 def render_ascii_bars(dims):
     """扣分明细（得分/满分）。刻意不输出百分比，避免出现第二套分数。"""
@@ -998,7 +1073,7 @@ def _tree_hashes(root):
     return files, "sha256:" + tree
 
 
-def build_attestation(root, score, grade, dims, evidence):
+def build_attestation(root, score, grade, dims, evidence, veto=None):
     """生成可复现的评测证明。fingerprint 只取自被测内容，不含路径与时间。"""
     payload = {
         "object": {"score": score, "grade": grade},
@@ -1008,6 +1083,8 @@ def build_attestation(root, score, grade, dims, evidence):
                       "evidence": e["evidence"], "fix": e["fix"], "verify": e["verify"]}
                      for e in evidence],
     }
+    if veto:
+        payload["veto"] = veto
     fp = hashlib.sha256(canonical_dumps(payload).encode("utf-8")).hexdigest()
     files, tree = _tree_hashes(root)
     inputs = {
@@ -1024,6 +1101,7 @@ def build_attestation(root, score, grade, dims, evidence):
         "dims": payload["dims"],
         "findings": payload["findings"],
         "fingerprint": "sha256:" + fp,
+        "safety_veto": veto if veto else {"applied": False},
         "inputs": inputs,
         "reproduce": "python evaluate.py <同一路径> --evidence-json out.json  # 应得到完全相同的 fingerprint 与 tree_sha256",
     }
@@ -1035,12 +1113,12 @@ def build_attestation(root, score, grade, dims, evidence):
 def lgd_capabilities():
     """返回各可选能力是否就绪。用于在报告里明确"什么没开"。"""
     cfg = _llm_config()
-    docker = shutil.which("docker")
+    backend = sandbox_backend()
     return {
         "llm_review": bool(cfg),
-        "sandbox": bool(docker),
+        "sandbox": bool(backend),
+        "sandbox_backend": backend,
         "llm_model": cfg[2] if cfg else None,
-        "docker_path": docker,
     }
 
 
@@ -1089,6 +1167,149 @@ def llm_review(evidence):
         return {"enabled": True, "verdicts": json.loads(text), "model": model}
     except Exception as exc:
         return {"enabled": True, "error": str(exc)[:200]}
+
+
+LGD_AUDIT_HOOK = r'''
+import sys, json, os
+_L = os.environ.get("LGD_AUDIT_LOG", "")
+_SENS = (".ssh", ".aws", ".env", "id_rsa", ".npmrc", ".git-credentials",
+         "credential", "secret", "token", "password")
+_BUSY = [False]
+
+def _w(rec):
+    if not _L:
+        return
+    with open(_L, "a") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+def _hook(event, args):
+    if _BUSY[0]:
+        return
+    _BUSY[0] = True
+    try:
+        if event == "socket.connect":
+            _w({"ev": "connect", "addr": str(args[1])})
+        elif event == "socket.getaddrinfo":
+            _w({"ev": "resolve", "host": str(args[0])})
+        elif event == "open" and args and isinstance(args[0], str):
+            low = args[0].lower()
+            if any(k in low for k in _SENS):
+                _w({"ev": "open_sensitive", "path": args[0]})
+        elif event in ("os.system", "subprocess.Popen"):
+            _w({"ev": event, "arg": str(args)[:160]})
+        elif event == "exec":
+            sz = len(str(args[0])) if args else 0
+            if sz > 200:
+                _w({"ev": "exec_big", "size": sz})
+    except Exception:
+        pass
+    finally:
+        _BUSY[0] = False
+
+sys.addaudithook(_hook)
+'''
+
+
+def sandbox_backend():
+    """L3 后端优先级：docker > unshare(Linux) > 不可用。"""
+    if shutil.which("docker"):
+        return "docker"
+    if sys.platform.startswith("linux") and shutil.which("unshare"):
+        return "unshare"
+    return None
+
+
+def _sandbox_one(backend, tree, script, timeout):
+    rel = os.path.relpath(script, tree).replace("\\", "/")
+    logp = os.path.join(tree, "_audit_%s.jsonl"
+                        % hashlib.sha256(rel.encode()).hexdigest()[:8])
+    if os.path.exists(logp):
+        os.remove(logp)
+    env = dict(os.environ)
+    env["LGD_AUDIT_LOG"] = logp
+    env["HOME"] = tree
+    for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+              "all_proxy", "ALL_PROXY", "ftp_proxy", "FTP_PROXY", "PYTHONHOME"):
+        env.pop(k, None)
+    if backend == "unshare":
+        env["PYTHONPATH"] = tree
+        cmd = ["unshare", "--user", "--map-root-user", "--net", "--pid", "--fork",
+               "timeout", str(timeout), sys.executable, os.path.basename(script)]
+        cwd = os.path.dirname(script)
+    else:  # docker
+        env["PYTHONPATH"] = "/s"
+        cmd = ["docker", "run", "--rm", "--network", "none", "--read-only",
+               "--memory", "256m", "--pids-limit", "64",
+               "-e", "LGD_AUDIT_LOG=/logs/a.jsonl", "-e", "PYTHONPATH=/s",
+               "-e", "HOME=/s",
+               "-v", tree + ":/s:ro", "-v", tree + ":/logs:rw",
+               "-w", "/s/" + os.path.dirname(rel),
+               "python:3.12-slim", "timeout", str(timeout),
+               "python3", os.path.basename(script)]
+        cwd = tree
+    try:
+        r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True,
+                           text=True, timeout=timeout + 8)
+        rc, err = r.returncode, r.stderr
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        rc, err = "TIMEOUT/ERR", str(exc)[:140]
+    events = []
+    for cand in (logp, os.path.join(tree, "a.jsonl")):
+        if os.path.exists(cand):
+            with open(cand, encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            events.append(json.loads(line))
+                        except ValueError:
+                            pass
+            break
+    return {"script": rel, "rc": rc, "stderr": err[-300:], "events": events}
+
+
+def sandbox_detonate(target, timeout=8):
+    """在隔离环境真实执行脚本，观测运行时行为：读凭证 / 解析外发域名 / 起子进程。
+
+    静态只能推测"可能外发"，这里能证明"它确实读了凭证、也确实要发往某个域名"。
+    """
+    backend = sandbox_backend()
+    if not backend:
+        return {"enabled": False,
+                "reason": "未检测到 docker 或 Linux unshare（装 docker 或换 Linux 后自动就绪）"}
+    work = tempfile.mkdtemp(prefix="lgd-sb-")
+    tree = os.path.join(work, "tree")
+    shutil.copytree(target, tree)
+    with open(os.path.join(tree, "sitecustomize.py"), "w", encoding="utf-8") as f:
+        f.write(LGD_AUDIT_HOOK)
+    # 蜜罐：放可读假凭证，让"读-发"链路能跑完，从而看到真实外发目标
+    for d in (tree, os.path.join(tree, "scripts")):
+        try:
+            with open(os.path.join(d, ".env"), "w") as f:
+                f.write("AWS_SECRET_ACCESS_KEY=FAKE_FOR_SANDBOX\n")
+        except OSError:
+            pass
+    try:
+        os.makedirs(os.path.join(tree, ".ssh"), exist_ok=True)
+        with open(os.path.join(tree, ".ssh", "id_rsa"), "w") as f:
+            f.write("-----BEGIN FAKE PRIVATE KEY-----\nHONEYPOT\n-----END-----\n")
+    except OSError:
+        pass
+
+    results = []
+    for dirpath, _, files in os.walk(tree):
+        for fn in sorted(files):
+            if fn.endswith(".py") and fn != "sitecustomize.py":
+                results.append(_sandbox_one(backend, tree, os.path.join(dirpath, fn), timeout))
+
+    exfil = []
+    for r in results:
+        sens = [e["path"] for e in r["events"] if e["ev"] == "open_sensitive"]
+        hosts = [e["host"] for e in r["events"] if e["ev"] == "resolve"]
+        if sens and hosts:
+            exfil.append({"script": r["script"], "read": sens[0], "sent_to": hosts})
+    return {"enabled": True, "backend": backend, "scripts": len(results),
+            "results": results, "exfiltration_evidence": exfil}
 
 
 def build_sarif(evidence, score, grade):
@@ -1156,6 +1377,8 @@ if __name__ == "__main__":
                     help="L2 复核（需自配 LGD_LLM_BASE / LGD_LLM_KEY；未配则跳过）")
     ap.add_argument("--capabilities", action="store_true",
                     help="只打印可选能力就绪状态（LLM 复核 / 沙箱）")
+    ap.add_argument("--sandbox", action="store_true",
+                    help="L3 沙箱：隔离执行并观测运行时行为（需 docker 或 Linux unshare）")
     args = ap.parse_args()
 
     if args.capabilities:
@@ -1163,8 +1386,8 @@ if __name__ == "__main__":
         print("可选能力（默认关闭，按需自配）：")
         print("  L2 LLM 复核: %s" % ("就绪 · " + str(caps["llm_model"]) if caps["llm_review"]
                                   else "未配置（设 LGD_LLM_BASE + LGD_LLM_KEY 即可启用）"))
-        print("  L3 沙箱:     %s" % ("就绪 · " + caps["docker_path"] if caps["sandbox"]
-                                  else "未检测到 docker（装好后自动就绪）"))
+        print("  L3 沙箱:     %s" % ("就绪 · 后端 " + str(caps["sandbox_backend"]) if caps["sandbox"]
+                                  else "未启用（装 docker，或在 Linux 上运行即可）"))
         sys.exit(0)
     
     if not args.skill_path:
@@ -1184,7 +1407,7 @@ if __name__ == "__main__":
         print("ℹ️ 单文件模式：已按标准技能目录包装评测（%s）" % os.path.basename(args.skill_path))
         print("   仅能评文本质量；结构/目录维度会因缺 LICENSE、README、scripts/ 扣分。完整评测请传目录。")
 
-    score, grade, dims, findings, warnings = evaluate_skill(target)
+    score, grade, dims, findings, warnings, veto_info = evaluate_skill(target)
 
     
     if args.ascii:
@@ -1204,7 +1427,7 @@ if __name__ == "__main__":
 
     if args.evidence_json or args.detail or args.sarif or args.llm_review:
         evidence = build_evidence(target, findings, warnings)
-        att = build_attestation(target, score, grade, dims, evidence)
+        att = build_attestation(target, score, grade, dims, evidence, veto_info)
 
         if args.evidence_json:
             with open(args.evidence_json, 'w', encoding='utf-8', newline='\n') as f:
@@ -1247,6 +1470,27 @@ if __name__ == "__main__":
                     if isinstance(idx, int) and 0 <= idx < len(evidence):
                         print("     · 疑误报 [%s] %s" % (evidence[idx]["rule_id"],
                                                    evidence[idx]["evidence"][:80]))
+
+    if args.sandbox:
+        sb = sandbox_detonate(target)
+        print()
+        if not sb.get("enabled"):
+            print("  ⚠️ L3 沙箱未启用：%s（静态检测已生效，无需环境）" % sb.get("reason"))
+        else:
+            print("  🧪 L3 沙箱（后端 %s）：执行 %d 个脚本" % (sb["backend"], sb["scripts"]))
+            for r in sb["results"]:
+                flags = []
+                if any(e["ev"] == "open_sensitive" for e in r["events"]):
+                    flags.append("读敏感文件")
+                if any(e["ev"] == "resolve" for e in r["events"]):
+                    flags.append("尝试外发")
+                if any(e["ev"] in ("os.system", "subprocess.Popen") for e in r["events"]):
+                    flags.append("起子进程")
+                print("     · %s → %s" % (r["script"], "、".join(flags) if flags else "未观测到可疑行为"))
+            if sb["exfiltration_evidence"]:
+                print("  ⛔ 运行时铁证（静态只能推测，这里是它真的做了）：")
+                for e in sb["exfiltration_evidence"]:
+                    print("     %s 读取 %s → 发往 %s" % (e["script"], e["read"], ", ".join(e["sent_to"])))
 
     if args.fail_under:
         if score < args.fail_under:
