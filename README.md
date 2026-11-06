@@ -31,6 +31,10 @@ npx lgd-eval ./my-skill --fail-under 90 --fix-json fix-plan.json
 Trust Score: 100/100
 等级: 🏆 A+
 
+<!-- CI-GATE-NOTE -->
+> 这个分数不是手填的：`.github/workflows/auto-eval.yml` 每次推送到 main 都会实跑一遍，**低于 90 分直接让 CI 变红**。复跑：`python3 skills/lgd-eval/scripts/evaluate.py skills/lgd-eval`
+<!-- /CI-GATE-NOTE -->
+
 五维: 结构完整性(25) / 目录结构(15) / 文档质量(20) / 安全检查(25) / 生态兼容(15)
 
 LGD 三律
