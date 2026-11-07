@@ -58,18 +58,28 @@ def grade_of(score):
 
 
 def _report_trust(path, score, grade, dims, findings, warnings, veto_info):
-    """复用 Engine 报告生成，透出结论/授权/执行决策；失败降级为空，不阻塞 Web 通道。"""
+    """复用 Engine 报告生成，透出权威结论/授权/执行决策；失败降级为空，不阻塞 Web 通道。
+
+    Web 不自行重算 PASS/FAIL：结论一律来自 Engine 统一结论计算器（assessment_outcome）。
+    """
     try:
         from evaluate import build_evidence, build_attestation
         evidence = build_evidence(path, findings, warnings)
         report = build_attestation(path, score, grade, dims, evidence, veto_info)
+        risk = report.get("risk_assessment") or {}
         return {
             "evidence_grade": report.get("evidence_grade"),
+            "evidence_status": report.get("evidence_status"),
             "authorization_status": report.get("authorization_status"),
             "assessment_outcome": report.get("assessment_outcome"),
             "verdict": report.get("verdict"),
+            "evaluation_status": report.get("evaluation_status"),
+            "safety_check_status": report.get("safety_check_status"),
+            "safety_clear": report.get("safety_clear"),
             "execution_decision": report.get("execution_decision"),
             "execution_applicability": report.get("execution_applicability"),
+            "evaluator_identity_status": report.get("evaluator_identity_status"),
+            "risk_level": risk.get("level"),
         }
     except Exception:
         return {}
@@ -199,8 +209,19 @@ async function go(){
     }).join('');
     const fs=(d.findings||[]).map(f=>'<li>'+f+'</li>').join('');
     const laws=d.lgd_laws||{};
+    // 结论只取 Engine 权威结论字段，前端不按分数/等级自行推断 PASS
+    const outcome=d.assessment_outcome||d.verdict||"";
+    const badge={PASS:["#2e9e5b","验收通过"],FAIL:["#d94848","验收未通过"],
+      INCONCLUSIVE:["#8a919c","结论不确定"],INCOMPLETE:["#8a919c","评测未完成"]}[outcome]||["#8a919c","未出可信结论"];
+    const rows=[
+      ["验收结论",outcome||"UNKNOWN"],["执行决策",d.execution_decision||"UNKNOWN"],
+      ["安全检查",d.safety_check_status||"UNKNOWN"],["安全放行",d.safety_clear===true?"是":"否"],
+      ["风险等级",d.risk_level||"UNKNOWN"],["授权状态",d.authorization_status||"UNKNOWN"]
+    ].map(([k,v])=>'<div class="dim"><span style="width:88px">'+k+'</span><span>'+v+'</span></div>').join('');
     document.getElementById('out').innerHTML=
       '<div class="score">'+d.score+'/100 <span style="font-size:18px">'+d.grade+'</span></div>'+
+      '<div style="margin:6px 0 14px"><span style="display:inline-block;padding:5px 12px;border-radius:8px;background:'+badge[0]+';color:#fff;font-size:14px">'+badge[1]+'</span></div>'+
+      rows+
       dims+
       (fs?'<h3 style="font-size:15px;margin-top:18px">发现的问题</h3><ul>'+fs+'</ul>':'')+
       '<p class="muted" style="margin-top:14px">三律：有籍 '+(laws.registered?'✅':'❌')+' · 有证 '+(laws.evidenced?'✅':'❌')+' · 有门禁 '+(laws.gated?'✅':'❌')+'</p>'+

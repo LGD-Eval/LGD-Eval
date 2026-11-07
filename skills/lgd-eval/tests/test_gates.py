@@ -61,6 +61,6 @@ def test_attestation_binds_evidence_metadata():
     assert att["affiliation"] == "AFFILIATED"
     assert att["rule_version"]
     assert att["engine_version"]
-    assert att["authorization"]["status"] == "NOT GRANTED"
+    assert att["authorization"]["status"] in ("NOT_GRANTED", "NOT GRANTED")
     assert att["inputs"]["tree_sha256"]
     assert att["fingerprint"].startswith("sha256:")

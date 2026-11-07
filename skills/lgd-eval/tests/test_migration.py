@@ -37,7 +37,7 @@ def test_migration_fills_defaults():
     legacy = _legacy_report()
     out = rm.migrate_report(legacy)
     assert out["evaluation_status"] in ("COMPLETE", "INCOMPLETE")
-    assert out["assessment_outcome"] in ("PASS", "FAIL", "INCOMPLETE")
+    assert out["assessment_outcome"] in ("PASS", "FAIL", "INCOMPLETE", "INCONCLUSIVE")
     assert out["safety_check_status"] in ("COMPLETE", "INCOMPLETE", "UNKNOWN")
     assert out["safety_clear"] is False
     assert out["execution_applicability"] == "NOT_APPLICABLE"

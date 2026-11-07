@@ -1241,8 +1241,14 @@ def _evaluator_tree_hash():
         return "UNKNOWN"
 
 
-def build_attestation(root, score, grade, dims, evidence, veto=None):
+def build_attestation(root, score, grade, dims, evidence, veto=None, *,
+                      evaluator_commit=None, evaluator_tree_sha256=None,
+                      identity_status=None, evidence_status=None,
+                      analysis_override=None):
     """生成可复现的评测证明。fingerprint 只取自被测内容，不含路径与时间。"""
+    from trust_model import (default_evidence_grade, build_subject,
+                             validate_trust_fields, fingerprint_subject,
+                             REPORT_SCHEMA_VERSION)
     payload = {
         "object": {"score": score, "grade": grade},
         "dims": {k: dims.get(k, 0) for k in sorted(dims)},
@@ -1262,26 +1268,54 @@ def build_attestation(root, score, grade, dims, evidence, veto=None):
         "note": "tree_sha256 是整棵树 + 目录结构的哈希；改动任何一个字节都会变，可用于 pin（锁定'跑的就是你审的'）",
     }
     from datetime import datetime, timezone
+    import platform
     affiliation = os.environ.get("LGD_AFFILIATION", "AFFILIATED")
-    evaluator_commit = os.environ.get("LGD_EVAL_COMMIT") or "UNKNOWN"
-    evaluator_tree_sha256 = _evaluator_tree_hash()
+    evaluator_commit = evaluator_commit if evaluator_commit is not None \
+        else (os.environ.get("LGD_EVAL_COMMIT") or "UNKNOWN")
+    evaluator_tree_sha256 = evaluator_tree_sha256 if evaluator_tree_sha256 is not None \
+        else _evaluator_tree_hash()
+    # 评测器身份：commit 与树哈希均可解析才记 KNOWN；任一 UNKNOWN 即身份未知（仅诊断）
+    if identity_status is not None:
+        evaluator_identity_status = identity_status
+    elif evaluator_commit == "UNKNOWN" or evaluator_tree_sha256 == "UNKNOWN":
+        evaluator_identity_status = "UNKNOWN"
+    else:
+        evaluator_identity_status = "KNOWN"
+    # 规则/配置/依赖锁等补充指纹：取不到记 UNKNOWN，不伪造
+    rule_bundle_sha256 = evaluator_tree_sha256  # 规则与引擎脚本同树，纳入同一树哈希
+    policy_version = RULE_VERSION
+    configuration_sha256 = "UNKNOWN"
+    dependency_lockfile_sha256 = "UNKNOWN"
+    build_artifact_sha256 = "UNKNOWN"
+    runtime_version = "%s %s" % (platform.python_implementation(), platform.python_version())
     meta = {
         "engine_version": ENGINE_VERSION,
         "rule_version": RULE_VERSION,
+        "policy_version": policy_version,
+        "schema_version": REPORT_SCHEMA_VERSION,
         "affiliation": affiliation,
         "evaluator_commit": evaluator_commit,
         "evaluator_tree_sha256": evaluator_tree_sha256,
-        "authorization": {"status": "NOT GRANTED",
+        "evaluator_identity_status": evaluator_identity_status,
+        "rule_bundle_sha256": rule_bundle_sha256,
+        "configuration_sha256": configuration_sha256,
+        "dependency_lockfile_sha256": dependency_lockfile_sha256,
+        "build_artifact_sha256": build_artifact_sha256,
+        "runtime_version": runtime_version,
+        "authorization": {"status": "NOT_GRANTED",
                           "note": "Trust Score 不构成执行授权；生产动作须经独立授权记录校验。"},
     }
     # 分析器加载完整性：必要分析器未加载 -> INCOMPLETE，Safety 不得 PASS、授权 DENY
-    try:
-        from analyzers import load_analyzers, safety_gate
-        analysis = safety_gate(load_analyzers())
-    except Exception as exc:  # 自检本身失败按不完整处理，不放行
-        analysis = {"analysis_completeness": "UNKNOWN", "safety_pass": False,
-                    "authorization_deny": True, "coverage_dropdowns": [],
-                    "analyzers": {"error": "%s: %s" % (type(exc).__name__, exc)}}
+    if analysis_override is not None:
+        analysis = analysis_override
+    else:
+        try:
+            from analyzers import load_analyzers, safety_gate
+            analysis = safety_gate(load_analyzers())
+        except Exception as exc:  # 自检本身失败按不完整处理，不放行
+            analysis = {"analysis_completeness": "UNKNOWN", "safety_pass": False,
+                        "authorization_deny": True, "coverage_dropdowns": [],
+                        "analyzers": {"error": "%s: %s" % (type(exc).__name__, exc)}}
     meta["analysis"] = analysis
 
     # 阻断项单列：Critical/High 规则命中项独立记录，不被其他维度高分抵消
@@ -1296,22 +1330,10 @@ def build_attestation(root, score, grade, dims, evidence, veto=None):
     meta["blocking_findings"] = blocking_findings
 
     # 三轴信任模型 + 统一评测对象（trust_model）
-    from trust_model import (default_evidence_grade, build_subject,
-                             validate_trust_fields, fingerprint_subject,
-                             REPORT_SCHEMA_VERSION)
     completeness = str(analysis.get("analysis_completeness", "")).upper()
     veto_active = bool(veto and (veto.get("applied") or veto.get("active")))
-    # 流程层：评测是否完整执行、必要分析器是否齐全（不评价对象好坏）
-    evaluation_status = ("INCOMPLETE" if completeness in ("INCOMPLETE", "UNKNOWN")
-                         or analysis.get("authorization_deny") else "COMPLETE")
-    # 验收层：对象是否通过验收；否决生效或 grade=D 必须 FAIL
-    if evaluation_status == "INCOMPLETE":
-        assessment_outcome = "INCOMPLETE"
-    elif veto_active or grade == "D":
-        assessment_outcome = "FAIL"
-    else:
-        assessment_outcome = "PASS"
-    verdict = assessment_outcome  # 过渡期镜像 assessment_outcome；下一主版本移除
+    # P0-2 流程层：只表示评测/分析是否完整执行；授权拒绝不回流为流程 INCOMPLETE
+    evaluation_status = "INCOMPLETE" if completeness in ("INCOMPLETE", "UNKNOWN") else "COMPLETE"
     # 安全三态：检查是否完成 / 是否无未阻断问题 / 否决记录
     if completeness == "UNKNOWN":
         safety_check_status = "UNKNOWN"
@@ -1319,8 +1341,25 @@ def build_attestation(root, score, grade, dims, evidence, veto=None):
         safety_check_status = "INCOMPLETE"
     else:
         safety_check_status = "COMPLETE"
-    safety_clear = (evaluation_status == "COMPLETE") and (not veto_active) \
+    # 安全未完成必须留原因（必要分析器缺失 + 可选分析器覆盖下降）
+    safety_block_reasons = (list(analysis.get("block_reasons") or [])
+                            + list(analysis.get("coverage_dropdowns") or []))
+    # P0-1：safety_clear 只依赖安全检查状态；INCOMPLETE/UNKNOWN 一律不得 true
+    safety_clear = (safety_check_status == "COMPLETE") and (not veto_active) \
         and (len(blocking_findings) == 0)
+    # 证据状态：本地自测、不可复现、无外部复核 -> INSUFFICIENT；可注入覆盖
+    evidence_status_out = evidence_status if evidence_status is not None else "INSUFFICIENT"
+    # 验收层结论计算器（唯一出口）：否决/grade=D 最高优先级 FAIL；
+    # 身份未知或证据不足/无效 -> INCONCLUSIVE，不得形成可信 PASS
+    if evaluation_status == "INCOMPLETE":
+        assessment_outcome = "INCOMPLETE"
+    elif veto_active or grade == "D":
+        assessment_outcome = "FAIL"
+    elif evaluator_identity_status == "UNKNOWN" or evidence_status_out in ("INSUFFICIENT", "INVALID"):
+        assessment_outcome = "INCONCLUSIVE"
+    else:
+        assessment_outcome = "PASS"
+    verdict = assessment_outcome  # 过渡期镜像 assessment_outcome；下一主版本移除
     # 本地阶段：有本地哈希/报告/版本，无外部复核，环境版本未齐 -> E2；E4 不可达
     evidence_grade = default_evidence_grade(has_local_artifacts=True,
                                             reproducible_locally=False,
@@ -1331,7 +1370,9 @@ def build_attestation(root, score, grade, dims, evidence, veto=None):
     trust_errors = validate_trust_fields(
         evidence_grade, authorization_status, verdict, execution_decision,
         is_execution_scope=False, has_external_review=False,
-        execution_applicability=execution_applicability)
+        execution_applicability=execution_applicability,
+        evaluator_identity_status=evaluator_identity_status,
+        evidence_status=evidence_status_out)
     subject = build_subject(
         name=os.path.basename(os.path.abspath(root)),
         source_entry=os.path.abspath(root),
@@ -1341,21 +1382,57 @@ def build_attestation(root, score, grade, dims, evidence, veto=None):
         rule_version=RULE_VERSION,
         analyzer_integrity=analysis,
         evidence_grade=evidence_grade,
+        evidence_status=evidence_status_out,
         verdict=verdict,
         assessment_outcome=assessment_outcome,
         authorization_status=authorization_status,
         execution_decision=execution_decision,
-        execution_applicability=execution_applicability)
+        execution_applicability=execution_applicability,
+        evaluator_identity_status=evaluator_identity_status)
     meta["trust_model"] = {
         "evidence_grade": evidence_grade,
+        "evidence_status": evidence_status_out,
         "authorization_status": authorization_status,
         "verdict": verdict,
         "assessment_outcome": assessment_outcome,
         "execution_applicability": execution_applicability,
         "execution_decision": execution_decision,
+        "evaluator_identity_status": evaluator_identity_status,
         "validation_errors": trust_errors,
     }
     meta["subject"] = fingerprint_subject(subject)
+
+    # P1-5 风险分析与验收结论分层：risk_assessment.level 仅描述风险面，
+    # SAFE 不等于 PASS；最终结论只由 assessment_outcome 计算器给出。
+    crit_hits = [e for e in evidence if e.get("rule_id") in CRIT_IDS]
+    high_hits = [e for e in evidence if e.get("rule_id") in HIGH_IDS]
+    if crit_hits:
+        risk_level = "UNSAFE"
+    elif high_hits:
+        risk_level = "CAUTION"
+    else:
+        risk_level = "SAFE"
+    scanner_results = []
+    for sname, info in (analysis.get("analyzers") or {}).items():
+        if not isinstance(info, dict):
+            scanner_results.append({"scanner": sname, "status": "UNAVAILABLE",
+                                    "risk_level": None, "findings": [],
+                                    "optional": False, "reason": str(info)})
+            continue
+        scanner_results.append({
+            "scanner": sname,
+            "status": "LOADED" if info.get("loaded") else "UNAVAILABLE",
+            "risk_level": None,
+            "findings": [],
+            "optional": bool(info.get("optional")),
+            "reason": info.get("reason"),
+        })
+    risk_assessment = {
+        "level": risk_level,
+        "note": "风险等级与验收结论分层：SAFE/CAUTION/UNSAFE 不自动映射 PASS/FAIL；最终结论见 assessment_outcome。",
+        "critical_count": len(crit_hits),
+        "high_count": len(high_hits),
+    }
 
     # 完整证明载荷：结论指纹 + 对象证据 + 元数据；任一变化则 attestation 指纹变化
     full = {"result": payload, "inputs": inputs, "meta": meta}
@@ -1365,6 +1442,7 @@ def build_attestation(root, score, grade, dims, evidence, veto=None):
         "schema_version": REPORT_SCHEMA_VERSION,
         "engine_version": ENGINE_VERSION,
         "rule_version": RULE_VERSION,
+        "policy_version": policy_version,
         "score": score,
         "grade": grade,
         "dims": payload["dims"],
@@ -1375,23 +1453,36 @@ def build_attestation(root, score, grade, dims, evidence, veto=None):
         "safety_veto": veto if veto else {"applied": False},
         "inputs": inputs,
         "affiliation": affiliation,
+        "evaluator_name": "lgd-eval",
+        "evaluator_version": ENGINE_VERSION,
         "evaluator_commit": evaluator_commit,
         "evaluator_tree_sha256": evaluator_tree_sha256,
+        "evaluator_identity_status": evaluator_identity_status,
+        "rule_bundle_sha256": rule_bundle_sha256,
+        "configuration_sha256": configuration_sha256,
+        "dependency_lockfile_sha256": dependency_lockfile_sha256,
+        "build_artifact_sha256": build_artifact_sha256,
+        "runtime_version": runtime_version,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "authorization": meta["authorization"],
         "analysis": analysis,
         "blocking_findings": blocking_findings,
+        "risk_assessment": risk_assessment,
+        "scanner_results": scanner_results,
         "evidence_grade": evidence_grade,
+        "evidence_status": evidence_status_out,
         "authorization_status": authorization_status,
         "evaluation_status": evaluation_status,
         "assessment_outcome": assessment_outcome,
         "safety_check_status": safety_check_status,
         "safety_clear": safety_clear,
+        "safety_block_reasons": safety_block_reasons,
         "execution_applicability": execution_applicability,
         "verdict": verdict,
         "execution_decision": execution_decision,
         "trust_model": meta["trust_model"],
         "subject": subject,
+        "attestation_meta": meta,
         "reproduce": "python verify_attestation.py <report.json>  # 校验结论与完整证明指纹",
     }
 

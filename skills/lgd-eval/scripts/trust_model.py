@@ -15,16 +15,29 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 # 统一 Trust Report JSON Schema 版本（语义化；新增可选字段不破坏旧消费者）
-REPORT_SCHEMA_VERSION = "1.0.0"
+REPORT_SCHEMA_VERSION = "1.1.0"
 
-# ---- 三轴 + 执行决策枚举 ----
+# ---- 三轴 + 执行决策枚举（R2 第二轮整改） ----
 
 EVIDENCE_GRADES = ("E0", "E1", "E2", "E3", "E4")
-AUTH_STATUSES = ("VALID", "INVALID", "EXPIRED", "REVOKED", "UNKNOWN", "NOT_GRANTED")
+# 授权状态：NOT_REQUESTED=未请求授权；NOT_GRANTED=需要授权但未获得；UNKNOWN=无法确认
+AUTH_STATUSES = ("VALID", "INVALID", "EXPIRED", "REVOKED", "UNKNOWN",
+                 "NOT_GRANTED", "NOT_REQUESTED")
 SOURCE_IDENTITY_STATUSES = ("KNOWN", "UNKNOWN")
 EXEC_APPLICABILITY = ("APPLICABLE", "NOT_APPLICABLE")
-VERDICTS = ("PASS", "FAIL", "INCOMPLETE")
+# 验收层结论：过渡期保留 INCOMPLETE；INCONCLUSIVE 为证据/状态不足的新口径
+VERDICTS = ("PASS", "FAIL", "INCOMPLETE", "INCONCLUSIVE")
+# 流程层评测状态
+EVAL_STATUSES = ("COMPLETE", "INCOMPLETE", "ERROR")
+# 证据状态：SUFFICIENT/INSUFFICIENT/INVALID
+EVIDENCE_STATUSES = ("SUFFICIENT", "INSUFFICIENT", "INVALID")
+# 评测器身份状态：KNOWN 可解析；UNKNOWN 仅作诊断，不得据此形成可信 PASS
+IDENTITY_STATUSES = ("KNOWN", "UNKNOWN")
 EXEC_DECISIONS = ("ALLOW", "DENY", "NOT_APPLICABLE")
+
+# 非有效授权（执行场景必须 DENY）
+NON_VALID_AUTH = ("UNKNOWN", "NOT_GRANTED", "INVALID", "EXPIRED",
+                  "REVOKED", "NOT_REQUESTED")
 
 # Scout 推荐状态机八态
 SCOUT_STATES = (
@@ -69,8 +82,13 @@ def validate_trust_fields(evidence_grade: Optional[str],
                           *,
                           is_execution_scope: bool = False,
                           has_external_review: bool = False,
-                          execution_applicability: Optional[str] = None) -> List[str]:
-    """硬规则校验，返回错误原因列表（空即通过）。"""
+                          execution_applicability: Optional[str] = None,
+                          evaluator_identity_status: Optional[str] = None,
+                          evidence_status: Optional[str] = None) -> List[str]:
+    """硬规则校验，返回错误原因列表（空即通过）。
+
+    向后兼容：新增可选参数缺省时不报错；一旦传入即按枚举与互斥规则校验。
+    """
     errors: List[str] = []
 
     if evidence_grade not in EVIDENCE_GRADES:
@@ -78,22 +96,36 @@ def validate_trust_fields(evidence_grade: Optional[str],
     if authorization_status not in AUTH_STATUSES:
         errors.append("AUTH_STATUS: 非法授权状态 %r" % authorization_status)
     if verdict not in VERDICTS:
-        errors.append("VERDICT: 非法结论 %r（应为 PASS/FAIL/INCOMPLETE）" % verdict)
+        errors.append("VERDICT: 非法结论 %r（应为 PASS/FAIL/INCOMPLETE/INCONCLUSIVE）" % verdict)
     if execution_decision not in EXEC_DECISIONS:
         errors.append("EXEC_DECISION: 非法执行决策 %r" % execution_decision)
     if execution_applicability is not None and execution_applicability not in EXEC_APPLICABILITY:
         errors.append("EXEC_APPLICABILITY: 非法适用性 %r" % execution_applicability)
+    if evaluator_identity_status is not None and evaluator_identity_status not in IDENTITY_STATUSES:
+        errors.append("IDENTITY_STATUS: 非法评测器身份状态 %r" % evaluator_identity_status)
+    if evidence_status is not None and evidence_status not in EVIDENCE_STATUSES:
+        errors.append("EVIDENCE_STATUS: 非法证据状态 %r" % evidence_status)
 
-    # INCOMPLETE 不得按 PASS 处理（verdict 枚举互斥，此处防组合误用）
-    if verdict == "INCOMPLETE" and execution_decision == "ALLOW":
-        errors.append("RULE: 评测未完成（INCOMPLETE）不得 ALLOW 执行")
-    # 执行授权场景下，授权非 VALID（UNKNOWN/NOT_GRANTED/INVALID/EXPIRED/REVOKED）必须 DENY
-    non_valid_auth = {"UNKNOWN", "NOT_GRANTED", "INVALID", "EXPIRED", "REVOKED"}
+    # INCOMPLETE/INCONCLUSIVE 不得按 PASS 处理
+    if verdict in ("INCOMPLETE", "INCONCLUSIVE") and execution_decision == "ALLOW":
+        errors.append("RULE: 评测未完成/结论不确定（%s）不得 ALLOW 执行" % verdict)
+    # 执行授权场景下，授权非 VALID 必须 DENY
+    non_valid_auth = set(NON_VALID_AUTH)
     if is_execution_scope and authorization_status in non_valid_auth and execution_decision != "DENY":
         errors.append("RULE: 授权状态 %r 在执行场景必须 DENY" % authorization_status)
     # NOT_APPLICABLE 是非执行场景，不得产生 ALLOW
     if execution_applicability == "NOT_APPLICABLE" and execution_decision == "ALLOW":
         errors.append("RULE: NOT_APPLICABLE 场景不得 ALLOW 执行")
+    # 评测器身份未知：只能作诊断，不得形成可信 PASS，也不得作为 ALLOW 依据
+    if evaluator_identity_status == "UNKNOWN" and verdict == "PASS":
+        errors.append("RULE: 评测器身份 UNKNOWN 不得形成可信 PASS")
+    if evaluator_identity_status == "UNKNOWN" and execution_decision == "ALLOW":
+        errors.append("RULE: 评测器身份 UNKNOWN 不得作为 ALLOW 依据")
+    # 证据 INVALID 不得通过；证据不足（INSUFFICIENT）不得形成可信 PASS
+    if evidence_status == "INVALID" and verdict == "PASS":
+        errors.append("RULE: 证据 INVALID 不得通过验证")
+    if evidence_status == "INSUFFICIENT" and verdict == "PASS":
+        errors.append("RULE: 证据不足（INSUFFICIENT）不得形成可信 PASS")
     # E4 必须有外部复核；无复核证据不得记 E4
     if evidence_grade == "E4" and not has_external_review:
         errors.append("RULE: E4 需非关联外部复核证据，当前不得记 E4")
@@ -108,9 +140,9 @@ def validate_trust_fields(evidence_grade: Optional[str],
 FP_SAFE_SUBJECT_KEYS = (
     "source_identity_status", "object_version", "tree_sha256",
     "engine_version", "engine_commit", "rule_version", "analyzer_integrity",
-    "evidence_grade", "verdict", "assessment_outcome",
+    "evidence_grade", "evidence_status", "verdict", "assessment_outcome",
     "authorization_status", "recommendation", "execution_decision",
-    "execution_applicability",
+    "execution_applicability", "evaluator_identity_status",
 )
 
 
@@ -135,7 +167,9 @@ def build_subject(*,
                   authorization_status: Optional[str] = None,
                   recommendation: Optional[str] = None,
                   execution_decision: Optional[str] = None,
-                  execution_applicability: Optional[str] = None) -> Dict[str, Any]:
+                  execution_applicability: Optional[str] = None,
+                  evidence_status: Optional[str] = None,
+                  evaluator_identity_status: Optional[str] = None) -> Dict[str, Any]:
     """统一评测对象（Evaluation Subject）。
 
     Engine 评测对象、Scout 推荐对象、执行端对象必须引用同一组绑定字段，
@@ -152,10 +186,12 @@ def build_subject(*,
         "rule_version": rule_version,
         "analyzer_integrity": analyzer_integrity,
         "evidence_grade": evidence_grade,
+        "evidence_status": evidence_status,
         "verdict": verdict,
         "assessment_outcome": assessment_outcome,
         "authorization_status": authorization_status,
         "recommendation": recommendation,
         "execution_decision": execution_decision,
         "execution_applicability": execution_applicability,
+        "evaluator_identity_status": evaluator_identity_status,
     }

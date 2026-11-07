@@ -18,7 +18,10 @@ import hashlib
 import json
 import sys
 
-from trust_model import fingerprint_subject
+from trust_model import (
+    fingerprint_subject, AUTH_STATUSES, VERDICTS, EXEC_DECISIONS,
+    EXEC_APPLICABILITY, IDENTITY_STATUSES, EVIDENCE_STATUSES,
+)
 
 
 def canonical_dumps(obj):
@@ -47,10 +50,12 @@ def verify(report: dict) -> list:
         errors.append("result_fingerprint 不匹配：结论字段可能被篡改")
 
     # 2. 重建完整证明载荷并比对 attestation_fingerprint
-    full = {
-        "result": payload,
-        "inputs": report.get("inputs", {}),
-        "meta": {
+    # 优先复用报告内进指纹的 meta 快照；旧报告缺该字段时退回按键重算
+    saved_meta = report.get("attestation_meta")
+    if isinstance(saved_meta, dict):
+        meta = saved_meta
+    else:
+        meta = {
             "engine_version": report.get("engine_version"),
             "rule_version": report.get("rule_version"),
             "affiliation": report.get("affiliation"),
@@ -61,7 +66,11 @@ def verify(report: dict) -> list:
             "blocking_findings": report.get("blocking_findings"),
             "trust_model": report.get("trust_model"),
             "subject": fingerprint_subject(report.get("subject") or {}),
-        },
+        }
+    full = {
+        "result": payload,
+        "inputs": report.get("inputs", {}),
+        "meta": meta,
     }
     attest_fp = "sha256:" + _sha256_hex(canonical_dumps(full))
     if attest_fp != report.get("attestation_fingerprint"):
@@ -76,20 +85,42 @@ def verify(report: dict) -> list:
     if not report.get("engine_version"):
         errors.append("缺少评测器版本（engine_version）")
     auth = report.get("authorization") or {}
-    if auth.get("status") != "NOT GRANTED":
-        errors.append("授权状态异常：评测证明必须标注 NOT GRANTED，不得自带执行授权")
+    # 评测证明本身非执行动作：不得自带执行授权（兼容旧文案 "NOT GRANTED"）
+    if auth.get("status") not in ("NOT_GRANTED", "NOT GRANTED"):
+        errors.append("授权状态异常：评测证明必须标注 NOT_GRANTED，不得自带执行授权")
     if not report.get("evidence_grade"):
         errors.append("缺少证据等级（evidence_grade，E0–E4）")
 
-    # 4. 枚举校验（授权状态含 NOT_GRANTED）
+    # 4. 枚举校验（授权状态含 NOT_GRANTED/NOT_REQUESTED）
     auth_status = report.get("authorization_status")
-    if auth_status not in ("VALID", "INVALID", "EXPIRED", "REVOKED", "UNKNOWN", "NOT_GRANTED"):
+    if auth_status not in AUTH_STATUSES:
         errors.append("非法授权状态（authorization_status=%r）" % auth_status)
     outcome = report.get("assessment_outcome") or report.get("verdict")
-    if outcome not in ("PASS", "FAIL", "INCOMPLETE"):
-        errors.append("缺少或非法验收结论（assessment_outcome/verdict，应为 PASS/FAIL/INCOMPLETE）")
-    if report.get("execution_decision") not in ("ALLOW", "DENY", "NOT_APPLICABLE"):
+    if outcome not in VERDICTS:
+        errors.append("缺少或非法验收结论（assessment_outcome/verdict，应为 PASS/FAIL/INCOMPLETE/INCONCLUSIVE）")
+    if report.get("execution_decision") not in EXEC_DECISIONS:
         errors.append("缺少或非法执行决策（execution_decision）")
+    appl = report.get("execution_applicability")
+    if appl is not None and appl not in EXEC_APPLICABILITY:
+        errors.append("非法适用性（execution_applicability=%r）" % appl)
+    ident = report.get("evaluator_identity_status")
+    if ident is not None and ident not in IDENTITY_STATUSES:
+        errors.append("非法评测器身份状态（evaluator_identity_status=%r）" % ident)
+    ev_status = report.get("evidence_status")
+    if ev_status is not None and ev_status not in EVIDENCE_STATUSES:
+        errors.append("非法证据状态（evidence_status=%r）" % ev_status)
+
+    # 评测报告非执行动作：NOT_APPLICABLE 场景不得 ALLOW
+    if appl == "NOT_APPLICABLE" and report.get("execution_decision") == "ALLOW":
+        errors.append("RULE: NOT_APPLICABLE 场景不得 ALLOW 执行")
+    # 身份未知不得形成可信 PASS，也不得作为 ALLOW 依据
+    if ident == "UNKNOWN" and outcome == "PASS":
+        errors.append("RULE: 评测器身份 UNKNOWN 不得形成可信 PASS")
+    if ident == "UNKNOWN" and report.get("execution_decision") == "ALLOW":
+        errors.append("RULE: 评测器身份 UNKNOWN 不得作为 ALLOW 依据")
+    # 证据 INVALID/INSUFFICIENT 不得形成可信 PASS
+    if ev_status in ("INVALID", "INSUFFICIENT") and outcome == "PASS":
+        errors.append("RULE: 证据 %s 不得形成可信 PASS" % ev_status)
 
     # 5. 评测器身份不得冒充可复现：空值/null 必须记 UNKNOWN，不得留空
     for ident in ("evaluator_commit", "evaluator_tree_sha256"):
@@ -115,7 +146,8 @@ def verify(report: dict) -> list:
     # 8. 顶层三轴镜像须与 trust_model 子块一致
     tm = report.get("trust_model") or {}
     for field in ("evidence_grade", "authorization_status", "verdict", "execution_decision",
-                  "assessment_outcome", "execution_applicability"):
+                  "assessment_outcome", "execution_applicability", "evidence_status",
+                  "evaluator_identity_status"):
         if tm.get(field) is not None and tm.get(field) != report.get(field):
             errors.append("trust_model.%s 与顶层 %s 不一致" % (field, field))
 

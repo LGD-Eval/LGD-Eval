@@ -81,23 +81,67 @@
       }
     },
     "evidence_grade": {"type": "string", "enum": ["E0", "E1", "E2", "E3", "E4"]},
-    "authorization_status": {"type": "string", "enum": ["VALID", "INVALID", "EXPIRED", "REVOKED", "UNKNOWN", "NOT_GRANTED"]},
-    "verdict": {"type": "string", "enum": ["PASS", "FAIL", "INCOMPLETE"], "description": "过渡期镜像 assessment_outcome；下一主版本移除"},
-    "assessment_outcome": {"type": "string", "enum": ["PASS", "FAIL", "INCOMPLETE"], "description": "验收层结论；否决生效或 grade=D 必须 FAIL"},
-    "evaluation_status": {"type": "string", "enum": ["COMPLETE", "INCOMPLETE"], "description": "流程层：评测是否完整执行"},
+    "evidence_status": {"type": "string", "enum": ["SUFFICIENT", "INSUFFICIENT", "INVALID"], "description": "证据状态；INSUFFICIENT/INVALID 不得形成可信 PASS"},
+    "authorization_status": {"type": "string", "enum": ["VALID", "INVALID", "EXPIRED", "REVOKED", "UNKNOWN", "NOT_GRANTED", "NOT_REQUESTED"]},
+    "verdict": {"type": "string", "enum": ["PASS", "FAIL", "INCOMPLETE", "INCONCLUSIVE"], "description": "过渡期镜像 assessment_outcome；下一主版本移除"},
+    "assessment_outcome": {"type": "string", "enum": ["PASS", "FAIL", "INCOMPLETE", "INCONCLUSIVE"], "description": "验收层结论；否决生效或 grade=D 必须 FAIL；身份未知/证据不足为 INCONCLUSIVE"},
+    "evaluation_status": {"type": "string", "enum": ["COMPLETE", "INCOMPLETE", "ERROR"], "description": "流程层：评测是否完整执行；不混入授权结果"},
     "safety_check_status": {"type": "string", "enum": ["COMPLETE", "INCOMPLETE", "UNKNOWN"]},
-    "safety_clear": {"type": "boolean", "default": false},
+    "safety_clear": {"type": "boolean", "default": false, "description": "仅当 safety_check_status=COMPLETE 且无否决/阻断项才为 true"},
+    "safety_block_reasons": {"type": "array", "items": {"type": "string"}, "description": "安全检查未完成/未放行的可追溯原因"},
     "execution_applicability": {"type": "string", "enum": ["APPLICABLE", "NOT_APPLICABLE"]},
     "execution_decision": {"type": "string", "enum": ["ALLOW", "DENY", "NOT_APPLICABLE"]},
+    "evaluator_identity_status": {"type": "string", "enum": ["KNOWN", "UNKNOWN"], "description": "评测器身份；UNKNOWN 仅作诊断，不得形成可信 PASS 或 ALLOW 依据"},
+    "evaluator_name": {"type": "string"},
+    "evaluator_version": {"type": "string"},
+    "rule_bundle_sha256": {"type": "string", "default": "UNKNOWN"},
+    "policy_version": {"type": "string"},
+    "configuration_sha256": {"type": "string", "default": "UNKNOWN"},
+    "dependency_lockfile_sha256": {"type": "string", "default": "UNKNOWN"},
+    "build_artifact_sha256": {"type": "string", "default": "UNKNOWN"},
+    "runtime_version": {"type": "string"},
+    "risk_assessment": {
+      "type": "object",
+      "description": "风险分析层，与验收结论分层；SAFE/CAUTION/UNSAFE 不自动映射 PASS/FAIL",
+      "properties": {
+        "level": {"type": "string", "enum": ["SAFE", "CAUTION", "UNSAFE"]},
+        "note": {"type": "string"},
+        "critical_count": {"type": "integer", "minimum": 0},
+        "high_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "scanner_results": {
+      "type": "array",
+      "description": "各扫描器分别记录状态/风险等级/发现；最终结论不由扫描器各自给出",
+      "items": {
+        "type": "object",
+        "properties": {
+          "scanner": {"type": "string"},
+          "status": {"type": "string", "enum": ["LOADED", "UNAVAILABLE"]},
+          "risk_level": {"type": ["string", "null"]},
+          "findings": {"type": "array"},
+          "optional": {"type": "boolean"},
+          "reason": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "source_schema_version": {"type": ["string", "null"], "description": "迁移前历史报告 schema_version"},
+    "source_report_digest": {"type": "string", "description": "迁移前原始报告整体 canonical 摘要"},
+    "migration_tool_version": {"type": "string"},
+    "attestation_meta": {"type": "object", "description": "进 attestation 指纹的 meta 快照，供校验器复算"},
     "migrated_from": {"type": ["string", "null"], "description": "迁移来源旧 schema_version；历史报告只读保留，不重算指纹"},
     "trust_model": {
       "type": "object",
       "description": "三轴镜像与硬规则校验结果",
       "properties": {
         "evidence_grade": {"type": "string"},
+        "evidence_status": {"type": "string"},
         "authorization_status": {"type": "string"},
         "verdict": {"type": "string"},
+        "assessment_outcome": {"type": "string"},
+        "execution_applicability": {"type": "string"},
         "execution_decision": {"type": "string"},
+        "evaluator_identity_status": {"type": "string"},
         "validation_errors": {"type": "array"}
       }
     },
@@ -115,12 +159,14 @@
         "rule_version": {"type": ["string", "null"]},
         "analyzer_integrity": {"type": ["object", "null"]},
         "evidence_grade": {"type": ["string", "null"]},
+        "evidence_status": {"type": ["string", "null"]},
         "verdict": {"type": ["string", "null"]},
         "assessment_outcome": {"type": ["string", "null"]},
         "authorization_status": {"type": ["string", "null"]},
         "recommendation": {"type": ["string", "null"]},
         "execution_decision": {"type": ["string", "null"]},
-        "execution_applicability": {"type": ["string", "null"]}
+        "execution_applicability": {"type": ["string", "null"]},
+        "evaluator_identity_status": {"type": ["string", "null"]}
       }
     },
     "reproduce": {"type": "string"}

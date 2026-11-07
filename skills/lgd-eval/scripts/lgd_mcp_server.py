@@ -70,6 +70,11 @@ def _ok(id_, result):
     return {"jsonrpc": "2.0", "id": id_, "result": result}
 
 
+def _trusted_outcome(outcome, errs):
+    """纯函数：只有 Engine 权威结论 PASS 且无校验错误才标可信；MCP 不自行重算结论。"""
+    return outcome == "PASS" and not errs
+
+
 def _err(id_, code, msg):
     return {"jsonrpc": "2.0", "id": id_, "error": {"code": code, "message": msg}}
 
@@ -96,23 +101,35 @@ def call_tool(name, args):
             "findings": findings[:20] if isinstance(findings, list) else findings,
         }
         # 复用 Engine 报告生成，透出结论/授权/执行决策；生成失败则降级不阻塞通道
+        outcome = None
+        trusted = False
         try:
             from evaluate import build_evidence, build_attestation
             evidence = build_evidence(path, findings, warnings)
             report = build_attestation(path, score, grade, dims, evidence, veto_info)
+            outcome = report.get("assessment_outcome")
+            errs = (report.get("trust_model") or {}).get("validation_errors") or []
+            trusted = _trusted_outcome(outcome, errs)
             payload.update({
                 "evidence_grade": report.get("evidence_grade"),
+                "evidence_status": report.get("evidence_status"),
                 "authorization_status": report.get("authorization_status"),
-                "assessment_outcome": report.get("assessment_outcome"),
+                "assessment_outcome": outcome,
                 "verdict": report.get("verdict"),
+                "evaluation_status": report.get("evaluation_status"),
+                "safety_check_status": report.get("safety_check_status"),
+                "safety_clear": report.get("safety_clear"),
                 "execution_decision": report.get("execution_decision"),
                 "execution_applicability": report.get("execution_applicability"),
+                "evaluator_identity_status": report.get("evaluator_identity_status"),
             })
         except Exception:
             pass
+        # 非 PASS（FAIL/INCOMPLETE/INCONCLUSIVE）或校验有错，一律不标可信；MCP 不自行重算结论
+        payload["trusted_outcome"] = trusted
         return {
             "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, indent=2)}],
-            "isError": False,
+            "isError": not trusted,
         }
     if name == "evaluate_mcp":
         if _mcp_mod is None:
@@ -126,10 +143,17 @@ def call_tool(name, args):
         dims["文档与示例"], notes["文档与示例"] = _mcp_mod.score_docs(path, text)
         dims["生态兼容"], notes["生态兼容"] = _mcp_mod.score_eco(path)
         total = sum(dims.values())
+        # 独立评分路径：只给建议性分数，不经统一结论计算器，不产生 PASS/授权/执行决策，
+        # 避免与 Engine 可信结论冲突。
         return {
             "content": [{"type": "text", "text": json.dumps({
                 "score": total, "grade": _mcp_mod.grade_of(total),
                 "dims": dims, "notes": notes,
+                "trusted_outcome": False,
+                "assessment_outcome": "NOT_VERIFIED",
+                "authorization_status": "NOT_REQUESTED",
+                "execution_decision": "NOT_APPLICABLE",
+                "note": "独立建议性评分，未经统一信任模型结论计算器；不构成验收通过或执行授权。",
             }, ensure_ascii=False, indent=2)}],
             "isError": False,
         }

@@ -68,13 +68,25 @@ def coverage_dropdowns(report: Dict[str, Dict[str, Any]]) -> List[str]:
 def safety_gate(report: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """完整性对安全闸门的影响。
 
-    INCOMPLETE -> 不得 PASS、必须 DENY；返回结构化结论供评测器/授权层读取。
+    字段语义拆分（R2 P0-2）：
+    - ``analysis_completeness``：评测/分析流程是否完整执行（COMPLETE/INCOMPLETE）。
+    - ``analysis_blocked``：必要分析器缺失导致分析被阻断（流程完整性信号）。
+    - ``authorization_deny``：兼容别名，历史消费者仍读；语义等同 analysis_blocked，
+      不再作为评测流程 INCOMPLETE 的依据，只喂给安全/决策层。
+    - ``block_reasons``：必要分析器未加载的具体原因（未完成必须可追溯）。
     """
+    missing_necessary = [
+        "%s 未加载（%s）" % (name, info.get("reason") or "未知原因")
+        for name, info in report.items()
+        if not info.get("optional") and not info.get("loaded")
+    ]
     complete = completeness(report) == "COMPLETE"
     return {
         "analysis_completeness": complete and "COMPLETE" or "INCOMPLETE",
         "safety_pass": complete,
-        "authorization_deny": not complete,
+        "analysis_blocked": not complete,
+        "authorization_deny": not complete,  # 兼容别名，勿再用于流程状态判定
+        "block_reasons": missing_necessary,
         "coverage_dropdowns": coverage_dropdowns(report),
         "analyzers": report,
     }
