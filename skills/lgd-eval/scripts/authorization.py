@@ -322,6 +322,8 @@ def evaluate_authorization(
     evaluation: Optional[Dict[str, Any]] = None,
     safety: Optional[Dict[str, Any]] = None,
     request: Optional[Dict[str, Any]] = None,
+    current_tree_sha256: Optional[str] = None,
+    tree_fingerprint_error: Optional[Exception] = None,
 ) -> Dict[str, Any]:
     """逐次授权判定。返回决策与逐条原因；默认拒绝。
 
@@ -356,6 +358,14 @@ def evaluate_authorization(
         reasons.append("SAFETY_POLICY_PASS: 安全否决未解除或状态非 PASS")
     if not _scope_match(record, request):
         reasons.append("EXECUTION_SCOPE_MATCH: 动作 / 范围 / 环境 / 对象 SHA 不匹配")
+
+    # P0-1：执行前/执行点复核失败（对象或树指纹变化、取不到、格式非法、
+    # 计算失败）必须进入拒绝原因，授权判定不得放行。仅当调用方显式提供
+    # 执行点快照或计算异常时才复核；未提供快照不把"缺当前指纹"计入授权拒绝。
+    if current_tree_sha256 is not None or tree_fingerprint_error:
+        recheck = pre_execution_recheck(record, request, current_tree_sha256,
+                                        tree_fingerprint_error)
+        reasons.extend(recheck["reasons"])
 
     allowed = len(reasons) == 0
     # 放行前标记一次性授权已消费（仅在内存，不写生产）

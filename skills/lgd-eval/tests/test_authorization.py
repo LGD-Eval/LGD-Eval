@@ -302,6 +302,15 @@ def test_p01_toctou_object_change_after_recheck_denies():
     assert any("不一致" in r for r in second["reasons"])
 
 
+def test_p01_recheck_failure_into_authorization_denies():
+    """P0-1：recheck 失败（树指纹不一致）进入授权判定必须 DENY。"""
+    rec = _record(tree_sha256="d" * 64)
+    out = az.evaluate_authorization(rec, _evaluation_full(), _safety_pass(), _request(),
+                                    current_tree_sha256="f" * 64)
+    assert out["decision"] == "DENY"
+    assert any("树指纹" in r for r in out["reasons"])
+
+
 # ---------- 第三批 R3 P0-2：评测证明完整性校验 ----------
 
 def test_p02_weak_evaluation_only_id_denies():
