@@ -60,6 +60,7 @@ def _evaluation_full():
         "evaluation_id": "eval-1",
         "score": 96,
         "assessment_outcome": "PASS",
+        "evaluation_status": "COMPLETE",
         "evidence_status": "SUFFICIENT",
         "evaluator_identity_status": "KNOWN",
         "subject_sha256": _SHA,
@@ -314,6 +315,12 @@ def test_p02_weak_evaluation_only_id_denies():
 def test_p02_non_pass_outcome_denies():
     ev = _evaluation_full(); ev["assessment_outcome"] = "INCOMPLETE"
     assert len(az._evaluation_validation(ev, _request())) > 0
+
+
+def test_p02_non_complete_status_denies():
+    ev = _evaluation_full(); ev["evaluation_status"] = "ERROR"
+    reasons = az._evaluation_validation(ev, _request())
+    assert any("COMPLETE" in r for r in reasons)
 
 
 def test_p02_insufficient_or_invalid_evidence_denies():

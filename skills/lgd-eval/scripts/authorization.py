@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional
 
 from trust_model import (
     LOCAL_SIMULATION_RISKS, VERDICTS, EVIDENCE_STATUSES, IDENTITY_STATUSES,
+    EVAL_STATUSES,
 )
 
 # 授权记录状态
@@ -140,6 +141,13 @@ def _evaluation_validation(evaluation: Optional[Dict[str, Any]],
         reasons.append("EVALUATION_VALID: 证据状态缺失或非法（%r）" % ev)
     elif ev in ("INSUFFICIENT", "INVALID"):
         reasons.append("EVALUATION_VALID: 证据 %s 不得采信" % ev)
+
+    # 3b. 评测状态：仅 COMPLETE 可作为放行依据
+    es = evaluation.get("evaluation_status")
+    if es not in EVAL_STATUSES:
+        reasons.append("EVALUATION_VALID: 评测状态缺失或非法（%r）" % es)
+    elif es != "COMPLETE":
+        reasons.append("EVALUATION_VALID: 评测状态非 COMPLETE，不得作为放行依据")
 
     # 4. 评测器身份：UNKNOWN 仅作诊断，不得作为放行依据
     ident = evaluation.get("evaluator_identity_status")
