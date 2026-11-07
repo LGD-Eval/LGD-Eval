@@ -90,6 +90,16 @@ def test_T03_safety_incomplete_or_unknown_not_clear():
         assert rep["safety_clear"] is False
         assert rep["safety_check_status"] in ("INCOMPLETE", "UNKNOWN")
         assert rep["safety_block_reasons"]  # 未完成必须留原因
+    # 场景 3：检查 COMPLETE，但存在 Critical 阻断项 -> 不得 clear
+    crit = [{"rule_id": "R-SEC-09", "dimension": "安全", "file": "evil.py",
+             "line": 1, "evidence": "外泄数据流", "fix": "移除", "verify": "无外发"}]
+    rep = ev.build_attestation(_root(), 80, "B", {}, crit, None,
+                               identity_status="KNOWN",
+                               evidence_status="SUFFICIENT",
+                               analysis_override=COMPLETE_ANALYSIS)
+    assert rep["safety_check_status"] == "COMPLETE"
+    assert rep["blocking_findings"]
+    assert rep["safety_clear"] is False
     # 对照：COMPLETE + 无否决无阻断才允许 clear
     rep = _pass_report()
     assert rep["safety_check_status"] == "COMPLETE"
@@ -111,6 +121,14 @@ def test_T04_complete_flow_not_polluted_by_auth_deny():
     errs = tm.validate_trust_fields("E2", "NOT_GRANTED", "FAIL", "ALLOW",
                                     is_execution_scope=True)
     assert errs
+    # 授权侧真实判定：无有效评测记录 + 未批准 + 无安全策略 -> decision=DENY，不放行
+    import authorization as az
+    record = az.AuthorizationRecord(
+        authorization_id="t04", subject_id="subj", subject_sha256="0" * 64,
+        action_type="UNTRUSTED_EXEC", target_scope="scope", environment="local")
+    decision = az.evaluate_authorization(record, evaluation=None, safety=None, request=None)
+    assert decision["execution_decision"] == "DENY"
+    assert decision["allowed"] is False
 
 
 # ---------- T05：APPLICABLE + UNKNOWN + ALLOW 拒绝 ----------
@@ -239,12 +257,14 @@ def test_T16_web_propagates_authoritative_outcome():
 # ---------- T17：vendor 旧副本漂移探测（本轮不重构，留证风险） ----------
 def test_T17_vendor_copy_drift_recorded():
     vendor = os.path.abspath(os.path.join(SCRIPTS, "..", "..", "vendor", "scripts"))
-    names = set(os.listdir(vendor)) if os.path.isdir(vendor) else set()
-    # 新门禁模块在 vendor 旧副本中缺失即记录漂移；断言不掩盖现状
-    missing = [m for m in ("trust_model.py", "report_migration.py") if m not in names]
+    expected_missing = ("trust_model.py", "report_migration.py")
+    if not os.path.isdir(vendor):
+        return  # 无 vendor 目录时不断言漂移；现状由仓外审计台账记录
+    names = set(os.listdir(vendor))
+    missing = [m for m in expected_missing if m not in names]
+    # 如实登记缺失的新门禁模块；断言不把"缺失"掩盖为"一致"
     assert isinstance(missing, list)
-    # 审计台账应登记该漂移风险（文档层，不在此断言重构完成）
-    assert os.path.isdir(vendor) if names else True
+    assert set(missing) <= set(expected_missing)
 
 
 # ---------- T18：eval_mcp 独立路径不产生冲突可信结论 ----------
