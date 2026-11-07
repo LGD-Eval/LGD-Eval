@@ -54,13 +54,27 @@ def _evaluation():
     return {"evaluation_id": "eval-1", "score": 96}
 
 
+def _evaluation_full():
+    """P0-2 全维度齐备的评测证明（对象绑定/结论/证据/身份/版本齐备）。"""
+    return {
+        "evaluation_id": "eval-1",
+        "score": 96,
+        "assessment_outcome": "PASS",
+        "evidence_status": "SUFFICIENT",
+        "evaluator_identity_status": "KNOWN",
+        "subject_sha256": _SHA,
+        "rule_version": "rules-2026-11-07",
+        "engine_version": "1.1.0",
+    }
+
+
 def _safety_pass():
     return {"status": "PASS", "veto": {"active": False}}
 
 
 def test_allow_when_all_conditions_met():
     rec = _record()
-    out = az.evaluate_authorization(rec, _evaluation(), _safety_pass(), _request())
+    out = az.evaluate_authorization(rec, _evaluation_full(), _safety_pass(), _request())
     assert out["decision"] == "ALLOW"
     assert out["allowed"] is True
 
@@ -185,9 +199,9 @@ def test_t06_scope_target_change_denies():
 
 def test_t08_replay_consumed_record_denies():
     rec = _record()
-    first = az.evaluate_authorization(rec, _evaluation(), _safety_pass(), _request())
+    first = az.evaluate_authorization(rec, _evaluation_full(), _safety_pass(), _request())
     assert first["decision"] == "ALLOW"
-    second = az.evaluate_authorization(rec, _evaluation(), _safety_pass(), _request())
+    second = az.evaluate_authorization(rec, _evaluation_full(), _safety_pass(), _request())
     assert second["decision"] == "DENY"
     assert any("REPLAY" in r for r in second["reasons"])
 
@@ -228,3 +242,116 @@ def test_t14_non_pass_states_never_grant(status):
     rec = _record()
     out = az.evaluate_authorization(rec, _evaluation(), safety, _request())
     assert out["decision"] == "DENY"
+
+
+# ---------- 第三批 R3 P0-1：树指纹缺失 / 格式 / 计算失败 / TOCTOU ----------
+
+def test_p01_record_tree_fingerprint_missing_denies():
+    """P0-1 / NC-06：授权记录未绑定树指纹 -> 拒绝。"""
+    rec = _record(tree_sha256=None)
+    out = az.pre_execution_recheck(rec, _request(), current_tree_sha256="d" * 64)
+    assert out["allowed"] is False
+    assert any("未绑定对象树指纹" in r for r in out["reasons"])
+
+
+def test_p01_current_tree_fingerprint_missing_denies():
+    """P0-1：执行前取不到当前树指纹 -> 拒绝。"""
+    rec = _record(tree_sha256="d" * 64)
+    out = az.pre_execution_recheck(rec, _request(), current_tree_sha256=None)
+    assert out["allowed"] is False
+    assert any("未取得当前对象树指纹" in r for r in out["reasons"])
+
+
+def test_p01_record_tree_fingerprint_malformed_denies():
+    """P0-1：记录树指纹非 64-hex -> 拒绝。"""
+    rec = _record(tree_sha256="not-a-tree-sha")
+    out = az.pre_execution_recheck(rec, _request(), current_tree_sha256="d" * 64)
+    assert out["allowed"] is False
+    assert any("格式非法" in r for r in out["reasons"])
+
+
+def test_p01_current_tree_fingerprint_malformed_denies():
+    """P0-1：当前树指纹非 64-hex -> 拒绝。"""
+    rec = _record(tree_sha256="d" * 64)
+    out = az.pre_execution_recheck(rec, _request(), current_tree_sha256="zzz")
+    assert out["allowed"] is False
+    assert any("格式非法" in r for r in out["reasons"])
+
+
+def test_p01_tree_fingerprint_compute_error_denies():
+    """P0-1：树指纹计算抛异常 -> 拒绝，不得跳过校验。"""
+    rec = _record(tree_sha256="d" * 64)
+    out = az.pre_execution_recheck(
+        rec, _request(), tree_fingerprint_error=RuntimeError("hash unavailable"))
+    assert out["allowed"] is False
+    assert any("计算失败" in r for r in out["reasons"])
+
+
+def test_p01_toctou_object_change_after_recheck_denies():
+    """P0-1 / TOCTOU：recheck 通过后对象被替换，执行点二次复核必须拒绝。
+
+    旧 recheck 结果不得跨执行复用；执行前重新取指纹比对，变化即拒绝。
+    """
+    rec = _record(tree_sha256="d" * 64)
+    req = _request()
+    first = az.pre_execution_recheck(rec, req, current_tree_sha256="d" * 64)
+    assert first["allowed"] is True
+    second = az.recheck_before_execute(rec, req, current_tree_sha256="f" * 64)
+    assert second["allowed"] is False
+    assert any("不一致" in r for r in second["reasons"])
+
+
+# ---------- 第三批 R3 P0-2：评测证明完整性校验 ----------
+
+def test_p02_weak_evaluation_only_id_denies():
+    """P0-2 / NC-03：仅含 evaluation_id 的弱证明进入判定必须 DENY。"""
+    rec = _record()
+    out = az.evaluate_authorization(rec, _evaluation(), _safety_pass(), _request())
+    assert out["decision"] == "DENY"
+    assert any("EVALUATION_VALID" in r for r in out["reasons"])
+
+
+def test_p02_non_pass_outcome_denies():
+    ev = _evaluation_full(); ev["assessment_outcome"] = "INCOMPLETE"
+    assert len(az._evaluation_validation(ev, _request())) > 0
+
+
+def test_p02_insufficient_or_invalid_evidence_denies():
+    for status in ("INSUFFICIENT", "INVALID"):
+        ev = _evaluation_full(); ev["evidence_status"] = status
+        reasons = az._evaluation_validation(ev, _request())
+        assert any("不得采信" in r for r in reasons)
+
+
+def test_p02_unknown_identity_denies():
+    ev = _evaluation_full(); ev["evaluator_identity_status"] = "UNKNOWN"
+    reasons = az._evaluation_validation(ev, _request())
+    assert any("UNKNOWN" in r for r in reasons)
+
+
+def test_p02_subject_sha_mismatch_denies():
+    ev = _evaluation_full(); ev["subject_sha256"] = "c" * 64
+    reasons = az._evaluation_validation(ev, _request())
+    assert any("对象 SHA 与授权请求不一致" in r for r in reasons)
+
+
+def test_p02_missing_version_fields_denies():
+    ev = _evaluation_full()
+    ev.pop("rule_version"); ev.pop("engine_version")
+    reasons = az._evaluation_validation(ev, _request())
+    assert any("规则版本" in r for r in reasons)
+    assert any("引擎版本" in r for r in reasons)
+
+
+def test_p02_evidence_binding_break_denies():
+    """P0-2：证据条目回链到别的对象 SHA -> 绑定断裂判无效。"""
+    ev = _evaluation_full()
+    ev["evidence"] = [{"subject_sha256": "0" * 64, "rule_version": "rules-2026-11-07"}]
+    reasons = az._evaluation_validation(ev, _request())
+    assert any("证据 #0 对象 SHA 与报告不一致" in r for r in reasons)
+
+
+def test_p02_full_evaluation_validates():
+    """P0-2 正向：全维度齐备评测证明通过完整性校验。"""
+    reasons = az._evaluation_validation(_evaluation_full(), _request())
+    assert reasons == []

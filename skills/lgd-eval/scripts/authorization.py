@@ -26,6 +26,10 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from trust_model import (
+    LOCAL_SIMULATION_RISKS, VERDICTS, EVIDENCE_STATUSES, IDENTITY_STATUSES,
+)
+
 # 授权记录状态
 PENDING = "PENDING"
 APPROVED = "APPROVED"
@@ -106,11 +110,89 @@ def is_expired(record: AuthorizationRecord, now: Optional[datetime] = None) -> b
     return exp is not None and now >= exp
 
 
-def _evaluation_valid(evaluation: Optional[Dict[str, Any]]) -> bool:
+def _evaluation_validation(evaluation: Optional[Dict[str, Any]],
+                           request: Optional[Dict[str, Any]] = None) -> List[str]:
+    """逐项核验评测证明完整性，返回拒绝原因列表（空即有效）。
+
+    授权侧只承认"可绑定对象、结论/证据/身份齐备、版本可追溯、指纹可复算"
+    的评测证明；任何关键字段缺失、非法、矛盾或无法复算均不得通过授权门禁。
+    本函数只做口径判定，不签发生产授权，也不重复实现指纹计算。
+    """
+    reasons: List[str] = []
     if not evaluation:
-        return False
-    # 评测记录存在且分数可解析；分数仅作参考，不构成授权。
-    return evaluation.get("evaluation_id") is not None
+        reasons.append("EVALUATION_VALID: 缺少评测记录")
+        return reasons
+
+    # 1. 评测编号
+    if not evaluation.get("evaluation_id"):
+        reasons.append("EVALUATION_VALID: 缺少 evaluation_id")
+
+    # 2. 验收结论：须属合法枚举；非 PASS 不得作为放行依据
+    outcome = evaluation.get("assessment_outcome") or evaluation.get("verdict")
+    if outcome not in VERDICTS:
+        reasons.append("EVALUATION_VALID: 验收结论缺失或非法（%r）" % outcome)
+    elif outcome != "PASS":
+        reasons.append("EVALUATION_VALID: 验收结论非 PASS，不得作为放行依据")
+
+    # 3. 证据状态：INVALID/INSUFFICIENT 不得采信
+    ev = evaluation.get("evidence_status")
+    if ev not in EVIDENCE_STATUSES:
+        reasons.append("EVALUATION_VALID: 证据状态缺失或非法（%r）" % ev)
+    elif ev in ("INSUFFICIENT", "INVALID"):
+        reasons.append("EVALUATION_VALID: 证据 %s 不得采信" % ev)
+
+    # 4. 评测器身份：UNKNOWN 仅作诊断，不得作为放行依据
+    ident = evaluation.get("evaluator_identity_status")
+    if ident not in IDENTITY_STATUSES:
+        reasons.append("EVALUATION_VALID: 评测器身份缺失或非法（%r）" % ident)
+    elif ident == "UNKNOWN":
+        reasons.append("EVALUATION_VALID: 评测器身份 UNKNOWN 仅作诊断，不得作为放行依据")
+
+    # 5. 被评对象 SHA：合法 64-hex 且与授权请求一致
+    eval_sha = evaluation.get("subject_sha256")
+    if not eval_sha or not _SHA_RE.match(eval_sha):
+        reasons.append("EVALUATION_VALID: 被评对象 SHA 缺失或非 64-hex")
+    elif request and eval_sha != request.get("subject_sha256"):
+        reasons.append("EVALUATION_VALID: 评测对象 SHA 与授权请求不一致")
+
+    # 6. 版本可追溯：规则版本 + 引擎版本或 commit 非空
+    if not evaluation.get("rule_version"):
+        reasons.append("EVALUATION_VALID: 缺少规则版本（rule_version）")
+    if not (evaluation.get("engine_version") or evaluation.get("engine_commit")):
+        reasons.append("EVALUATION_VALID: 缺少引擎版本或 commit")
+
+    # 7. 报告-证据绑定：证据条目须回链同一评测记录/对象/规则版本
+    evidence = evaluation.get("evidence") or evaluation.get("evidence_items") or []
+    if isinstance(evidence, list):
+        for idx, item in enumerate(evidence):
+            if not isinstance(item, dict):
+                continue
+            if item.get("evaluation_id") and \
+                    item.get("evaluation_id") != evaluation.get("evaluation_id"):
+                reasons.append("EVALUATION_VALID: 证据 #%d 未回链同一评测记录" % idx)
+            if item.get("subject_sha256") and eval_sha and \
+                    item.get("subject_sha256") != eval_sha:
+                reasons.append("EVALUATION_VALID: 证据 #%d 对象 SHA 与报告不一致" % idx)
+            if item.get("rule_version") and \
+                    item.get("rule_version") != evaluation.get("rule_version"):
+                reasons.append("EVALUATION_VALID: 证据 #%d 规则版本与报告不一致" % idx)
+
+    # 8. 报告双指纹独立复算（携带完整报告时复用独立校验器）
+    report = evaluation.get("report")
+    if isinstance(report, dict):
+        try:
+            from verify_attestation import verify as _verify_attestation
+            for ve in _verify_attestation(report):
+                reasons.append("EVALUATION_VALID: 报告证明校验失败：%s" % ve)
+        except Exception as exc:  # 校验器异常同样不得放行
+            reasons.append("EVALUATION_VALID: 报告证明校验异常：%s" % type(exc).__name__)
+
+    return reasons
+
+
+def _evaluation_valid(evaluation: Optional[Dict[str, Any]],
+                      request: Optional[Dict[str, Any]] = None) -> bool:
+    return len(_evaluation_validation(evaluation, request)) == 0
 
 
 def _authorization_valid(record: AuthorizationRecord) -> bool:
@@ -167,19 +249,43 @@ def _action_known(action_type: str) -> bool:
 
 
 def pre_execution_recheck(record: AuthorizationRecord, request: Dict[str, Any],
-                          current_tree_sha256: Optional[str] = None) -> Dict[str, Any]:
+                          current_tree_sha256: Optional[str] = None,
+                          tree_fingerprint_error: Optional[Exception] = None) -> Dict[str, Any]:
     """执行前二次校验：对象 SHA 与对象树指纹必须仍与授权时一致。
 
     评测结束后、真实执行前再跑一次；对象被替换 / 增删文件导致树指纹变化，
-    旧授权即失效。
+    旧授权即失效。树指纹缺失、格式非法或计算失败均按不可复核处置，不放行。
     """
     reasons: List[str] = []
     if record.subject_sha256 != request.get("subject_sha256"):
         reasons.append("RECHECK: 对象 SHA 与授权记录不一致")
-    if record.tree_sha256 and current_tree_sha256 and \
+    if not record.tree_sha256 or not str(record.tree_sha256).strip():
+        reasons.append("RECHECK: 授权记录未绑定对象树指纹（证据不足）")
+    elif not _SHA_RE.match(record.tree_sha256):
+        reasons.append("RECHECK: 授权记录树指纹格式非法（非 64-hex）")
+    if tree_fingerprint_error:
+        reasons.append("RECHECK: 对象树指纹计算失败，无法复核一致性")
+    elif not current_tree_sha256 or not str(current_tree_sha256).strip():
+        reasons.append("RECHECK: 执行前未取得当前对象树指纹，无法复核一致性")
+    elif not _SHA_RE.match(current_tree_sha256):
+        reasons.append("RECHECK: 当前对象树指纹格式非法（非 64-hex）")
+    elif record.tree_sha256 and current_tree_sha256 and \
             record.tree_sha256 != current_tree_sha256:
         reasons.append("RECHECK: 对象树指纹与授权记录不一致")
     return {"allowed": len(reasons) == 0, "reasons": reasons}
+
+
+def recheck_before_execute(record: AuthorizationRecord, request: Dict[str, Any],
+                           current_tree_sha256: Optional[str] = None,
+                           tree_fingerprint_error: Optional[Exception] = None) -> Dict[str, Any]:
+    """执行点二次复核（TOCTOU 防护）。
+
+    recheck 阶段通过的旧结果不得跨执行复用；进入实际执行前，必须在执行点
+    重新取当前对象指纹并与授权记录比对，不一致 / 取不到 / 计算失败即拒绝。
+    本辅助返回与 `pre_execution_recheck` 相同的结构。
+    """
+    return pre_execution_recheck(record, request, current_tree_sha256,
+                                 tree_fingerprint_error)
 
 
 def medium_action_restriction(medium_count: int) -> str:
@@ -230,8 +336,7 @@ def evaluate_authorization(
     if record.nonce and request.get("nonce") != record.nonce:
         reasons.append("REPLAY: nonce 不匹配，拒绝重放")
 
-    if not _evaluation_valid(evaluation):
-        reasons.append("EVALUATION_VALID: 缺少有效评测记录")
+    reasons.extend(_evaluation_validation(evaluation, request))
     if not _authorization_valid(record):
         if record.status == REVOKED:
             reasons.append("AUTHORIZATION_VALID: 授权已撤销")
@@ -252,7 +357,6 @@ def evaluate_authorization(
     non_exec = record.action_type in {"READ_ONLY", "EVALUATE"}
     execution_decision = ("NOT_APPLICABLE" if non_exec
                           else ("ALLOW" if allowed else "DENY"))
-    from trust_model import LOCAL_SIMULATION_RISKS
     return {
         "decision": "ALLOW" if allowed else "DENY",
         "execution_decision": execution_decision,
