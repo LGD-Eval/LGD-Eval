@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-LGD-Gate: Independent Skill Evaluation
-========================================
-独立第三方技能评测服务。
-五维评测体系：结构完整性 + 文档质量 + 安全检查 + 可运行性 + 生态兼容性
+LGD-Gate: Evidence-Based Skill Evaluation
+=========================================
+基于证据、可复现、可审计的技能评测工具。关联项目评测须标注
+SELF-EVALUATION / AFFILIATED；Trust Score 不构成执行授权。
+五维评测体系：结构完整性 + 目录结构 + 文档质量 + 安全 + 生态兼容性
 """
 
 import os
@@ -35,6 +36,10 @@ import urllib.request
 VETO_CRITICAL = 49   # 强制落到 L3（每次调用确认）以下
 VETO_HIGH = 69       # 最高 C
 VETO_MEDIUM = 89     # 最高 A
+
+# 规则集版本：规则表 / 阈值改动时递增，评测证明绑定该版本以便复现与审计
+RULE_VERSION = "rules-2026-11-07"
+ENGINE_VERSION = "1.1.0"
 
 
 def _rule_ids_for(findings):
@@ -105,7 +110,7 @@ def evaluate_skill(skill_path):
         sys.exit(1)
     
     print("=" * 70)
-    print("  🏛️  LGD-Gate 独立第三方评测报告")
+    print("  🏛️  LGD-Gate 关联/自评评测报告（非第三方认证）")
     print("=" * 70)
     print(f"  评测对象: {skill_path}")
     print()
@@ -798,9 +803,9 @@ def evaluate_skill(skill_path):
     print(f"  LGD Trust Score: {score}/100  {emoji} {grade}")
     if raw_score != score:
         print(f"  ⛔ 安全否决：原始分 {raw_score} → 封顶 {score}（{veto_level}：{veto_reason}）")
-    # 分数 → 执行权限分档（竞品只给分数，这里给出可直接落地的限权建议）
+    # 分数 → 建议档位（advisory，仅为运行限制建议；不是执行授权）
     if score >= 96:
-        gate = "L0 免审批（可直接运行，无需限流）"
+        gate = "L0 建议受限运行；生产执行仍须独立授权（advisory，非授权放行）"
     elif score >= 81:
         gate = "L1 一次性确认（限流 60 次/分）"
     elif score >= 51:
@@ -812,6 +817,14 @@ def evaluate_skill(skill_path):
     else:
         gate = "L5 拒绝执行（需重写后重新评测）"
     print(f"  🚦 建议执行权限: {gate}")
+    # 关联状态 / 安全三态 / 授权状态（评测侧不签发执行授权）
+    affiliation = os.environ.get("LGD_AFFILIATION", "AFFILIATED")
+    safety_status = "FAIL" if veto_cap < 100 else "PASS"
+    safety_veto = "ACTIVE" if veto_cap < 100 else "NONE"
+    print(f"  🏷️  关联状态: {affiliation}（自评/关联评测，非独立第三方认证）")
+    print(f"  🛡️  安全状态: {safety_status}")
+    print(f"  ⛔ 安全否决: {safety_veto}")
+    print(f"  🔐 授权状态: NOT GRANTED（Trust Score 不是执行授权，生产动作须独立授权）")
     print(f"  评测耗时: {elapsed:.2f}s")
     print("=" * 70)
     
@@ -859,7 +872,7 @@ def evaluate_skill(skill_path):
     print("=" * 70)
     
     veto_info = None
-    if raw_score != score:
+    if veto_cap < 100:
         veto_info = {
             "applied": True,
             "raw_score": raw_score,
@@ -1205,6 +1218,29 @@ def _tree_hashes(root):
     return files, "sha256:" + tree
 
 
+def _evaluator_tree_hash():
+    """评测器自身脚本 + 规则的树哈希；取不到记 UNKNOWN，不写 null、不伪造。"""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        files = {}
+        skip = {".git", "__pycache__", "node_modules", ".venv", "venv"}
+        for dirpath, dirnames, filenames in os.walk(here):
+            dirnames[:] = [d for d in dirnames if d not in skip]
+            for fn in filenames:
+                if not fn.endswith(".py"):
+                    continue
+                p = os.path.join(dirpath, fn)
+                rel = os.path.relpath(p, here).replace("\\", "/")
+                try:
+                    with open(p, "rb") as fh:
+                        files[rel] = hashlib.sha256(fh.read()).hexdigest()
+                except OSError:
+                    continue
+        return "sha256:" + hashlib.sha256(canonical_dumps(files).encode("utf-8")).hexdigest()
+    except OSError:
+        return "UNKNOWN"
+
+
 def build_attestation(root, score, grade, dims, evidence, veto=None):
     """生成可复现的评测证明。fingerprint 只取自被测内容，不含路径与时间。"""
     payload = {
@@ -1217,7 +1253,7 @@ def build_attestation(root, score, grade, dims, evidence, veto=None):
     }
     if veto:
         payload["veto"] = veto
-    fp = hashlib.sha256(canonical_dumps(payload).encode("utf-8")).hexdigest()
+    result_fp = hashlib.sha256(canonical_dumps(payload).encode("utf-8")).hexdigest()
     files, tree = _tree_hashes(root)
     inputs = {
         "file_count": len(files),
@@ -1225,17 +1261,138 @@ def build_attestation(root, score, grade, dims, evidence, veto=None):
         "tree_sha256": tree,
         "note": "tree_sha256 是整棵树 + 目录结构的哈希；改动任何一个字节都会变，可用于 pin（锁定'跑的就是你审的'）",
     }
+    from datetime import datetime, timezone
+    affiliation = os.environ.get("LGD_AFFILIATION", "AFFILIATED")
+    evaluator_commit = os.environ.get("LGD_EVAL_COMMIT") or "UNKNOWN"
+    evaluator_tree_sha256 = _evaluator_tree_hash()
+    meta = {
+        "engine_version": ENGINE_VERSION,
+        "rule_version": RULE_VERSION,
+        "affiliation": affiliation,
+        "evaluator_commit": evaluator_commit,
+        "evaluator_tree_sha256": evaluator_tree_sha256,
+        "authorization": {"status": "NOT GRANTED",
+                          "note": "Trust Score 不构成执行授权；生产动作须经独立授权记录校验。"},
+    }
+    # 分析器加载完整性：必要分析器未加载 -> INCOMPLETE，Safety 不得 PASS、授权 DENY
+    try:
+        from analyzers import load_analyzers, safety_gate
+        analysis = safety_gate(load_analyzers())
+    except Exception as exc:  # 自检本身失败按不完整处理，不放行
+        analysis = {"analysis_completeness": "UNKNOWN", "safety_pass": False,
+                    "authorization_deny": True, "coverage_dropdowns": [],
+                    "analyzers": {"error": "%s: %s" % (type(exc).__name__, exc)}}
+    meta["analysis"] = analysis
+
+    # 阻断项单列：Critical/High 规则命中项独立记录，不被其他维度高分抵消
+    blocking_ids = CRIT_IDS | HIGH_IDS
+    blocking_findings = [
+        {"rule_id": e["rule_id"],
+         "level": "critical" if e["rule_id"] in CRIT_IDS else "high",
+         "dimension": e.get("dimension"), "file": e.get("file"),
+         "line": e.get("line"), "evidence": e.get("evidence")}
+        for e in evidence if e.get("rule_id") in blocking_ids
+    ]
+    meta["blocking_findings"] = blocking_findings
+
+    # 三轴信任模型 + 统一评测对象（trust_model）
+    from trust_model import (default_evidence_grade, build_subject,
+                             validate_trust_fields, fingerprint_subject,
+                             REPORT_SCHEMA_VERSION)
+    completeness = str(analysis.get("analysis_completeness", "")).upper()
+    veto_active = bool(veto and (veto.get("applied") or veto.get("active")))
+    # 流程层：评测是否完整执行、必要分析器是否齐全（不评价对象好坏）
+    evaluation_status = ("INCOMPLETE" if completeness in ("INCOMPLETE", "UNKNOWN")
+                         or analysis.get("authorization_deny") else "COMPLETE")
+    # 验收层：对象是否通过验收；否决生效或 grade=D 必须 FAIL
+    if evaluation_status == "INCOMPLETE":
+        assessment_outcome = "INCOMPLETE"
+    elif veto_active or grade == "D":
+        assessment_outcome = "FAIL"
+    else:
+        assessment_outcome = "PASS"
+    verdict = assessment_outcome  # 过渡期镜像 assessment_outcome；下一主版本移除
+    # 安全三态：检查是否完成 / 是否无未阻断问题 / 否决记录
+    if completeness == "UNKNOWN":
+        safety_check_status = "UNKNOWN"
+    elif completeness == "INCOMPLETE":
+        safety_check_status = "INCOMPLETE"
+    else:
+        safety_check_status = "COMPLETE"
+    safety_clear = (evaluation_status == "COMPLETE") and (not veto_active) \
+        and (len(blocking_findings) == 0)
+    # 本地阶段：有本地哈希/报告/版本，无外部复核，环境版本未齐 -> E2；E4 不可达
+    evidence_grade = default_evidence_grade(has_local_artifacts=True,
+                                            reproducible_locally=False,
+                                            external_review=False)
+    authorization_status = "NOT_GRANTED"  # 无有效授权记录；区别于 UNKNOWN（未知）
+    execution_applicability = "NOT_APPLICABLE"  # 评测报告本身非执行动作
+    execution_decision = "NOT_APPLICABLE"
+    trust_errors = validate_trust_fields(
+        evidence_grade, authorization_status, verdict, execution_decision,
+        is_execution_scope=False, has_external_review=False,
+        execution_applicability=execution_applicability)
+    subject = build_subject(
+        name=os.path.basename(os.path.abspath(root)),
+        source_entry=os.path.abspath(root),
+        tree_sha256=tree,
+        engine_version=ENGINE_VERSION,
+        engine_commit=evaluator_commit,
+        rule_version=RULE_VERSION,
+        analyzer_integrity=analysis,
+        evidence_grade=evidence_grade,
+        verdict=verdict,
+        assessment_outcome=assessment_outcome,
+        authorization_status=authorization_status,
+        execution_decision=execution_decision,
+        execution_applicability=execution_applicability)
+    meta["trust_model"] = {
+        "evidence_grade": evidence_grade,
+        "authorization_status": authorization_status,
+        "verdict": verdict,
+        "assessment_outcome": assessment_outcome,
+        "execution_applicability": execution_applicability,
+        "execution_decision": execution_decision,
+        "validation_errors": trust_errors,
+    }
+    meta["subject"] = fingerprint_subject(subject)
+
+    # 完整证明载荷：结论指纹 + 对象证据 + 元数据；任一变化则 attestation 指纹变化
+    full = {"result": payload, "inputs": inputs, "meta": meta}
+    attest_fp = hashlib.sha256(canonical_dumps(full).encode("utf-8")).hexdigest()
     return {
         "framework": "LGD 三律 · 有籍(可追溯) / 有证(可验证) / 有门禁(可阻断)",
-        "engine_version": "1.1.0",
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "engine_version": ENGINE_VERSION,
+        "rule_version": RULE_VERSION,
         "score": score,
         "grade": grade,
         "dims": payload["dims"],
         "findings": payload["findings"],
-        "fingerprint": "sha256:" + fp,
+        "result_fingerprint": "sha256:" + result_fp,
+        "attestation_fingerprint": "sha256:" + attest_fp,
+        "fingerprint": "sha256:" + attest_fp,  # 兼容旧字段，指向完整证明指纹
         "safety_veto": veto if veto else {"applied": False},
         "inputs": inputs,
-        "reproduce": "python evaluate.py <同一路径> --evidence-json out.json  # 应得到完全相同的 fingerprint 与 tree_sha256",
+        "affiliation": affiliation,
+        "evaluator_commit": evaluator_commit,
+        "evaluator_tree_sha256": evaluator_tree_sha256,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "authorization": meta["authorization"],
+        "analysis": analysis,
+        "blocking_findings": blocking_findings,
+        "evidence_grade": evidence_grade,
+        "authorization_status": authorization_status,
+        "evaluation_status": evaluation_status,
+        "assessment_outcome": assessment_outcome,
+        "safety_check_status": safety_check_status,
+        "safety_clear": safety_clear,
+        "execution_applicability": execution_applicability,
+        "verdict": verdict,
+        "execution_decision": execution_decision,
+        "trust_model": meta["trust_model"],
+        "subject": subject,
+        "reproduce": "python verify_attestation.py <report.json>  # 校验结论与完整证明指纹",
     }
 
 
@@ -1492,13 +1649,15 @@ def build_sarif(evidence, score, grade):
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="LGD 评测引擎 · 独立第三方技能质检")
+    ap = argparse.ArgumentParser(description="LGD 评测引擎 · 关联/自评技能质检（非第三方认证）")
     ap.add_argument("skill_path", nargs="?", help="技能目录路径")
     ap.add_argument("--chart", action="store_true", help="生成五维雷达图 radar.svg")
     ap.add_argument("--ascii", action="store_true", help="输出五维 ASCII 雷达条形图")
     ap.add_argument("--fix-json", metavar="PATH", help="输出机器可读整改清单 JSON（供 AI 自主整改）")
     ap.add_argument("--evidence-json", metavar="PATH",
                     help="输出可复现评测证明 JSON（含证据链与 sha256 fingerprint）")
+    ap.add_argument("--report-json", metavar="PATH",
+                    help="输出机器可读 Trust Report JSON（供 Scout / 下游消费）")
     ap.add_argument("--detail", action="store_true",
                     help="在终端打印证据链：规则 → 文件:行 → 证据 → 整改 → 复验")
     ap.add_argument("--fail-under", type=int, default=0, metavar="N",
@@ -1557,9 +1716,15 @@ if __name__ == "__main__":
         print()
         print(f"  🔧 机器可读整改清单已生成: {args.fix_json}（{plan['count']} 项，AI 可自主整改）")
 
-    if args.evidence_json or args.detail or args.sarif or args.llm_review:
+    if args.evidence_json or args.detail or args.sarif or args.llm_review or args.report_json:
         evidence = build_evidence(target, findings, warnings)
         att = build_attestation(target, score, grade, dims, evidence, veto_info)
+
+        if args.report_json:
+            with open(args.report_json, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(canonical_dumps(att))
+            print()
+            print(f"  📄 Trust Report 已生成: {args.report_json}（schema {att['schema_version']}）")
 
         if args.evidence_json:
             with open(args.evidence_json, 'w', encoding='utf-8', newline='\n') as f:

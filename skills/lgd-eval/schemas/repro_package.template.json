@@ -1,0 +1,62 @@
+{
+  "_note": "标准复现包模板：供非关联复核者独立复现评测结论。缺项记 null，不得臆造；哈希一致只证明完整性，不证明来源真实性。",
+  "package_id": null,
+  "prepared_at": null,
+  "subject": {
+    "name": null,
+    "source_entry": null,
+    "source_identity_status": "UNKNOWN",
+    "object_version": null,
+    "tree_sha256": null,
+    "source_artifact_hashes": []
+  },
+  "evaluator": {
+    "engine_version": null,
+    "engine_commit": null,
+    "rule_version": null,
+    "rule_fingerprint": null,
+    "analyzer_inventory": [],
+    "analyzer_integrity": null
+  },
+  "environment": {
+    "os": null,
+    "python_runtime": null,
+    "dependency_versions": {},
+    "network_isolation": null,
+    "note": "记录运行环境与依赖版本；跨平台兼容性未实测项标 NOT VERIFIED"
+  },
+  "inputs": {
+    "raw_input_archive": null,
+    "input_sample_set_hash": null,
+    "original_log_hash": null,
+    "frozen_config_hash": null
+  },
+  "repro": {
+    "commands": [],
+    "expected_result": {
+      "score": null,
+      "grade": null,
+      "verdict": null,
+      "evidence_grade": null
+    },
+    "observed_result": null,
+    "original_command_log": null
+  },
+  "reviewer": {
+    "reviewer_id": null,
+    "affiliation": null,
+    "is_non_related_party": null,
+    "relation_to_maintainer": null,
+    "reviewer_identity_status": "UNKNOWN"
+  },
+  "review_flow": {
+    "subject_frozen": null,
+    "environment_frozen": null,
+    "materials_provided": null,
+    "independent_run": null,
+    "comparison_done": null,
+    "diff_report_ref": null
+  },
+  "residual_risks": [],
+  "verification_status": "NOT VERIFIED"
+}

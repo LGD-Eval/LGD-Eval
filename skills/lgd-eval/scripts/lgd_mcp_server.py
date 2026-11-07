@@ -89,13 +89,29 @@ def call_tool(name, args):
         # 只允许 JSON-RPC 消息，混入报告会让客户端解析失败，必须就地捕获
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            score, grade, dims, findings, warnings = _eval_skill(path)
+            score, grade, dims, findings, warnings, veto_info = _eval_skill(path)
+        payload = {
+            "score": score, "grade": grade,
+            "dims": {k: v for k, v in (dims or {}).items()} if isinstance(dims, dict) else dims,
+            "findings": findings[:20] if isinstance(findings, list) else findings,
+        }
+        # 复用 Engine 报告生成，透出结论/授权/执行决策；生成失败则降级不阻塞通道
+        try:
+            from evaluate import build_evidence, build_attestation
+            evidence = build_evidence(path, findings, warnings)
+            report = build_attestation(path, score, grade, dims, evidence, veto_info)
+            payload.update({
+                "evidence_grade": report.get("evidence_grade"),
+                "authorization_status": report.get("authorization_status"),
+                "assessment_outcome": report.get("assessment_outcome"),
+                "verdict": report.get("verdict"),
+                "execution_decision": report.get("execution_decision"),
+                "execution_applicability": report.get("execution_applicability"),
+            })
+        except Exception:
+            pass
         return {
-            "content": [{"type": "text", "text": json.dumps({
-                "score": score, "grade": grade,
-                "dims": {k: v for k, v in (dims or {}).items()} if isinstance(dims, dict) else dims,
-                "findings": findings[:20] if isinstance(findings, list) else findings,
-            }, ensure_ascii=False, indent=2)}],
+            "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, indent=2)}],
             "isError": False,
         }
     if name == "evaluate_mcp":

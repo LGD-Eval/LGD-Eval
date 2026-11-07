@@ -1,0 +1,140 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://lgd-eval.local/schemas/trust_report.schema.json",
+  "title": "LGD-Eval Trust Report",
+  "description": "Engine 产出、Scout 与下游消费的统一可信评测报告。schema_version 语义化；未知字段原样保留（additionalProperties=true），旧消费者不得因新可选字段报错。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "engine_version",
+    "rule_version",
+    "score",
+    "grade",
+    "dims",
+    "findings",
+    "result_fingerprint",
+    "attestation_fingerprint",
+    "inputs",
+    "authorization",
+    "analysis",
+    "blocking_findings",
+    "evidence_grade",
+    "authorization_status",
+    "verdict",
+    "execution_decision",
+    "subject"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "报告 Schema 语义化版本；破坏性升级升主版本。"
+    },
+    "framework": {"type": "string"},
+    "engine_version": {"type": "string", "description": "评测器版本"},
+    "rule_version": {"type": "string", "description": "规则集版本"},
+    "evaluator_commit": {"type": "string", "default": "UNKNOWN", "description": "评测器 commit SHA；取不到记 UNKNOWN，不写 null、不伪造"},
+    "evaluator_tree_sha256": {"type": "string", "default": "UNKNOWN", "description": "评测器脚本+规则集树哈希；纳入证明指纹，取不到记 UNKNOWN"},
+    "score": {"type": "integer", "minimum": 0, "maximum": 100, "description": "唯一总分，不并列其他量纲"},
+    "grade": {"type": "string", "enum": ["A+", "A", "B", "C", "D"]},
+    "dims": {"type": "object", "description": "五维得分（结构/目录/文档/安全/生态），键为维度名，值为得分"},
+    "findings": {"type": "array", "description": "结构化证据链"},
+    "result_fingerprint": {"type": "string", "description": "结论指纹 sha256:"},
+    "attestation_fingerprint": {"type": "string", "description": "完整证明指纹 sha256:"},
+    "fingerprint": {"type": "string", "description": "兼容旧字段，指向完整证明指纹"},
+    "safety_veto": {"type": "object"},
+    "inputs": {
+      "type": "object",
+      "required": ["tree_sha256"],
+      "properties": {
+        "file_count": {"type": "integer", "minimum": 0},
+        "files": {"type": "object"},
+        "tree_sha256": {"type": "string", "description": "整棵树+目录结构哈希；改动任一字节即变"},
+        "note": {"type": "string"}
+      }
+    },
+    "affiliation": {"type": "string"},
+    "generated_at": {"type": "string", "description": "生成时间，不进结论指纹"},
+    "authorization": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"type": "string", "description": "评测证明固定 NOT GRANTED；Trust Score 不构成执行授权"},
+        "note": {"type": "string"}
+      }
+    },
+    "analysis": {"type": "object", "description": "分析器加载完整性与安全闸门结论"},
+    "blocking_findings": {
+      "type": "array",
+      "description": "Critical/High 阻断项独立清单，不被其他维度高分抵消",
+      "items": {
+        "type": "object",
+        "properties": {
+          "rule_id": {"type": "string"},
+          "level": {"type": "string", "enum": ["critical", "high"]},
+          "dimension": {"type": ["string", "null"]},
+          "file": {"type": ["string", "null"]},
+          "line": {"type": ["integer", "null"]},
+          "evidence": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "evidence_grade": {"type": "string", "enum": ["E0", "E1", "E2", "E3", "E4"]},
+    "authorization_status": {"type": "string", "enum": ["VALID", "INVALID", "EXPIRED", "REVOKED", "UNKNOWN", "NOT_GRANTED"]},
+    "verdict": {"type": "string", "enum": ["PASS", "FAIL", "INCOMPLETE"], "description": "过渡期镜像 assessment_outcome；下一主版本移除"},
+    "assessment_outcome": {"type": "string", "enum": ["PASS", "FAIL", "INCOMPLETE"], "description": "验收层结论；否决生效或 grade=D 必须 FAIL"},
+    "evaluation_status": {"type": "string", "enum": ["COMPLETE", "INCOMPLETE"], "description": "流程层：评测是否完整执行"},
+    "safety_check_status": {"type": "string", "enum": ["COMPLETE", "INCOMPLETE", "UNKNOWN"]},
+    "safety_clear": {"type": "boolean", "default": false},
+    "execution_applicability": {"type": "string", "enum": ["APPLICABLE", "NOT_APPLICABLE"]},
+    "execution_decision": {"type": "string", "enum": ["ALLOW", "DENY", "NOT_APPLICABLE"]},
+    "migrated_from": {"type": ["string", "null"], "description": "迁移来源旧 schema_version；历史报告只读保留，不重算指纹"},
+    "trust_model": {
+      "type": "object",
+      "description": "三轴镜像与硬规则校验结果",
+      "properties": {
+        "evidence_grade": {"type": "string"},
+        "authorization_status": {"type": "string"},
+        "verdict": {"type": "string"},
+        "execution_decision": {"type": "string"},
+        "validation_errors": {"type": "array"}
+      }
+    },
+    "subject": {
+      "type": "object",
+      "description": "统一评测对象绑定；指纹安全子集不含绝对路径与目录名",
+      "properties": {
+        "name": {"type": ["string", "null"]},
+        "source_entry": {"type": ["string", "null"]},
+        "source_identity_status": {"type": "string"},
+        "object_version": {"type": ["string", "null"]},
+        "tree_sha256": {"type": ["string", "null"]},
+        "engine_version": {"type": ["string", "null"]},
+        "engine_commit": {"type": ["string", "null"]},
+        "rule_version": {"type": ["string", "null"]},
+        "analyzer_integrity": {"type": ["object", "null"]},
+        "evidence_grade": {"type": ["string", "null"]},
+        "verdict": {"type": ["string", "null"]},
+        "assessment_outcome": {"type": ["string", "null"]},
+        "authorization_status": {"type": ["string", "null"]},
+        "recommendation": {"type": ["string", "null"]},
+        "execution_decision": {"type": ["string", "null"]},
+        "execution_applicability": {"type": ["string", "null"]}
+      }
+    },
+    "reproduce": {"type": "string"}
+  },
+  "error_handling": {
+    "missing_required_field": "缺必需字段 -> verdict=INCOMPLETE，不得判 PASS，不出可信分",
+    "tree_hash_mismatch": "报告 tree_sha256 与实际对象不一致 -> 篡改/版本不匹配错误，拒绝采信",
+    "version_mismatch": "引擎/规则版本与记录不匹配 -> 标版本不匹配，触发复测",
+    "authorization_invalid": "授权 EXPIRED/REVOKED/INVALID -> 执行场景 DENY"
+  },
+  "compatibility": {
+    "versioning": "schema_version 语义化；新增可选字段不破坏旧消费者",
+    "unknown_fields": "未知字段原样保留，不报错",
+    "legacy_report": "旧报告缺新字段时按 UNKNOWN / E0 降级，不臆造",
+    "fingerprint": "指纹重算集变更须同步 verify_attestation.py；结论指纹只取自被测内容，不含路径与时间"
+  }
+}

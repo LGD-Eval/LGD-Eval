@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from evaluate import evaluate_skill, build_fix_plan  # noqa: E402
+from evaluate import evaluate_skill, build_fix_plan, build_attestation  # noqa: E402
 
 DIMS = ["结构完整性", "目录结构", "文档质量", "安全", "生态兼容性"]
 MAXS = {"结构完整性": 25, "目录结构": 15, "文档质量": 20, "安全": 25, "生态兼容性": 15}
@@ -45,10 +45,11 @@ def tri_state(path, findings):
 def collect(path):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        score, grade, dims, findings, warnings = evaluate_skill(os.path.abspath(path))
+        score, grade, dims, findings, warnings, veto_info = evaluate_skill(os.path.abspath(path))
     plan = build_fix_plan(findings, warnings)
+    att = build_attestation(os.path.abspath(path), score, grade, dims, [], veto_info)
     return {"score": score, "grade": grade, "dims": dims, "findings": findings,
-            "plan": plan, "tri": tri_state(os.path.abspath(path), findings)}
+            "plan": plan, "tri": tri_state(os.path.abspath(path), findings), "att": att}
 
 
 def render(name, r, ts):
@@ -57,6 +58,19 @@ def render(name, r, ts):
     L.append("> 评测器：`lgd-eval`（五维 0–100：结构 25 / 目录 15 / 文档 20 / 安全 25 / 生态 15）  ")
     L.append("> 评测时间：%s  " % ts)
     L.append("> 任何人可用文末命令复跑验证。\n")
+    att = r.get("att", {})
+    L.append("## 披露与证据绑定\n")
+    L.append("| 项 | 值 |")
+    L.append("|---|---|")
+    L.append("| 关联状态 | %s（自评/关联评测，非独立第三方认证） |" % att.get("affiliation", "AFFILIATED"))
+    L.append("| 评测器版本 | %s |" % att.get("engine_version", ""))
+    L.append("| 规则版本 | %s |" % att.get("rule_version", ""))
+    L.append("| 对象指纹 | `%s` |" % att.get("fingerprint", ""))
+    L.append("| 对象树 SHA-256 | `%s` |" % att.get("inputs", {}).get("tree_sha256", ""))
+    L.append("| 授权状态 | NOT GRANTED（Trust Score 不构成执行授权） |")
+    L.append("")
+    L.append("**测试范围**：静态五维评分、规则匹配与安全否决封顶。")
+    L.append("**未覆盖**：动态任务执行、运行时隔离验证、供应链漏洞库（CVE）比对。\n")
     L.append("## 结论\n")
     L.append("| 总分 | 等级 |")
     L.append("|---|---|")
@@ -95,7 +109,7 @@ def render(name, r, ts):
     L.append("```\n")
     L.append("低于阈值即以退出码 1 结束，可直接用于 CI 门禁。\n")
     L.append("---\n")
-    L.append("评测口径与源码完全一致：https://github.com/LGD-Eval/lgd-gate\n")
+    L.append("评测源码与口径：https://github.com/LGD-Eval/lgd-gate\n")
     return "\n".join(L)
 
 
@@ -123,6 +137,7 @@ def main():
     idx = ["# LGD 评分榜\n",
            "> 每行对应一页可点开的评分卡，含五维明细、整改清单与复跑命令。\n",
            "> 更新时间：%s\n" % ts,
+           "> 关联项目评测属自评/关联评测，非独立第三方认证；Trust Score 不构成执行授权。\n",
            "| 技能 | 总分 | 等级 | 评分卡 |",
            "|---|---|---|---|"]
     for name, score, grade, fn in rows:

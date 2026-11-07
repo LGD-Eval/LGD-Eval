@@ -123,7 +123,7 @@ class HardcodedSecretVisitor(ast.NodeVisitor):
 def analyze_python_file(filepath: Path) -> List[AstFinding]:
     """Analyze a Python file with AST, return findings."""
     try:
-        content = filepath.read_text(encoding="utf-8", errors="replace")
+        content = Path(filepath).read_text(encoding="utf-8", errors="replace")
         tree = ast.parse(content, filename=str(filepath))
     except Exception:
         return []

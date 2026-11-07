@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-LGD-Gate: Independent Skill Evaluation
-========================================
-独立第三方技能评测服务。
-五维评测体系：结构完整性 + 文档质量 + 安全检查 + 可运行性 + 生态兼容性
+LGD-Gate: Evidence-Based Skill Evaluation
+=========================================
+基于证据、可复现、可审计的技能评测工具。关联项目评测须标注
+SELF-EVALUATION / AFFILIATED；Trust Score 不构成执行授权。
+五维评测体系：结构完整性 + 目录结构 + 文档质量 + 安全 + 生态兼容性
 """
 
 import os
@@ -35,6 +36,10 @@ import urllib.request
 VETO_CRITICAL = 49   # 强制落到 L3（每次调用确认）以下
 VETO_HIGH = 69       # 最高 C
 VETO_MEDIUM = 89     # 最高 A
+
+# 规则集版本：规则表 / 阈值改动时递增，评测证明绑定该版本以便复现与审计
+RULE_VERSION = "rules-2026-11-07"
+ENGINE_VERSION = "1.1.0"
 
 
 def _rule_ids_for(findings):
@@ -798,9 +803,9 @@ def evaluate_skill(skill_path):
     print(f"  LGD Trust Score: {score}/100  {emoji} {grade}")
     if raw_score != score:
         print(f"  ⛔ 安全否决：原始分 {raw_score} → 封顶 {score}（{veto_level}：{veto_reason}）")
-    # 分数 → 执行权限分档（竞品只给分数，这里给出可直接落地的限权建议）
+    # 分数 → 建议档位（advisory，仅为运行限制建议；不是执行授权）
     if score >= 96:
-        gate = "L0 免审批（可直接运行，无需限流）"
+        gate = "L0 建议受限运行；生产执行仍须独立授权（advisory，非授权放行）"
     elif score >= 81:
         gate = "L1 一次性确认（限流 60 次/分）"
     elif score >= 51:
@@ -812,6 +817,14 @@ def evaluate_skill(skill_path):
     else:
         gate = "L5 拒绝执行（需重写后重新评测）"
     print(f"  🚦 建议执行权限: {gate}")
+    # 关联状态 / 安全三态 / 授权状态（评测侧不签发执行授权）
+    affiliation = os.environ.get("LGD_AFFILIATION", "AFFILIATED")
+    safety_status = "FAIL" if veto_cap < 100 else "PASS"
+    safety_veto = "ACTIVE" if veto_cap < 100 else "NONE"
+    print(f"  🏷️  关联状态: {affiliation}（自评/关联评测，非独立第三方认证）")
+    print(f"  🛡️  安全状态: {safety_status}")
+    print(f"  ⛔ 安全否决: {safety_veto}")
+    print(f"  🔐 授权状态: NOT GRANTED（Trust Score 不是执行授权，生产动作须独立授权）")
     print(f"  评测耗时: {elapsed:.2f}s")
     print("=" * 70)
     
@@ -1217,7 +1230,7 @@ def build_attestation(root, score, grade, dims, evidence, veto=None):
     }
     if veto:
         payload["veto"] = veto
-    fp = hashlib.sha256(canonical_dumps(payload).encode("utf-8")).hexdigest()
+    result_fp = hashlib.sha256(canonical_dumps(payload).encode("utf-8")).hexdigest()
     files, tree = _tree_hashes(root)
     inputs = {
         "file_count": len(files),
@@ -1225,17 +1238,48 @@ def build_attestation(root, score, grade, dims, evidence, veto=None):
         "tree_sha256": tree,
         "note": "tree_sha256 是整棵树 + 目录结构的哈希；改动任何一个字节都会变，可用于 pin（锁定'跑的就是你审的'）",
     }
+    from datetime import datetime, timezone
+    affiliation = os.environ.get("LGD_AFFILIATION", "AFFILIATED")
+    evaluator_commit = os.environ.get("LGD_EVAL_COMMIT")
+    meta = {
+        "engine_version": ENGINE_VERSION,
+        "rule_version": RULE_VERSION,
+        "affiliation": affiliation,
+        "evaluator_commit": evaluator_commit,
+        "authorization": {"status": "NOT GRANTED",
+                          "note": "Trust Score 不构成执行授权；生产动作须经独立授权记录校验。"},
+    }
+    # 分析器加载完整性：必要分析器未加载 -> INCOMPLETE，Safety 不得 PASS、授权 DENY
+    try:
+        from analyzers import load_analyzers, safety_gate
+        analysis = safety_gate(load_analyzers())
+    except Exception as exc:  # 自检本身失败按不完整处理，不放行
+        analysis = {"analysis_completeness": "UNKNOWN", "safety_pass": False,
+                    "authorization_deny": True, "coverage_dropdowns": [],
+                    "analyzers": {"error": "%s: %s" % (type(exc).__name__, exc)}}
+    meta["analysis"] = analysis
+    # 完整证明载荷：结论指纹 + 对象证据 + 元数据；任一变化则 attestation 指纹变化
+    full = {"result": payload, "inputs": inputs, "meta": meta}
+    attest_fp = hashlib.sha256(canonical_dumps(full).encode("utf-8")).hexdigest()
     return {
         "framework": "LGD 三律 · 有籍(可追溯) / 有证(可验证) / 有门禁(可阻断)",
-        "engine_version": "1.1.0",
+        "engine_version": ENGINE_VERSION,
+        "rule_version": RULE_VERSION,
         "score": score,
         "grade": grade,
         "dims": payload["dims"],
         "findings": payload["findings"],
-        "fingerprint": "sha256:" + fp,
+        "result_fingerprint": "sha256:" + result_fp,
+        "attestation_fingerprint": "sha256:" + attest_fp,
+        "fingerprint": "sha256:" + attest_fp,  # 兼容旧字段，指向完整证明指纹
         "safety_veto": veto if veto else {"applied": False},
         "inputs": inputs,
-        "reproduce": "python evaluate.py <同一路径> --evidence-json out.json  # 应得到完全相同的 fingerprint 与 tree_sha256",
+        "affiliation": affiliation,
+        "evaluator_commit": evaluator_commit,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "authorization": meta["authorization"],
+        "analysis": analysis,
+        "reproduce": "python verify_attestation.py <report.json>  # 校验结论与完整证明指纹",
     }
 
 

@@ -57,6 +57,24 @@ def grade_of(score):
     return "F"
 
 
+def _report_trust(path, score, grade, dims, findings, warnings, veto_info):
+    """复用 Engine 报告生成，透出结论/授权/执行决策；失败降级为空，不阻塞 Web 通道。"""
+    try:
+        from evaluate import build_evidence, build_attestation
+        evidence = build_evidence(path, findings, warnings)
+        report = build_attestation(path, score, grade, dims, evidence, veto_info)
+        return {
+            "evidence_grade": report.get("evidence_grade"),
+            "authorization_status": report.get("authorization_status"),
+            "assessment_outcome": report.get("assessment_outcome"),
+            "verdict": report.get("verdict"),
+            "execution_decision": report.get("execution_decision"),
+            "execution_applicability": report.get("execution_applicability"),
+        }
+    except Exception:
+        return {}
+
+
 def laws_of(text, findings):
     """LGD 三律判定：直接看内容本身，不靠 findings 里的关键词去猜。
 
@@ -85,7 +103,7 @@ def evaluate_text(text):
             f.write(text)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            score, grade, dims, findings, warnings = _eval_skill(tmp)
+            score, grade, dims, findings, warnings, veto_info = _eval_skill(tmp)
         return {
             "score": score,
             "grade": grade_of(score),
@@ -94,6 +112,7 @@ def evaluate_text(text):
             "lgd_laws": laws_of(text, findings),
             "mode": "text",
             "note": "文本模式只评内容质量；结构/目录维度会因缺 LICENSE、README、scripts 扣分。",
+            **_report_trust(tmp, score, grade, dims, findings, warnings, veto_info),
         }
     finally:
         # 清理本函数自建的临时目录，路径由 mkdtemp 生成，不可外部注入
@@ -117,7 +136,7 @@ def evaluate_path(path):
     try:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            score, grade, dims, findings, warnings = _eval_skill(target)
+            score, grade, dims, findings, warnings, veto_info = _eval_skill(target)
         try:
             with open(docp, "r", encoding="utf-8", errors="ignore") as f:
                 doc = f.read()
@@ -130,6 +149,7 @@ def evaluate_path(path):
             "findings": findings[:30] if isinstance(findings, list) else findings,
             "lgd_laws": laws_of(doc, findings),
             "mode": "file" if tmp else "path",
+            **_report_trust(target, score, grade, dims, findings, warnings, veto_info),
         }
     finally:
         if tmp:

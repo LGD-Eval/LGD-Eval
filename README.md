@@ -3,6 +3,8 @@
 > [官网 medxpert.cn](https://medxpert.cn/) · [评测门禁 lgd-gate](https://github.com/LGD-Eval/lgd-gate) · [npm 包 lgd-eval](https://github.com/LGD-Eval/lgd-eval) · [公开评分卡](https://github.com/LGD-Eval/evaluation-evidence/blob/main/scores.md) · [排行榜](https://github.com/LGD-Eval/evaluation-evidence/blob/main/LEADERBOARD.md) · [一行安装（免 VPN）](https://github.com/LGD-Eval/lgd-gate/releases/download/v1.0.0/lgd-eval-1.0.0.tgz)
 >
 > 三律：**有籍**（可追溯）· **有证**（有证据）· **有门禁**（有检查）
+>
+> **利益冲突披露（COI）**：`zhaoxinghua09-cell`（理论与协议）、`stevenzhao07`（MedXpert 产品与工具）、`LGD-Eval`（评测体系与门禁工具）由同一维护者生态运营；职能分工不等于组织独立，关联项目评测标注 `SELF-EVALUATION` / `AFFILIATED`，不构成独立第三方认证。详见 [CONFLICT_OF_INTEREST_DISCLOSURE.md](./CONFLICT_OF_INTEREST_DISCLOSURE.md)。
 
 # lgd-eval
 
@@ -43,18 +45,20 @@ LGD 三律
   L3 有门禁（有检查）    ✅
 ```
 
-## 分数决定权限
+## 分数与建议档位（advisory，非执行授权）
 
-评测的终点不是一个数字，是一个权限决定：
+Trust Score 只用于评测；下表是建议的运行限制，**不是执行授权**：
 
-| 分数 | 档位 | 建议 |
+| 分数 | 建议档位 | 说明 |
 |---|---|---|
-| ≥ 96 | L0 | 免审批直接执行 |
+| ≥ 96 | L0 | 建议受限运行；生产执行仍须独立授权 |
 | 81–95 | L1 | 一次性确认（60 rpm） |
 | 51–80 | L2 | 人工复核（30 rpm） |
 | 31–50 | L3 | 每次强制确认，建议先过沙箱 |
 | 11–30 | L4 | 隔离只读 |
 | ≤ 10 | L5 | 拒绝执行 |
+
+> Trust Score 不是执行授权：生产写入、部署、发布、权限变更、敏感数据访问均须独立授权；高分不免单独授权。
 
 同一个引擎在 GitHub Actions 里直接可用：
 

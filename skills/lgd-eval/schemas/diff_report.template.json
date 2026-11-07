@@ -1,0 +1,63 @@
+{
+  "_note": "评测差异报告模板：比对提交方结果与复核者独立复现结果。结论分一致/可解释差异/不可解释差异；未实测项标 NOT VERIFIED。",
+  "diff_report_id": null,
+  "repro_package_ref": null,
+  "subject": {
+    "name": null,
+    "tree_sha256": null,
+    "object_version": null
+  },
+  "submitted_result": {
+    "score": null,
+    "grade": null,
+    "verdict": null,
+    "evidence_grade": null,
+    "findings": [],
+    "rule_version": null,
+    "engine_version": null
+  },
+  "reproduced_result": {
+    "score": null,
+    "grade": null,
+    "verdict": null,
+    "findings": [],
+    "command_log_ref": null
+  },
+  "comparison": {
+    "score_match": null,
+    "grade_match": null,
+    "verdict_match": null,
+    "findings_diff": [],
+    "differences": [
+      {
+        "field": null,
+        "submitted": null,
+        "reproduced": null,
+        "explanation": null,
+        "category": "EXPLAINABLE | UNEXPLAINABLE | ENVIRONMENT | RUNTIME_VERSION"
+      }
+    ]
+  },
+  "reviewer": {
+    "reviewer_id": null,
+    "affiliation": null,
+    "is_non_related_party": null,
+    "relation_to_maintainer": null
+  },
+  "conclusion": {
+    "status": "MATCHES | EXPLAINABLE_DIFF | UNEXPLAINABLE_DIFF | NOT VERIFIED",
+    "evidence_grade_after_review": null,
+    "blocking_findings": [],
+    "notes": null
+  },
+  "compatibility": {
+    "linux": "NOT VERIFIED",
+    "windows": "NOT VERIFIED",
+    "macos": "NOT VERIFIED",
+    "runtime_versions_tested": [],
+    "filesystem_encoding_notes": null,
+    "adverse_inputs_tested": null,
+    "concurrency_tested": null,
+    "repeatability": null
+  }
+}
