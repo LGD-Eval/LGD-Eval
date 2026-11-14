@@ -32,7 +32,7 @@ python scripts/lgd_audit.py <skill_dir>
 
 ## 评分标准说明
 
-五维百分制，权重：结构 25、目录 15、文档 20、安全 25、生态 15。扣分：CRITICAL −15、HIGH −8、MEDIUM −4、LOW −1；缺 frontmatter 必需字段 −10。等级：A+ ≥90、A ≥80、B ≥70、C ≥60、D ≥40、F <40。命中注入或数据外泄时封顶 40（D）并返回 exit 1。
+五维百分制，权重：结构 25、目录 15、文档 20、安全 25、生态 15。扣分：CRITICAL −15、HIGH −8、MEDIUM −4、LOW −1；缺 frontmatter 必需字段 −10。等级：A+ ≥90、A ≥80、B ≥70、C ≥60、D ≥40、F <40。命中注入或数据外泄时封顶 49（D）——封顶只改分数，不改授权状态（`authorization_status` 恒为 `NOT_GRANTED`）；门禁退出码需显式加 `--fail-under N` 才会为 1。
 
 18 维审计把检查项分为**可信性、安全性、可维护性、国际合规**四类，用于按风险面查结论而非只看总分。
 

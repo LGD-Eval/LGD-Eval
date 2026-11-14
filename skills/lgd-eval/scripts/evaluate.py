@@ -50,6 +50,18 @@ def _rule_ids_for(findings):
 
 
 CRIT_IDS = {"R-SEC-09", "R-SEC-10", "R-SEC-21"}          # 已证实的凭证 / 环境变量外泄
+
+# 评分与授权分离：评测只给结论，授权只能由人单独授予。
+# 此前按分数直接打印「L0 免审批（可直接运行）」，等于一个数字替人签了授权。
+AUTHORIZATION_STATUS = "NOT_GRANTED"
+
+# 评测来源必须可区分：维护者自评 / 自动化评测 / 无关联第三方复核。
+# 自评不得对外称第三方认证，这条是审计里的 P0。
+PROVENANCE_LABELS = {
+    "self": "维护者自评",
+    "automated": "自动化评测（CI，仍属自评范畴）",
+    "third_party": "无关联第三方复核",
+}
 HIGH_IDS = {"R-SEC-01", "R-SEC-02", "R-SEC-03", "R-SEC-04", "R-SEC-05",
             "R-SEC-15", "R-SEC-16", "R-SEC-17", "R-SEC-18", "R-SEC-11"}
 
@@ -181,7 +193,40 @@ def safety_cap(findings):
     return 100, "", ""
 
 
-def evaluate_skill(skill_path):
+def grade_for(score):
+    """等级刻度：与 README 和 skillgate 同表（A+ ≥90 / A ≥80 / B ≥70 / C ≥60 / D ≥40 / F <40）。
+
+    此前这里 40 以下落到 D、skillgate 印 F，同一个 34 分两个字母。
+    """
+    if score >= 90:
+        return "A+", "🏆"
+    if score >= 80:
+        return "A", "🥇"
+    if score >= 70:
+        return "B", "🥈"
+    if score >= 60:
+        return "C", "🥉"
+    if score >= 40:
+        return "D", "⚠️"
+    return "F", "⛔"
+
+
+def risk_tier_for(score):
+    """风险档位（仅供参考）。这不是授权——授权恒为 NOT_GRANTED。"""
+    if score >= 96:
+        return "T0 风险极低"
+    if score >= 81:
+        return "T1 风险低"
+    if score >= 51:
+        return "T2 风险中等"
+    if score >= 31:
+        return "T3 风险较高"
+    if score >= 11:
+        return "T4 风险高"
+    return "T5 风险极高"
+
+
+def evaluate_skill(skill_path, provenance="self"):
     """评测一个技能。"""
     start_time = time.time()
     
@@ -898,40 +943,19 @@ def evaluate_skill(skill_path):
 
     print("=" * 70)
     
-    if score >= 90:
-        grade = "A+"
-        emoji = "🏆"
-    elif score >= 80:
-        grade = "A"
-        emoji = "🥇"
-    elif score >= 70:
-        grade = "B"
-        emoji = "🥈"
-    elif score >= 60:
-        grade = "C"
-        emoji = "🥉"
-    else:
-        grade = "D"
-        emoji = "⚠️"
-    
+    grade, emoji = grade_for(score)
+
     # 对外唯一分数：一行给完，不分列其他分数
     print(f"  LGD Trust Score: {score}/100  {emoji} {grade}")
     if raw_score != score:
         print(f"  ⛔ 安全否决：原始分 {raw_score} → 封顶 {score}（{veto_level}：{veto_reason}）")
-    # 分数 → 执行权限分档（竞品只给分数，这里给出可直接落地的限权建议）
-    if score >= 96:
-        gate = "L0 免审批（可直接运行，无需限流）"
-    elif score >= 81:
-        gate = "L1 一次性确认（限流 60 次/分）"
-    elif score >= 51:
-        gate = "L2 人工复核（限流 30 次/分）"
-    elif score >= 31:
-        gate = "L3 沙箱运行（每次调用强制确认）"
-    elif score >= 11:
-        gate = "L4 隔离环境（仅允许只读调用）"
-    else:
-        gate = "L5 拒绝执行（需重写后重新评测）"
-    print(f"  🚦 建议执行权限: {gate}")
+    # 评分与授权分离：分数只给"风险档位"，不签发任何执行权限。
+    # 此前这里按分数直接打印「L0 免审批（可直接运行）」，等于让一个数字签了授权。
+    tier = risk_tier_for(score)
+    print(f"  🚦 风险档位（仅供参考，不构成授权）: {tier}")
+    print(f"  🔐 授权状态: {AUTHORIZATION_STATUS}（评测只产出结论，不签发执行权限）")
+    print(f"  🧾 评测来源: {PROVENANCE_LABELS.get(provenance, provenance)}"
+          f"{'（非第三方复核，不得对外称第三方认证）' if provenance != 'third_party' else ''}")
     print(f"  评测耗时: {elapsed:.2f}s")
     print("=" * 70)
     
@@ -1325,7 +1349,7 @@ def _tree_hashes(root):
     return files, "sha256:" + tree
 
 
-def build_attestation(root, score, grade, dims, evidence, veto=None):
+def build_attestation(root, score, grade, dims, evidence, veto=None, provenance="self"):
     """生成可复现的评测证明。fingerprint 只取自被测内容，不含路径与时间。"""
     payload = {
         "object": {"score": score, "grade": grade},
@@ -1350,6 +1374,12 @@ def build_attestation(root, score, grade, dims, evidence, veto=None):
         "engine_version": "1.1.0",
         "score": score,
         "grade": grade,
+        # 评测与授权分离，且来源可区分：这两项是要给下游（CI / 注册表 / 人工复核）看的，
+        # 不能只存在终端输出里，否则换个人读 JSON 就又把分数当成了通行证。
+        "authorization_status": AUTHORIZATION_STATUS,
+        "authorization_note": "评测不签发执行权限；如需授权，须由维护者/无关联第三方另行书面授予",
+        "evaluation_provenance": provenance,
+        "provenance_label": PROVENANCE_LABELS.get(provenance, provenance),
         "dims": payload["dims"],
         "findings": payload["findings"],
         "fingerprint": "sha256:" + fp,
@@ -1623,6 +1653,10 @@ if __name__ == "__main__":
                     help="在终端打印证据链：规则 → 文件:行 → 证据 → 整改 → 复验")
     ap.add_argument("--fail-under", type=int, default=0, metavar="N",
                     help="门禁模式：分数低于 N 时以退出码 1 结束，可直接用于 CI 卡 PR")
+    ap.add_argument("--provenance", choices=["self", "automated", "third_party"],
+                    default="self",
+                    help="评测来源声明：self=维护者自评（默认）、automated=CI 自动跑、"
+                         "third_party=无关联第三方复核。自评不会被标成第三方认证。")
     ap.add_argument("--sarif", metavar="PATH",
                     help="输出 SARIF 2.1.0（GitHub Code Scanning 可直接消费）")
     ap.add_argument("--llm-review", action="store_true",
@@ -1659,7 +1693,7 @@ if __name__ == "__main__":
         print("ℹ️ 单文件模式：已按标准技能目录包装评测（%s）" % os.path.basename(args.skill_path))
         print("   仅能评文本质量；结构/目录维度会因缺 LICENSE、README、scripts/ 扣分。完整评测请传目录。")
 
-    score, grade, dims, findings, warnings, veto_info = evaluate_skill(target)
+    score, grade, dims, findings, warnings, veto_info = evaluate_skill(target, provenance=args.provenance)
 
     
     if args.ascii:
@@ -1679,7 +1713,8 @@ if __name__ == "__main__":
 
     if args.evidence_json or args.detail or args.sarif or args.llm_review:
         evidence = build_evidence(target, findings, warnings)
-        att = build_attestation(target, score, grade, dims, evidence, veto_info)
+        att = build_attestation(target, score, grade, dims, evidence, veto_info,
+                                provenance=args.provenance)
 
         if args.evidence_json:
             with open(args.evidence_json, 'w', encoding='utf-8', newline='\n') as f:
