@@ -95,6 +95,9 @@ class HardcodedSecretVisitor(ast.NodeVisitor):
     """Find hardcoded secrets in assignments."""
 
     SECRET_PATTERNS = ["api_key", "apikey", "secret", "token", "password", "passwd", "credential"]
+    # 变量名形如 secret_re / token_regex / password_pattern —— 是检测规则的正则，
+    # 不是凭证本身。扫描器扫自己时这里必然自命中，必须排除。
+    REGEX_SUFFIXES = ("_re", "_regex", "_pattern", "_matcher", "_patterns")
 
     def __init__(self):
         self.findings: List[AstFinding] = []
@@ -103,6 +106,8 @@ class HardcodedSecretVisitor(ast.NodeVisitor):
         for target in node.targets:
             if isinstance(target, ast.Name):
                 var_name = target.id.lower()
+                if var_name.endswith(self.REGEX_SUFFIXES):
+                    continue
                 if any(pat in var_name for pat in self.SECRET_PATTERNS):
                     if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                         if len(node.value.value) >= 8:
