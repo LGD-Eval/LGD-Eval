@@ -1501,18 +1501,34 @@ def sandbox_backend():
     return None
 
 
+def _sbox_env(tree, logp):
+    """沙箱子进程环境：白名单，而不是 dict(os.environ)。
+
+    被测脚本是**未经审查的第三方代码**。把宿主全量环境传进去，等于把本机凭证
+    （AWS / GitHub / 模型 API key）递到它手上，它读 env 再外发就能拿走。
+    这段此前只存在于 lgd-gate 的副本里，正典这份漏了——两份评估器互相缺对方的一处修正。
+    """
+    allow = ("PATH", "TMP", "TEMP", "TMPDIR", "LANG", "LC_ALL", "LANGUAGE",
+             "SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "PATHEXT", "WINDIR",
+             "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
+             "PYTHONIOENCODING", "PYTHONUTF8", "TERM")
+    env = {k: os.environ[k] for k in allow if k in os.environ}
+    for k in list(env):
+        if any(t in k.upper() for t in ("KEY", "TOKEN", "SECRET", "PASSWORD",
+                                        "PASSWD", "CREDENTIAL", "AUTH", "PRIVATE")):
+            env.pop(k, None)
+    env["LGD_AUDIT_LOG"] = logp
+    env["HOME"] = tree
+    return env
+
+
 def _sandbox_one(backend, tree, script, timeout):
     rel = os.path.relpath(script, tree).replace("\\", "/")
     logp = os.path.join(tree, "_audit_%s.jsonl"
                         % hashlib.sha256(rel.encode()).hexdigest()[:8])
     if os.path.exists(logp):
         os.remove(logp)
-    env = dict(os.environ)
-    env["LGD_AUDIT_LOG"] = logp
-    env["HOME"] = tree
-    for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
-              "all_proxy", "ALL_PROXY", "ftp_proxy", "FTP_PROXY", "PYTHONHOME"):
-        env.pop(k, None)
+    env = _sbox_env(tree, logp)
     if backend == "unshare":
         env["PYTHONPATH"] = tree
         cmd = ["unshare", "--user", "--map-root-user", "--net", "--pid", "--fork",
