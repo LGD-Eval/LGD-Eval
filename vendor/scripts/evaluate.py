@@ -53,6 +53,83 @@ CRIT_IDS = {"R-SEC-09", "R-SEC-10", "R-SEC-21"}          # 已证实的凭证 / 
 HIGH_IDS = {"R-SEC-01", "R-SEC-02", "R-SEC-03", "R-SEC-04", "R-SEC-05",
             "R-SEC-15", "R-SEC-16", "R-SEC-17", "R-SEC-18", "R-SEC-11"}
 
+# ============================================================
+# JS / TS 组合判定（R-SEC-09/21 的 JS 侧）
+# ------------------------------------------------------------
+# 问题：Python 侧有 AST + 污点分析，JS 侧只有几条正则。结果是同一个行为
+# 换个后缀就换个结论——JS 技能读 ~/.aws/credentials 并 POST 出去，
+# evaluate.py 给 77/B、skillgate 给 100/A+，而 Python 孪生样本 49/D。
+# 反例已实测（audit2/probe/js-env-exfil）。
+#
+# 做法：不做完整污点分析，只做「文件级三项共存」的保守近似——
+#   1) 出现凭证路径标记（.aws / .ssh / credentials / id_rsa / .npmrc …）
+#   2) 出现文件读取调用
+#   3) 出现网络发送 sink
+# 三项同文件共存即判 CRITICAL。误报代价只是降档（两种状态都阻断发布），
+# 漏报代价是两个引擎对同一技能给出两个结论。
+# 已知边界：跨文件的 JS 组合（A 读、B 发）暂不判，见 SKILL.md 限制说明。
+# ============================================================
+
+JS_CRED_PATH_RE = re.compile(
+    r"['\"](?:\.aws|\.ssh|\.npmrc|\.netrc|netrc|credentials|id_rsa|id_ed25519"
+    r"|\.kube|\.docker|\.pgpass|\.config/gcloud)['\"]"
+    r"|['\"][^'\"\n]*(?:/\.aws/|/\.ssh/|\.aws/credentials|/credentials\b|id_rsa"
+    r"|id_ed25519|\.pgpass|/\.npmrc)[^'\"\n]*['\"]"
+    r"|(?:homedir\(\)|HOME|USERPROFILE)\s*,\s*['\"]\.(?:aws|ssh|kube|docker)"
+)
+JS_READ_CALL_RE = re.compile(
+    r"(?:readFileSync|readFile|createReadStream|readFileSync\s*\(|fs\.read|open\s*\()"
+)
+JS_NET_SINK_RE = re.compile(
+    r"(?:https?\.(?:request|get)\s*\(|\bfetch\s*\(|axios\.(?:post|put|get|request)"
+    r"|\bnet\.connect\s*\(|new\s+WebSocket|sendBeacon|got\s*\()"
+)
+JS_ENV_BULK_RE = re.compile(
+    r"(?:\{\s*\.\.\.\s*process\.env\s*\}"
+    r"|Object\.keys\s*\(\s*process\.env\s*\)"
+    r"|Object\.assign\s*\(\s*\{\s*\}\s*,\s*process\.env\s*\)"
+    r"|Object\.entries\s*\(\s*process\.env\s*\)"
+    r"|JSON\.stringify\s*\(\s*(?:\{\s*\.\.\.\s*)?process\.env)"
+)
+
+
+def _js_lines(code):
+    """返回 [(行号, 该行)]，跳过空行与注释行——规则文案写到注释里不算行为。"""
+    out = []
+    for i, line in enumerate(code.splitlines(), 1):
+        s = line.strip()
+        if not s or s.startswith("//") or s.startswith("*") or s.startswith("/*"):
+            continue
+        out.append((i, s))
+    return out
+
+
+def js_combination(code):
+    """JS/TS 文件级组合判定，返回 [(行号, 结论文案)]。"""
+    hits = []
+    lines = _js_lines(code)
+    if not lines:
+        return hits
+
+    cred_line = read_line = sink_line = env_line = 0
+    for ln, s in lines:
+        if not cred_line and JS_CRED_PATH_RE.search(s):
+            cred_line = ln
+        if not read_line and JS_READ_CALL_RE.search(s):
+            read_line = ln
+        if not sink_line and JS_NET_SINK_RE.search(s):
+            sink_line = ln
+        if not env_line and JS_ENV_BULK_RE.search(s):
+            env_line = ln
+
+    if sink_line and cred_line and read_line:
+        hits.append((sink_line,
+                     "凭证文件读取后网络外发（JS 组合判定：凭证路径 + 读取 + 发送）"))
+    if sink_line and env_line:
+        hits.append((sink_line,
+                     "环境变量批量外发（JS：整份 process.env 发往网络）"))
+    return hits
+
 
 def safety_cap(findings):
     """按命中的最高严重度给出分数上限。返回 (cap, level, reason)。
@@ -616,6 +693,15 @@ def evaluate_skill(skill_path):
                 if msg not in security_issues:
                     security_issues.append(msg)
                     score -= points
+        # JS/TS 组合判定：JS 没有 AST 层，正则也看不到"读取 + 发送"的组合，
+        # 不补这一步，同一行为换后缀就从 49/D 变成 77/B。
+        if ext in (".js", ".ts", ".mjs", ".cjs"):
+            for _jln, _jreason in js_combination(code):
+                _jmsg = "%s:%d: %s" % (script_file, _jln, _jreason)
+                if _jmsg not in security_issues:
+                    security_issues.append(_jmsg)
+                    score -= 10
+
         # AST 语义扫描：补正则抓不到的规避写法
         if ext != ".py":
             continue
