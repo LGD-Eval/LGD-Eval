@@ -110,7 +110,7 @@ try {
 } catch (e) {}
 
 try {
-  const cp = require('child_process');
+  const cp = require('child_process'); // skillgate: ignore（审计探针只挂钩记录、不执行子进程；挂在这里正是为了看见被测程序的调用）
   ['exec', 'execSync', 'spawn', 'spawnSync', 'execFile', 'execFileSync'].forEach((n) => {
     const orig = cp[n];
     if (typeof orig !== 'function') return;
