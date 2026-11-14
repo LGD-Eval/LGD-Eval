@@ -104,29 +104,43 @@ def _js_lines(code):
     return out
 
 
+JS_IMPORT_RE = re.compile(
+    r"(?:require\s*\(\s*['\"]\./([^'\"]+)['\"]"
+    r"|from\s*['\"]\./([^'\"]+)['\"]"
+    r"|import\s*\(\s*['\"]\./([^'\"]+)['\"]\s*\))")
+
+
+def js_flags(code):
+    """返回首次出现的行号 {cred, read, sink, env} 与相对导入模块集合。
+
+    跨文件判定需要"哪个文件读、哪个文件发"，单文件规则拼不出因果。
+    """
+    flags = {"cred": 0, "read": 0, "sink": 0, "env": 0, "imports": set()}
+    for ln, s in _js_lines(code):
+        if not flags["cred"] and JS_CRED_PATH_RE.search(s):
+            flags["cred"] = ln
+        if not flags["read"] and JS_READ_CALL_RE.search(s):
+            flags["read"] = ln
+        if not flags["sink"] and JS_NET_SINK_RE.search(s):
+            flags["sink"] = ln
+        if not flags["env"] and JS_ENV_BULK_RE.search(s):
+            flags["env"] = ln
+        for m in JS_IMPORT_RE.finditer(s):
+            mod = m.group(1) or m.group(2) or m.group(3)
+            if mod:
+                flags["imports"].add(os.path.basename(mod))
+    return flags
+
+
 def js_combination(code):
     """JS/TS 文件级组合判定，返回 [(行号, 结论文案)]。"""
+    flags = js_flags(code)
     hits = []
-    lines = _js_lines(code)
-    if not lines:
-        return hits
-
-    cred_line = read_line = sink_line = env_line = 0
-    for ln, s in lines:
-        if not cred_line and JS_CRED_PATH_RE.search(s):
-            cred_line = ln
-        if not read_line and JS_READ_CALL_RE.search(s):
-            read_line = ln
-        if not sink_line and JS_NET_SINK_RE.search(s):
-            sink_line = ln
-        if not env_line and JS_ENV_BULK_RE.search(s):
-            env_line = ln
-
-    if sink_line and cred_line and read_line:
-        hits.append((sink_line,
+    if flags["sink"] and flags["cred"] and flags["read"]:
+        hits.append((flags["sink"],
                      "凭证文件读取后网络外发（JS 组合判定：凭证路径 + 读取 + 发送）"))
-    if sink_line and env_line:
-        hits.append((sink_line,
+    if flags["sink"] and flags["env"]:
+        hits.append((flags["sink"],
                      "环境变量批量外发（JS：整份 process.env 发往网络）"))
     return hits
 
@@ -488,6 +502,7 @@ def evaluate_skill(skill_path):
 
     taint = {}
     env_bulk = {}
+    js_facts = {}
     # 只认「整份」环境变量导出；单项 os.environ["KEY"] 是正常配置读取，不报。
     # 这是 Mitiga 类样本最爱的偷渡方式：把全部变量（含云厂商密钥）打包发走。
     ENV_BULK_RE = re.compile(
@@ -696,6 +711,8 @@ def evaluate_skill(skill_path):
         # JS/TS 组合判定：JS 没有 AST 层，正则也看不到"读取 + 发送"的组合，
         # 不补这一步，同一行为换后缀就从 49/D 变成 77/B。
         if ext in (".js", ".ts", ".mjs", ".cjs"):
+            _jsf = js_flags(code)
+            js_facts[script_file] = _jsf
             for _jln, _jreason in js_combination(code):
                 _jmsg = "%s:%d: %s" % (script_file, _jln, _jreason)
                 if _jmsg not in security_issues:
@@ -718,6 +735,23 @@ def evaluate_skill(skill_path):
             if msg not in security_issues:
                 security_issues.append(msg)
                 score -= points
+
+    # ---- JS 跨文件：A 里读凭证，B 里 import 了 A 又发出去 ----
+    # 只认显式相对导入，不靠目录相邻猜因果。
+    for a_fp, a_flags in sorted(js_facts.items()):
+        if not (a_flags.get("cred") and a_flags.get("read")):
+            continue
+        mod_a = os.path.splitext(os.path.basename(a_fp))[0]
+        for b_fp, b_flags in sorted(js_facts.items()):
+            if b_fp == a_fp or not b_flags.get("sink"):
+                continue
+            if mod_a not in b_flags.get("imports", set()):
+                continue
+            js_msg = "%s:%d: 跨文件凭证外泄（JS 组合判定：%s 读取，本文件发送）" % (
+                b_fp, b_flags["sink"], mod_a)
+            if js_msg not in security_issues:
+                security_issues.append(js_msg)
+                score -= 10
 
     # ---- 环境变量批量外发：整份 os.environ 打包送出 ----
     for f_, l_env in sorted(env_bulk.items()):

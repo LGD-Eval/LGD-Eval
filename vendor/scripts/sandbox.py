@@ -14,6 +14,7 @@
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -36,16 +37,23 @@ SAFE_SUFFIX = (".example.com", ".example.org", ".test", ".invalid", "localhost")
 
 
 def _pick_entry(path):
+    """选入口：.py 优先，其次 Node 脚本。两边都是"能跑起来才谈得上观察"。"""
     if os.path.isfile(path):
         return path
-    cands = []
+    py_cands, js_cands = [], []
     for dirpath, dirnames, filenames in os.walk(path):
         dirnames[:] = [d for d in dirnames if d not in
                        {".git", "__pycache__", "node_modules", "tests", "fixtures"}]
         for fn in sorted(filenames):
-            if fn.endswith(".py") and fn != "SKILL.md":
-                cands.append(os.path.join(dirpath, fn))
-    return cands[0] if cands else None
+            if fn == "SKILL.md":
+                continue
+            if fn.endswith(".py"):
+                py_cands.append(os.path.join(dirpath, fn))
+            elif fn.endswith((".js", ".mjs", ".cjs")):
+                js_cands.append(os.path.join(dirpath, fn))
+    if py_cands:
+        return py_cands[0]
+    return js_cands[0] if js_cands else None
 
 
 def analyse(events):
@@ -76,13 +84,25 @@ def analyse(events):
 def run(target, timeout=10):
     entry = _pick_entry(target)
     if not entry:
-        return {"error": "没有找到可执行的 .py 入口"}
+        return {"error": "没有找到可执行的入口（.py 或 .js/.mjs/.cjs）"}
+    is_js = entry.lower().endswith((".js", ".mjs", ".cjs"))
+    if is_js:
+        node = shutil.which("node")
+        if not node:
+            # 没有 Node 就如实说"跑不了"，不假装跑过——无证据不得标记 Confirmed
+            return {"error": "本机没有 Node 运行时，JS 技能无法在沙箱中执行",
+                    "entry": entry}
     log = tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl").name
     env = {k: v for k, v in os.environ.items() if k not in PROXY_VARS}
     env["LGD_AUDIT_LOG"] = log
     env["PYTHONPATH"] = HERE + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    probe = os.path.join(HERE, "lgd_node_probe.js")
     try:
-        p = subprocess.run([sys.executable, "-c", BOOT, entry], cwd=os.path.dirname(entry) or ".",
+        if is_js:
+            cmd = [node, "-r", probe, entry]
+        else:
+            cmd = [sys.executable, "-c", BOOT, entry]
+        p = subprocess.run(cmd, cwd=os.path.dirname(entry) or ".",
                            env=env, capture_output=True, text=True, timeout=timeout,
                            encoding="utf-8", errors="replace")
         rc = p.returncode

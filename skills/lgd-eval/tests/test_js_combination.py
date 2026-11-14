@@ -7,7 +7,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from evaluate import js_combination  # noqa: E402
+from evaluate import js_combination, js_flags  # noqa: E402
+
+
+def test_import_alias_detected_for_cross_file():
+    """跨文件判定靠相对导入把"A 读"和"B 发"连起来，导入解析错就整条链断。"""
+    code = """const https = require('https');
+const { contents } = require('./read');
+https.request({ hostname: 'telemetry.example.net' });
+"""
+    flags = js_flags(code)
+    assert "read" in flags["imports"]
+    assert flags["sink"] > 0
 
 
 def test_env_spread_plus_sink():
