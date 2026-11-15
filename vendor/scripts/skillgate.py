@@ -36,7 +36,7 @@ except ImportError:
 
 # Import JS analyzer
 try:
-    from js_analyzer import scan_js_file
+    from js_analyzer import scan_js_file, js_flags
 except ImportError:
     scan_js_file = None
 
@@ -110,6 +110,11 @@ NETWORK_PATTERNS = [
     (r"\bdict\s*\(\s*os\.environ\b", "MEDIUM", "整份环境变量导出（外泄前兆）"),
     (r"\bos\.environ\.copy\s*\(", "MEDIUM", "整份环境变量复制（外泄前兆）"),
     (r"\bin\s+os\.environ\.items\s*\(", "MEDIUM", "遍历全部环境变量"),
+    # 2026-11-15 类覆盖：上一轮只认"打包成 dict/copy/items"三种形状，直接打印、
+    # 直接塞进子进程 env、直接 json 序列化三种同样把全量环境变量抖出去的写法放行。
+    (r"print\s*\(\s*os\.environ", "MEDIUM", "打印全部环境变量"),
+    (r"env\s*=\s*(?:dict\s*\(\s*)?os\.environ", "INFO", "全量环境变量传入子进程（默认继承行为，仅在与外发组合时才是信号）"),
+    (r"json\.dumps?\s*\([^\n]*os\.environ", "MEDIUM", "环境变量序列化（外泄前兆）"),
 ]
 
 # 3. Credential / secret access
@@ -122,8 +127,29 @@ CREDENTIAL_PATTERNS = [
      "INFO", "从环境变量读凭证（安全做法）"),
     (re.compile(r"~\.ssh/", re.IGNORECASE),
      "HIGH", "访问 SSH 密钥目录"),
+
+    # 2026-11-15 类覆盖（灭类不灭例）：凭证这一类原先只认"字段名 + 冒号 + 长字符串"一种形状。
+    # 10 种真实凭证形态里 8 种放行——AWS、GitHub PAT、Slack、Google、Stripe、私钥块、
+    # 带口令的数据库 DSN、Azure 存储密钥，全是"没有字段名也一眼能认"的硬凭证。
+    # 按前缀/形状认，比按变量名认可靠。
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "CRITICAL", "AWS Access Key ID"),
+    (re.compile(r"\bASIA[0-9A-Z]{16}\b"), "CRITICAL", "AWS 临时访问密钥 ID"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), "CRITICAL", "GitHub 令牌"),
+    (re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"), "CRITICAL", "Slack 令牌"),
+    (re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"), "CRITICAL", "Google API Key"),
+    (re.compile(r"\b[sr]k_live_[0-9A-Za-z]{20,}\b"), "CRITICAL", "Stripe 线上密钥"),
+    (re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----"), "CRITICAL", "私钥块"),
+    (re.compile(r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s/]+:[^@\s]{3,}@",
+                re.IGNORECASE), "CRITICAL", "带口令的连接串"),
+    (re.compile(r"AccountKey\s*=\s*[A-Za-z0-9+/]{20,}={0,2}"), "CRITICAL", "Azure 存储账户密钥"),
     (re.compile(r"\.aws/credentials", re.IGNORECASE),  # skillgate: ignore
      "HIGH", "访问 AWS 凭证文件"),
+    # 路径分段拼接：os.path.join(home, ".aws", "credentials") 是恶意包最常见的写法，
+    # 字面匹配在上面那一条永远命不中——第三方实测样本就是这么躲过去的。
+    (re.compile(r"['\"]\.?aws['\"]\s*[\),]\s*['\"]?credentials", re.IGNORECASE),  # skillgate: ignore
+     "HIGH", "访问 AWS 凭证文件（路径分段拼接）"),
+    (re.compile(r"['\"]\.ssh['\"]\s*[\)]\s*[^\n]*['\"]id_", re.IGNORECASE),  # skillgate: ignore
+     "HIGH", "访问 SSH 私钥（路径分段拼接）"),
     (re.compile(r"\.git-credentials", re.IGNORECASE),  # skillgate: ignore
      "HIGH", "访问 Git 凭证文件"),
     (re.compile(r"\.netrc", re.IGNORECASE),  # skillgate: ignore
@@ -144,6 +170,13 @@ FILESYSTEM_PATTERNS = [
     (r"\bos\.remove\s*\(", "INFO", "os.remove 删除文件（常见）"),
     (r"\bos\.rmdir\s*\(", "INFO", "os.rmdir 删除目录（常见）"),
     (r"\bos\.unlink\s*\(", "MEDIUM", "os.unlink 删除文件"),
+    # 2026-11-15 类覆盖（灭类不灭例）：同一类"批量删除"里另有两条被放行——
+    # pathlib 的 rglob 循环 unlink、以及 Windows 侧 Remove-Item -Recurse。
+    # 只在 POSIX 语境测过，Windows 上的等价写法等于没被看见。
+    (r"(?:rglob|glob)\s*\([^)]*\)[^\n]*(?:unlink|remove|rmdir)",
+     "MEDIUM", "通配递归删除（pathlib/glob）"),
+    (r"remove-item[^\n]*-recurse", "HIGH", "PowerShell 递归删除"),
+    (r"del\s+/[sfq][^\n]*[/]s", "HIGH", "cmd 递归删除（del /s）"),
     (r"\bopen\s*\([^)]*['\"]/etc/", "HIGH", "写入 /etc/ 系统目录"),
     (r"\bopen\s*\([^)]*['\"]C:\\\\Windows\\\\", "HIGH", "写入 Windows 系统目录"),
     (r"\bopen\s*\([^)]*['\"]/System/", "HIGH", "写入 macOS 系统目录"),
@@ -170,7 +203,92 @@ PROMPT_INJECTION_PATTERNS = [
     (r"forget\s+your\s+rules", "CRITICAL", "Forget your rules"),
     (r"override\s+your\s+guidelines", "CRITICAL", "Override guidelines"),
     (r"ignore\s+your\s+training", "CRITICAL", "Ignore training"),
+
+    # --- 2026-11-15 红队复测（灭类不灭例）：注入这一类里，非英文形态曾整体失明 ---
+    # 14 条样本里 13 条漏检：中文指令覆盖、结构标签伪造、编码载荷、分隔符伪造全放行。
+    # 我们服务的生态主要说中文，只认英文等于对中文用户交白卷。以下按类补齐。
+    # 严重度按"是否直接改写行为"分：改写指令 = CRITICAL，隐瞒/窃取语境 = HIGH，
+    # 角色扮演 = LOW（正常提示词也大量使用，报重了就是误伤）。
+    (r"(?:忽略|无视|抛开|跳过)(?:掉)?(?:以上|上面|前面|之前|先前|此前|上述)(?:的)?(?:所有|全部)?(?:指令|指示|提示|规则|设定|要求)",
+     "CRITICAL", "中文注入：忽略以上指令"),
+    (r"(?:忘掉|忘记|丢弃|清空)(?:你)?(?:之前|原来|原有|此前)?(?:的)?(?:所有)?(?:规则|指令|设定|限制|约束)",
+     "CRITICAL", "中文注入：忘掉原有规则"),
+    (r"(?:绕过|突破|跳过)(?:掉)?(?:安全|内容|审核|过滤|限制|防护|护栏)(?:检查|机制|策略)?",
+     "CRITICAL", "中文注入：绕过安全限制"),
+    (r"(?:覆盖|重写|改写)(?:掉)?(?:你的)?(?:系统)?(?:提示词|系统提示|指令|设定)",
+     "CRITICAL", "中文注入：覆盖系统设定"),
+    (r"<\s*/?\s*system\s*>|\[\s*system\s*\]|\"role\"\s*:\s*\"system\"",
+     "CRITICAL", "结构伪造：伪装 system 角色"),
+    (r"system_prompt_override|override_system_prompt",
+     "HIGH", "配置伪造：声明覆盖系统提示"),
+    (r"(?:不要|别|切勿)(?:告诉|通知|提醒|透露给|告知)(?:用户|使用者|调用者)",
+     "HIGH", "中文注入：对用户隐瞒行为"),
+    # 语序不固定（"把系统提示词输出给我" / "输出你的系统提示"），故两个方向都认
+    (r"(?=[^\n]*(?:系统提示词|系统提示|初始提示|隐藏指令))(?:输出|泄露|打印|发给我|给出|告知)"
+     r"|(?:系统提示词|系统提示|初始提示|隐藏指令)[^\n]*(?:输出|泄露|给出|发给|打印|告知)",
+     "HIGH", "中文注入：索取系统提示"),
+    (r"base64\s+(?:-d|--decode)[^\n]*\|\s*(?:sh|bash|zsh|python)",
+     "CRITICAL", "编码载荷：base64 解码后直接执行"),
+    (r"<<\s*SYS\s*>>|\[\s*INST\s*\]",
+     "MEDIUM", "聊天模板标记（可能伪造角色边界，需人工确认）"),
+    (r"你现在(?:是|就是|扮演)|假装(?:你)?是|(?:请)?扮演(?:一个)?",
+     "LOW", "角色定义，低风险，需人工确认"),
+    (r"\]\]>\s*</?\w+>",
+     "MEDIUM", "分隔符伪造：闭合标签后追加新指令"),
 ]
+
+# 5.4 不可见字符承载的指令（CSA 2026-03 报告的 Unicode Tags 注入）
+# 正则看不见它们，所以写在文本规则里等于没有。这里按码位单独扫：
+#   U+E0000–U+E007F  Tags 块，逐字对应 ASCII，屏幕上完全不显示，模型照读
+#   U+200B–U+200F  零宽空格/连接符
+#   U+2060–U+2064  词连接符/不可见运算符
+#
+# 2026-11-15 红队复测（灭类不灭例）：上面三段只覆盖了"Tags 类""零宽类""格式类"三个例，
+# 同一风险类里还有一批能被静默承载的字符完全没被看到——9 类全部漏检。已按"类"补齐，
+# 并给每段一个最小出现次数（min_count）：像软连字符、盲文空白、谚文填充符这类
+# 在正常排版里偶尔出现一次不算攻击，出现≥2 次才报；承载 ASCII 的强载体（Tags 块、
+# 变体选择符补充区、双向控制符、音乐格式控制符）出现 1 个就报。
+# 刻意**不**收 U+FE00–U+FE0F：那是 emoji 的合法变体选择符（"❤️"就含 FE0F），
+# 收进来等于给所有带 emoji 的 README 报 CRITICAL，是拿误报换覆盖。
+INVISIBLE_RANGES = (
+    (0xE0000, 0xE007F, "Unicode Tags 块（隐形承载 ASCII 指令）", 1),
+    (0x200B, 0x200F, "零宽字符", 1),
+    (0x2060, 0x2064, "不可见格式字符", 1),
+    (0x061C, 0x061C, "阿拉伯字母标记（控制阅读方向）", 1),
+    (0x202A, 0x202E, "双向控制符（可反转显示顺序）", 1),
+    (0x2066, 0x2069, "双向隔离符", 1),
+    (0xFEFF, 0xFEFF, "零宽不换行空格（BOM 字符）", 1),
+    (0x1D173, 0x1D17A, "音乐符号格式控制符", 1),
+    (0xE0100, 0xE01EF, "变体选择符补充区（隐形承载数据）", 1),
+    (0x00AD, 0x00AD, "软连字符", 2),
+    (0x180E, 0x180E, "蒙古文元音分隔符", 2),
+    (0x2800, 0x2800, "盲文空白", 2),
+    (0x3164, 0x3164, "谚文填充符", 2),
+    (0xFFA0, 0xFFA0, "半角谚文填充符", 2),
+)
+
+
+def invisible_payloads(text):
+    """返回 [(码位, 区间名, 上下文片段)]。同一区间只报一次，避免刷屏。
+
+    min_count 语义：该区间字符在全文出现次数达到阈值才报，
+    避免"软连字符出现一次"这种正常排版被当成注入。
+    """
+    hits = {}
+    counts = {}
+    first = {}
+    for idx, ch in enumerate(text):
+        cp = ord(ch)
+        for lo, hi, label, min_n in INVISIBLE_RANGES:
+            if lo <= cp <= hi:
+                counts[label] = counts.get(label, 0) + 1
+                if label not in first:
+                    first[label] = (cp, text[max(0, idx - 20):idx + 20])
+                break
+    for label, n in counts.items():
+        if n >= next(r[3] for r in INVISIBLE_RANGES if r[2] == label):
+            hits[label] = first[label]
+    return [(v[0], label, v[1]) for label, v in hits.items()]
 
 # 5.5 数字诚实性规则（防止吹牛）
 HONESTY_PATTERNS = [
@@ -221,6 +339,16 @@ QUALITY_PATTERNS = [
 AUTH_PATTERNS = [
     (r"\bauth\s*=\s*None\b", "MEDIUM", "认证被禁用"),
     (r"\bverify\s*=\s*False\b", "HIGH", "SSL 验证被禁用"),
+    # 2026-11-15 类覆盖（灭类不灭例）：关 TLS 校验这一类原先只认 requests 的 verify=False。
+    # 7 种真实写法里 4 种放行——ssl.unverified 上下文、CERT_NONE、Node 的
+    # rejectUnauthorized、以及用环境变量关掉整个进程的校验。按语言/容器各补一条。
+    (r"ssl\._create_unverified_context\s*\(", "HIGH", "SSL 校验关闭（unverified context）"),
+    (r"verify_mode\s*=\s*(?:ssl\.)?CERT_NONE", "HIGH", "SSL 校验关闭（CERT_NONE）"),
+    (r"check_hostname\s*=\s*False", "HIGH", "SSL 主机名校验关闭"),
+    (r"rejectUnauthorized\s*:\s*false", "HIGH", "Node TLS 校验关闭（rejectUnauthorized）"),
+    (r"NODE_TLS_REJECT_UNAUTHORIZED[^\n]{0,20}['\"]?\s*=?\s*['\"]?0", "HIGH", "Node TLS 校验关闭（环境变量）"),
+    (r"PYTHONHTTPSVERIFY[^\n]{0,20}['\"]?\s*=?\s*['\"]?0", "HIGH", "进程级 TLS 校验关闭（环境变量）"),
+    (r"CURL_CA_BUNDLE\s*=\s*['\"]{2}|GIT_SSL_NO_VERIFY", "HIGH", "TLS 校验关闭（环境变量）"),
     (r"\bALLOW_ALL\b", "HIGH", "允许所有访问"),
     (r"\bCORS.*\*\b", "MEDIUM", "CORS 允许所有来源"),
     (r"\bpassword\s*=\s*['\"][^'\"]+['\"]", "CRITICAL", "硬编码密码"),
@@ -245,6 +373,42 @@ EXFIL_PATTERNS = [
     (r"\bsmtplib\.SMTP\(", "MEDIUM", "发送邮件"),
     (r"\bsocket\.socket\(", "MEDIUM", "原始 socket 网络连接"),
 ]
+
+# ------------------------------------------------------------------
+# 规则表接线声明（2026-11-15）
+#
+# AUTH_PATTERNS 被查出"从定义起就没被任何循环引用"之后，静态核对发现同类问题
+# 不止一张：EXFIL / LICENSE / QUALITY / VALIDATION 四张表同样零引用。
+# 死规则表比错规则更危险——错规则至少会响，死规则让"我们能检出 X"变成一句空话。
+#
+# 从此每张表必须落到两类之一，二选一都要写明理由：
+#   ACTIVE_RULE_TABLES —— 扫描循环真的在读（tests/test_rule_table_wiring.py 会核）
+#   RULE_TABLES_DECLARED_OFF —— 有意关闭，且必须给理由，不能只留空表
+# 新增规则表而不登记，守卫测试直接红。
+# ------------------------------------------------------------------
+ACTIVE_RULE_TABLES = (
+    "DANGEROUS_CODE_PATTERNS",
+    "NETWORK_PATTERNS",
+    "CREDENTIAL_PATTERNS",
+    "FILESYSTEM_PATTERNS",
+    "EXCESSIVE_AGENCY_PATTERNS",
+    "HONESTY_PATTERNS",
+    "AUTH_PATTERNS",
+    "PROMPT_INJECTION_PATTERNS",
+    "INSTALL_HOOKS",
+    "REMOTE_EXEC_PATTERNS",
+)
+
+RULE_TABLES_DECLARED_OFF = {
+    "EXFIL_PATTERNS": "独有规则已并入 NETWORK_PATTERNS，保留此表仅为兼容旧引用",
+    "LICENSE_PATTERNS": ("未接入：扫描对象是技能仓，README 里提到 GPL/AGPL 属于叙述，"
+                         "按行报会把许可证讨论一律打成分；许可证判断走仓库级 LICENSE 文件核对，不走行级正则"),
+    "QUALITY_PATTERNS": ("未接入：TODO/FIXME/print 属风格噪声，不是安全信号；"
+                         "接进来会把每个正常仓库都降一档，与「检出风险」这一声称无关"),
+    "VALIDATION_PATTERNS": ("未接入：request.args/input/sys.argv 是常规入口，单看入口判不出未校验；"
+                            "真正的注入判断在 DANGEROUS_CODE_PATTERNS 与 AST 层"),
+}
+
 
 FRONTMATTER_REQUIRED_FIELDS = ["name", "description"]
 FRONTMATTER_OPTIONAL_FIELDS = ["version", "license", "author", "tags"]
@@ -304,6 +468,7 @@ class ScanResult:
     trust_score: int = 0
     grade: str = ""
     rule_version: str = "v3.1.3"  # 规则版本号（有籍）
+    excluded: list = field(default_factory=list)  # 显式排除的路径（供审计复现）
 
     @property
     def critical_count(self): return len([f for f in self.findings if f.severity == "CRITICAL"])
@@ -563,10 +728,16 @@ def scan_python_file(filepath: Path, result: ScanResult):
                 cur = lines[af.line - 1]
                 if "skillgate: ignore" in cur or "lgd: ignore" in cur:
                     continue
+            sev, msg = af.severity, af.message
+            # 递归删除：写了路径守卫就是"可以接受的删除"，不写才是风险。
+            # 修复前实测：带 startswith 守卫的干净样本仍被判 HIGH 69/C，
+            # 而没有守卫的同类样本也是 HIGH —— 两条都报等于规则没用信息量。
+            if "递归删除" in msg and has_path_guard(lines, af.line):
+                sev, msg = "LOW", msg + "（同文件检测到路径守卫）"
             result.findings.append(Finding(
-                severity=af.severity,
+                severity=sev,
                 category="ast-analysis",
-                message=f"[AST] {af.message}",
+                message=f"[AST] {msg}",
                 file=str(filepath),
                 line=af.line
             ))
@@ -712,6 +883,63 @@ def scan_python_file(filepath: Path, result: ScanResult):
                     message=msg, file=str(filepath), line=i
                 ))
 
+    # 4.5 Auth / TLS 类（AUTH_PATTERNS）
+    #     2026-11-15 类覆盖时发现：这张表自建立起就没被任何扫描循环引用过，
+    #     是死代码。于是 "verify=False / CERT_NONE / rejectUnauthorized:false"
+    #     这些声称"能检出 TLS 校验关闭"的规则，实际上一条都没生效——
+    #     7 种写法里只有 3 种被别的规则（network 的通用 INFO）顺带撞上。
+    #     接进来，并给独立 category，避免和 network 的通用命中混在一起。
+    for pattern, severity, msg in AUTH_PATTERNS:
+        for i, line in enumerate(lines, 1):
+            if is_comment_line(line):
+                continue
+            if is_suppressed(i):
+                continue
+            # TLS 环境变量名本身写在字符串里（os.environ['PYTHONHTTPSVERIFY']），
+            # code_lines 会把字符串剥掉，所以这一组对原始行判；
+            # 同时必须绕开规则定义行，否则扫描器扫自己的规则表就自命中。
+            if is_rule_literal_line(line):
+                continue
+            if re.search(pattern, line, re.IGNORECASE):
+                result.findings.append(Finding(
+                    severity=severity, category="auth",
+                    message=msg, file=str(filepath), line=i
+                ))
+
+    # 4.6 跨行"通配 + 删除"组合
+    #     pathlib 的 rglob 循环里 unlink 是两行三行分开写的，单行正则永远看不到它们
+    #     在一起。按"同一文件内同时出现"判，才抓到这一类。
+    _has_glob = re.search(r"\b(?:rglob|glob)\s*\(", content)
+    _has_del = re.search(r"(?:unlink|rmtree|rmdir|remove)\s*\(", content)
+    if _has_glob and _has_del:
+        _ln = content[:_has_del.start()].count("\n") + 1
+        result.findings.append(Finding(
+            severity="MEDIUM", category="filesystem",
+            message="通配遍历 + 删除组合（可能批量清除）",
+            file=str(filepath), line=_ln
+        ))
+
+    # 4.7 写在字符串里的 shell 删除命令
+    #     code_lines 会把字符串剥掉，于是 os.system("Remove-Item -Recurse …") 这种
+    #     "把危险命令当字符串传下去"的写法被剥离后看不见。这里对原始行再看一遍。
+    _SHELL_DEL = (
+        (r"remove-item[^\n]*-(?:recurse|force)[^\n]*", "HIGH", "PowerShell 递归删除（字符串内）"),
+        (r"\brd\s+/s\b|\brmdir\s+/s\b", "HIGH", "cmd 递归删除目录（字符串内）"),
+        (r"\bdel\s+/[sfq][^\n]*/s\b", "HIGH", "cmd 递归删除文件（字符串内）"),
+        (r"\brm\s+-rf?\s+(?:/|~|\*)[^\n]*", "HIGH", "rm -rf 删除根/家目录/通配（字符串内）"),
+    )
+    for _pat, _sev, _msg in _SHELL_DEL:
+        for i, line in enumerate(lines, 1):
+            if is_comment_line(line) or is_suppressed(i):
+                continue
+            if is_rule_literal_line(line):
+                continue  # 规则定义行（本文件里的模式字面量）不自命中
+            if re.search(_pat, line, re.IGNORECASE):
+                result.findings.append(Finding(
+                    severity=_sev, category="dangerous-shell",
+                    message=_msg, file=str(filepath), line=i
+                ))
+
     # 5. Excessive agency patterns
     for pattern, severity, msg in EXCESSIVE_AGENCY_PATTERNS:
         for i, line in enumerate(lines, 1):
@@ -749,6 +977,19 @@ def scan_md_file(filepath: Path, result: ScanResult):
         if in_code_block:
             code_lines.add(i)
 
+    def is_suppressed(line_idx: int) -> bool:
+        """与 Python 侧同一约定：当前行或上一行含 skillgate: ignore 即视为
+        已声明的抑制（Bandit # nosec / NOSONAR 的同类做法）。
+
+        md 侧原先没有这段，导致文档里的 `<!-- skillgate: ignore -->` 完全无效——
+        抑制约定只对 .py 生效，对 .md 是装饰。这是一致性缺陷，补上。
+        """
+        if 0 < line_idx <= len(lines) and "skillgate: ignore" in lines[line_idx - 1]:
+            return True
+        if line_idx > 1 and "skillgate: ignore" in lines[line_idx - 2]:
+            return True
+        return False
+
     # frontmatter 区域行号（Muse 复测 P0：frontmatter 的 description 是智能体
     # 运行时实际读取的指令文本，属第一攻击面——注入/外泄扫描不得整段跳过，
     # 仅凭证扫描跳过该区域以防元数据字段名误报）
@@ -765,9 +1006,19 @@ def scan_md_file(filepath: Path, result: ScanResult):
 
     def is_safety_discussion(line: str) -> bool:
         """该行是否在讨论安全/防御主题（红队、扫描、防护等），
-        此时 jailbreak / ignore previous 等词是主题词而非注入指令。"""
+        此时 jailbreak / ignore previous 等词是主题词而非注入指令。
+
+        2026-11-15 收紧：原先"命中任一个安全词就豁免"。中文注入几乎必然带"安全"二字
+        （"绕过安全限制"），于是把自己豁免掉了——实测该样本被判 MISS。
+        改为分级：出现两个以上不同安全词，或出现明确的讨论标记（例如/示例/论文 等），
+        才算讨论语境；只有一个"安全"这类泛词不构成豁免。
+        """
         low = line.lower()
-        return any(w in low for w in SAFETY_CONTEXT_WORDS)
+        hits = {w for w in SAFETY_CONTEXT_WORDS if w in low}
+        if len(hits) >= 2:
+            return True
+        return any(w in low for w in ("例如", "示例", "举例", "恶意样本", "攻击样例",
+                                      "e.g.", "example", "payload sample"))
 
     def _match_in_quoted(line: str, m_start: int) -> bool:
         """命中位置是否在反引号/引号之内（示例载荷），非指令本身。"""
@@ -786,6 +1037,8 @@ def scan_md_file(filepath: Path, result: ScanResult):
             m = re.search(pattern, line, re.IGNORECASE)
             if not m:
                 continue
+            if is_suppressed(i):
+                continue
             if is_safety_discussion(line):
                 continue  # 安全/红队/扫描主题文档提及该词 = 主题词，非注入指令
             # CRITICAL/HIGH 注入模式只允许安全主题框架跳过；
@@ -800,11 +1053,50 @@ def scan_md_file(filepath: Path, result: ScanResult):
                 message=msg, file=str(filepath), line=i
             ))
 
+    # 1.2 编码载荷：base64 解出来再判。只看"一长串 base64"会全员误报
+    #     （文档里的哈希、证书、密钥指纹都是这种形态），解出明文再看里面有没有指令才准。
+    for _m in re.finditer(r"[A-Za-z0-9+/]{40,}={0,2}", content):
+        _blob = _m.group(0)
+        try:
+            import base64 as _b64
+            _dec = _b64.b64decode(_blob + "=" * (-len(_blob) % 4),
+                                 validate=False).decode("utf-8", "ignore")
+        except Exception:
+            continue
+        if not _dec or len(_dec) < 8:
+            continue
+        _low = _dec.lower()
+        if any(k in _low for k in ("ignore", "system prompt", "jailbreak",
+                                   "忽略", "指令", "system")):
+            _line = content[:_m.start()].count("\n") + 1
+            if is_suppressed(_line):
+                continue
+            result.findings.append(Finding(
+                severity="CRITICAL", category="prompt-injection",
+                message="编码载荷：base64 解码后含注入指令（%s…）" % _dec.strip()[:40],
+                file=str(filepath), line=_line
+            ))
+
+    # 1.5 不可见字符：正则看不见它们，必须按码位扫。
+    #     只在文档类文件（.md/.txt）里查——源码里的零宽字符是编码事故，
+    #     但 SKILL.md 里的隐形段落是给人读不到、给模型读得到的指令通道。
+    if filepath.suffix.lower() in (".md", ".txt", ".markdown"):
+        for cp, label, ctx in invisible_payloads(content):
+            marker = chr(cp)
+            line_no = content[:content.find(marker)].count("\n") + 1
+            if is_suppressed(line_no):
+                continue
+            result.findings.append(Finding(
+                severity="CRITICAL", category="prompt-injection",
+                message="不可见字符承载指令：%s（U+%04X）" % (label, cp),
+                file=str(filepath), line=line_no
+            ))
+
     # 2. Credential / secret patterns（.md 也检查，但过滤占位符与示例值；
     #    跳过 frontmatter 区域避免元数据字段名误报）
     for pattern, severity, msg in CREDENTIAL_PATTERNS:
         for i, line in enumerate(lines, 1):
-            if i in code_lines or i in fm_lines:
+            if i in code_lines or i in fm_lines or is_suppressed(i):
                 continue
             m = pattern.search(line)
             if m:
@@ -818,7 +1110,7 @@ def scan_md_file(filepath: Path, result: ScanResult):
     # 3. 数字诚实性规则（仅剩高特异性模式，普通宣称数字不再报）
     for pattern, severity, msg in HONESTY_PATTERNS:
         for i, line in enumerate(lines, 1):
-            if i in code_lines:
+            if i in code_lines or is_suppressed(i):
                 continue
             if re.search(pattern, line, re.IGNORECASE):
                 result.findings.append(Finding(
@@ -835,6 +1127,8 @@ def scan_md_file(filepath: Path, result: ScanResult):
             m = re.search(pattern, line, re.IGNORECASE)
             if not m:
                 continue
+            if is_suppressed(i):
+                continue
             if is_safety_discussion(line):
                 continue  # 安全/红队/扫描主题文档提及该词 = 主题词，非外泄指令
             if severity in ("MEDIUM", "LOW"):
@@ -848,39 +1142,460 @@ def scan_md_file(filepath: Path, result: ScanResult):
             ))
 
 
-def scan_dependencies(skill_path: Path, result: ScanResult):
-    """Scan dependencies for known vulnerabilities via OSV.dev."""
-    # Find requirements.txt
-    req_file = skill_path / "requirements.txt"
-    if not req_file.exists():
-        return
+def _parse_requirement_line(line):
+    """把一行依赖拆成 (name, version) 或 ("", 原始行)。
 
-    try:
-        content = req_file.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return
+    只对**精确固定版本**返回版本号：`requests>=2.31` 曾被写成 `==latest`
+    送去 OSV，回来的一堆漏洞被按 HIGH 报成"requests==latest 存在 XX 漏洞"——
+    那是一个不存在的版本号，属于假精确，比漏报更难被使用者识破。
+    范围约束只能说明"不低于某版本"，判不出具体受影响包版本，所以只报"无法判定"。
+    """
+    line = line.split(";")[0].strip()
+    line = line.split("#")[0].strip()
+    if not line:
+        return "", ""
+    if "==" in line:
+        name, version = line.split("==", 1)
+        name = name.strip()
+        version = version.strip().strip("\"'")
+        if name and version and not any(c in version for c in ("*", " ", "<", ">")):
+            return name, version
+    return "", line
 
-    deps = []
-    for line in content.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+
+POPULAR_PY = {
+    "requests", "numpy", "pandas", "flask", "django", "pytest", "setuptools",
+    "urllib3", "boto3", "pyyaml", "cryptography", "pillow", "jinja2", "click",
+    "scipy", "tqdm", "redis", "sqlalchemy", "fastapi", "pydantic", "openai",
+    "anthropic", "matplotlib", "httpx", "aiohttp", "attrs", "packaging",
+    "certifi", "idna", "six",
+}
+POPULAR_NPM = {
+    "lodash", "express", "react", "react-dom", "axios", "chalk", "commander",
+    "moment", "request", "debug", "uuid", "dotenv", "webpack", "tslib",
+    "minimist", "node-fetch", "socket.io", "mongoose", "yargs", "colors",
+    "eslint-plugin-unused-imports",
+}
+# 视觉替换：0→o、1→l、3→e、5→s、7→t，rn→m，分隔符统一。
+_CONFUSE = str.maketrans({"0": "o", "1": "l", "3": "e", "5": "s", "7": "t"})
+
+
+def _norm_name(name):
+    n = name.lower().replace("rn", "m")
+    for sep in ("_", ".", "-"):
+        n = n.replace(sep, "-")
+    return n.translate(_CONFUSE)
+
+
+def _levenshtein(a, b):
+    if a == b:
+        return 0
+    if not a or not b:
+        return max(len(a), len(b))
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1,
+                           prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _typosquat_suspects(name, ecosystem):
+    """名称相似度只是**怀疑**，不是 registry 事实。
+
+    依据（公开研究）：
+      · Levenshtein 距离 1–2 是主流启发式，已知误报高；
+        40 个已知 typosquat 中 18 个的距离 ≤2（arXiv 2502.20528 综述口径）。
+      · "子集型"（把一个长包名简化）编辑距离可以到 14，
+        只有分词能抓——例如 eslint-plugin-unused-imports → unused-imports。
+      · 依赖混淆的结构性修法是受控 scope + 显式 registry 映射，
+        扫描器能做的只是"提醒核对来源"，不能替代 registry 侧校验。
+    因此这里只产出 LOW，绝不升级为 HIGH：一个名字长得像，不是证据。
+    """
+    popular = POPULAR_NPM if ecosystem == "npm" else POPULAR_PY
+    low = name.lower()
+    if low in popular:
+        return []
+    hits = []
+    for p in popular:
+        if _norm_name(low) == _norm_name(p):
+            hits.append("%s（形近替换 %s）" % (p, p))
             continue
-        # Parse package name and version
-        if "==" in line:
-            name, version = line.split("==", 1)
-            deps.append((name.strip(), version.strip()))
-        elif ">=" in line:
-            name = line.split(">=", 1)[0].strip()
-            deps.append((name, "latest"))
+        if len(p) >= 5 and len(low) >= 5 and _levenshtein(_norm_name(low), _norm_name(p)) == 1:
+            hits.append("%s（编辑距离 1）" % p)
+            continue
+        pt = set(p.replace("_", "-").split("-"))
+        nt = set(low.replace("_", "-").split("-"))
+        if len(pt) >= 2 and nt and nt < pt:
+            hits.append("%s（子集型：%s ⊂ %s）" % (p, "-".join(sorted(nt)), "-".join(sorted(pt))))
+    return hits[:2]
+
+
+def _load_private_inventory(skill_path: Path):
+    """读使用者提供的私有包清单（`private-packages.json`）。
+
+    dependency confusion 的可验证形态需要两样东西：哪些名字是我的，
+    以及这些名字在公开 registry 上是否已被别人占用。第一件只能由使用者提供，
+    第二件要联网（不在本引擎内做）。
+    清单格式：{"names": ["acme-utils"], "scopes": ["@acme"]}
+    """
+    p = skill_path / "private-packages.json"
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return {"error": "无法解析 private-packages.json"}
+    if not isinstance(data, dict):
+        return {"error": "private-packages.json 顶层应为对象"}
+    names = {str(n).lower() for n in data.get("names", []) if str(n).strip()}
+    scopes = {str(s).lower() for s in data.get("scopes", []) if str(s).strip()}
+    return {"names": names, "scopes": scopes, "error": ""}
+
+
+def _private_name_hits(deps, inventory):
+    """私有包名被声明成公开名、或不带 scope —— 这是 dependency confusion 的前置条件。
+
+    只报 LOW 且措辞写明"需 registry 侧核对占用"：清单说明它是私有包，
+    但"这个公开名字现在是否被别人占着"本引擎看不到。
+    """
+    if not inventory or inventory.get("error"):
+        return []
+    out = []
+    for d in deps:
+        name = d[0].lower()
+        eco = d[2]
+        scopes = inventory.get("scopes", set())
+        bare = name if eco == "PyPI" else name.split("/")[-1]
+        has_scope = name.startswith("@") and any(name.startswith(s + "/") for s in scopes)
+        if bare in inventory.get("names", set()) and not has_scope:
+            out.append((name, d[3],
+                        "私有包 %s 以公开名（无 scope）声明：公开 registry 上同名包可能被"
+                        "他人抢注并优先解析。需 registry 侧核对归属后锁定来源" % name))
+    return out
+
+
+def _declared_dependency_files(skill_path: Path):
+    """声明依赖的所有文件：requirements.txt、requirements-*.txt、pyproject.toml。
+
+    修复前只读 requirements.txt。真实技能常把依赖写在 pyproject.toml 里，
+    于是"扫过依赖"这句话在那类仓里其实是"什么都没扫"。
+    """
+    files = []
+    for name in ("requirements.txt", "pyproject.toml", "package.json",
+                 "package-lock.json", "poetry.lock"):
+        p = skill_path / name
+        if p.exists():
+            files.append(p)
+    for p in sorted(skill_path.glob("requirements-*.txt")):
+        if p.is_file():
+            files.append(p)
+    for sub in ("scripts", "src"):
+        d = skill_path / sub
+        if not d.is_dir():
+            continue
+        for name in ("requirements.txt", "pyproject.toml"):
+            p = d / name
+            if p.exists():
+                files.append(p)
+        for p in sorted(d.glob("requirements-*.txt")):
+            if p.is_file():
+                files.append(p)
+    return files
+
+
+def _deps_from_pyproject(text):
+    """取 PEP 621 的 dependencies 与 Poetry 的 [tool.poetry.dependencies]。
+
+    返回 (spec, is_dev) 列表：`optional-dependencies` 与 poetry 的
+    dev/group 是**开发依赖**，它们不进运行时，未固定版本不该按运行时风险算。
+    实测踩到过：lgd-eval 自己的 pyproject 里有 `pytest>=7`，
+    一刀切成 MEDIUM 会把自家技能从 90 扣到 86——理由不成立，属于自伤噪音。
+    """
+    try:
+        import tomllib
+    except ImportError:            # py3.8–3.10：不猜，直接说没解析
+        return None
+    try:
+        data = tomllib.loads(text)
+    except Exception:
+        return None
+    specs = []
+    proj = data.get("project") or {}
+    for item in proj.get("dependencies") or []:
+        specs.append((str(item), False))
+    opt = proj.get("optional-dependencies") or {}
+    for group in opt.values():
+        for item in group or []:
+            specs.append((str(item), True))
+    poetry = ((data.get("tool") or {}).get("poetry") or {})
+    for name, spec in (poetry.get("dependencies") or {}).items():
+        if name.lower() == "python":
+            continue
+        specs.append(("%s%s" % (name, spec if isinstance(spec, str) else ""), False))
+    for name, spec in (poetry.get("dev-dependencies") or {}).items():
+        specs.append(("%s%s" % (name, spec if isinstance(spec, str) else ""), True))
+    for group in (poetry.get("group") or {}).values():
+        for name, spec in (group.get("dependencies") or {}).items():
+            specs.append(("%s%s" % (name, spec if isinstance(spec, str) else ""), True))
+    return specs
+
+
+def _parse_js_range(spec):
+    """npm 版本说明 → (精确版本, 原始说明)。
+
+    `^1.2.3` / `~1.2.3` / `>=1.2.3` 都不是"就是这个版本"，
+    与 Python 侧同理：只查能得到确切版本的，其余报"无法判定"，不编版本号。
+    """
+    spec = (spec or "").strip()
+    if not spec:
+        return "", ""
+    if spec.startswith("="):
+        spec = spec[1:].strip()
+    if spec[:1] in "^~<>*" or " " in spec or spec.startswith("workspace"):
+        return "", spec
+    if any(c in spec for c in ("x", "X", "*")):
+        return "", spec
+    if spec.startswith("http") or spec.startswith("file:") or spec.startswith("git"):
+        return "", spec
+    return spec, spec
+
+
+def _deps_from_package_json(text):
+    """package.json 的 dependencies / devDependencies / optionalDependencies。
+
+    修复前 package.json 只被查安装钩子，依赖从不进漏洞库——
+    JS 侧那条"依赖扫描"其实是空的，一个生态的整块缺口。
+    """
+    try:
+        data = json.loads(text)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    specs = []
+    for key, is_dev in (("dependencies", False), ("optionalDependencies", True),
+                        ("devDependencies", True)):
+        block = data.get(key) or {}
+        if not isinstance(block, dict):
+            continue
+        for name, spec in block.items():
+            specs.append(("%s@%s" % (name, spec), is_dev))
+    return specs
+
+
+def _deps_from_package_lock(text):
+    """package-lock.json（v2/v3 用 packages，v1 用嵌套 dependencies）。
+
+    清单里的范围只是**声明**，锁文件里才是真正装到机器上的那一个版本。
+    供应链核查要的是后者：声明写 `^4.17.15` 时，实际装的是哪一版只有锁文件知道。
+    """
+    try:
+        data = json.loads(text)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    specs = []
+    pkgs = data.get("packages")
+    if isinstance(pkgs, dict):
+        for path, meta in pkgs.items():
+            if not isinstance(meta, dict) or not path:
+                continue
+            name = meta.get("name") or path.split("node_modules/")[-1]
+            version = str(meta.get("version") or "")
+            if not name or not version:
+                continue
+            specs.append(("%s@%s" % (name, version), bool(meta.get("dev"))))
+    elif isinstance(data.get("dependencies"), dict):
+        for name, meta in data["dependencies"].items():
+            if not isinstance(meta, dict):
+                continue
+            version = str(meta.get("version") or "")
+            if version:
+                specs.append(("%s@%s" % (name, version), bool(meta.get("dev"))))
+    return specs
+
+
+def _deps_from_poetry_lock(text):
+    """poetry.lock 的 [[package]]：锁定后的确切版本。"""
+    try:
+        import tomllib
+    except ImportError:
+        return None
+    try:
+        data = tomllib.loads(text)
+    except Exception:
+        return None
+    specs = []
+    for item in data.get("package") or []:
+        if not isinstance(item, dict):
+            continue
+        name, version = item.get("name"), item.get("version")
+        if name and version:
+            specs.append(("%s==%s" % (name, version), False))
+    return specs
+
+
+def _write_ranged(result, ranged, severity, message_of, file_of):
+    if not ranged:
+        return
+    names = ", ".join(raw for raw, _ in ranged[:5])
+    result.findings.append(Finding(
+        severity=severity, category="dependency-scan",
+        message=message_of % names, file=str(file_of[0][1])))
+
+
+def scan_dependencies(skill_path: Path, result: ScanResult):
+    """Scan declared dependencies for known vulnerabilities via OSV.dev."""
+    dep_files = _declared_dependency_files(skill_path)
+    if not dep_files:
+        return
+
+    deps = []            # (name, version, ecosystem, file)
+    ranged = []          # (raw, file)           运行时依赖
+    dev_ranged = []      # (raw, file)           开发依赖
+    unparsed = []        # pyproject 在没有 tomllib 时 / package.json 坏了
+    for dep_file in dep_files:
+        try:
+            content = dep_file.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        if dep_file.name == "poetry.lock":
+            specs = _deps_from_poetry_lock(content)
+            if specs is None:
+                unparsed.append(dep_file)
+                continue
+            lines = specs
+            eco = "PyPI"
+            parse = None
+            js = False
+        elif dep_file.name == "package-lock.json":
+            specs = _deps_from_package_lock(content)
+            if specs is None:
+                unparsed.append(dep_file)
+                continue
+            lines = specs
+            eco = "npm"
+            parse = None
+            js = True
+        elif dep_file.suffix == ".toml":
+            specs = _deps_from_pyproject(content)
+            if specs is None:
+                unparsed.append(dep_file)
+                continue
+            lines = specs
+            eco = "PyPI"
+            parse = _parse_requirement_line
+            js = False
+        elif dep_file.name == "package.json":
+            specs = _deps_from_package_json(content)
+            if specs is None:
+                unparsed.append(dep_file)
+                continue
+            lines = specs
+            eco = "npm"
+            parse = None
+            js = True
+        else:
+            lines = [(ln, False) for ln in content.splitlines()]
+            eco = "PyPI"
+            parse = _parse_requirement_line
+            js = False
+        for line, is_dev in lines:
+            if js:
+                # npm 侧（清单与锁文件）：统一改成 name@version 形状
+                name, spec = (line.rsplit("@", 1) if "@" in line else (line, ""))
+                version, raw = _parse_js_range(spec)
+                if version:
+                    deps.append((name.strip(), version, eco, dep_file, is_dev))
+                elif raw:
+                    (dev_ranged if is_dev else ranged).append(
+                        ("%s@%s" % (name.strip(), raw), dep_file))
+                continue
+            if parse is None:
+                # 锁文件（poetry.lock）：已经写死为 name==version
+                name, version = (line.split("==", 1) if "==" in line else ("", ""))
+                if name.strip() and version.strip():
+                    deps.append((name.strip(), version.strip(), eco, dep_file, is_dev))
+                continue
+            name, tail = parse(line)
+            if name:
+                deps.append((name, tail, eco, dep_file, is_dev))
+            elif tail:
+                (dev_ranged if is_dev else ranged).append((tail, dep_file))
+
+    # 同一 (包, 版本, 生态) 只查一次：清单与锁文件会给出重复项
+    seen = set()
+    uniq = []
+    for d in deps:
+        key = (d[0].lower(), d[1], d[2])
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(d)
+    deps = uniq
+
+    for f in unparsed:
+        result.findings.append(Finding(
+            severity="LOW", category="dependency-scan",
+            message="%s 未能解析，依赖未检查" % f.name,
+            file=str(f)
+        ))
+
+    _write_ranged(result, ranged, "MEDIUM",
+                  "依赖版本为范围约束，无法判定具体受影响版本：%s"
+                  "（请固定为 ==x.y.z 或 1.2.3 后复核）", ranged)
+    _write_ranged(result, dev_ranged, "LOW",
+                  "开发依赖未固定版本：%s（不进运行时，不作运行时风险计）", dev_ranged)
 
     if not deps:
         return
 
+    # 上限是性能决定，但不能是沉默的：查了 10 个就说查了 10 个，
+    # 剩下的必须报出来。修复前超出的部分既不查也不说，报告上看起来"已扫完"。
+    CAP = 10
+    if len(deps) > CAP:
+        result.findings.append(Finding(
+            severity="LOW", category="dependency-scan",
+            message="共 %d 个固定版本依赖，本次只查了前 %d 个；其余 %d 个未查漏洞库"
+                    "（上限是性能折中，不代表已扫完）" % (len(deps), CAP, len(deps) - CAP),
+            file=str(deps[CAP][3])
+        ))
+
+    # 私有包名以公开名声明（dependency confusion 的前置条件）
+    inv = _load_private_inventory(skill_path)
+    if inv and inv.get("error"):
+        result.findings.append(Finding(
+            severity="LOW", category="dependency-name",
+            message=inv["error"] + "：未做私有包名核对（不猜）",
+            file=str(skill_path / "private-packages.json")))
+    for name, dep_file, msg in _private_name_hits(deps, inv):
+        result.findings.append(Finding(
+            severity="LOW", category="dependency-name",
+            message=msg, file=str(dep_file)))
+
+    # 名称相似度只提示、不定罪（LOW）：
+    # 一个包名长得像热门包，可能只是有人随手命名；只有当它与热门包
+    # 形成"形近替换/编辑距离1/子集型"时才提一句，让人去核对来源。
+    for d in deps[:CAP]:
+        sus = _typosquat_suspects(d[0], d[2])
+        if sus:
+            result.findings.append(Finding(
+                severity="LOW", category="dependency-name",
+                message="%s 疑似仿冒热门包：%s。名称相似度判定，**不是** registry 事实；"
+                        "请核对包来源与发布者" % (d[0], "；".join(sus)),
+                file=str(d[3])
+            ))
+
     # Query OSV.dev for each dependency
-    for name, version in deps[:10]:  # limit to 10 deps to avoid timeout
+    for name, version, eco, dep_file, is_dev in deps[:CAP]:  # limit to avoid timeout
+        dev_note = "（开发依赖，不进运行时）" if is_dev else ""
         try:
             payload = json.dumps({
-                "package": {"name": name, "ecosystem": "PyPI"},
+                "package": {"name": name, "ecosystem": eco},
                 "version": version
             }).encode()
 
@@ -894,18 +1609,21 @@ def scan_dependencies(skill_path: Path, result: ScanResult):
                 data = json.loads(resp.read())
                 vulns = data.get("vulns", [])
                 if vulns:
+                    label = ("%s@%s" % (name, version)) if eco == "npm" \
+                        else ("%s==%s" % (name, version))
                     for v in vulns[:3]:  # top 3 vulns per dep
                         result.findings.append(Finding(
-                            severity="HIGH", category="dependency-vuln",
-                            message=f"{name}=={version}: {v.get('summary', 'known vulnerability')}",
-                            file=str(req_file)
+                            severity="LOW" if is_dev else "HIGH",
+                            category="dependency-vuln",
+                            message=f"{label}{dev_note}: {v.get('summary', 'known vulnerability')}",
+                            file=str(dep_file)
                         ))
         except Exception:
             # Offline fallback: just note that we couldn't check
             result.findings.append(Finding(
                 severity="LOW", category="dependency-scan",
-                message=f"无法联网检查 {name} 的已知漏洞",
-                file=str(req_file)
+                message=f"无法联网检查 {name} 的已知漏洞{dev_note}",
+                file=str(dep_file)
             ))
 
 
@@ -1029,6 +1747,15 @@ def compute_trust_score(result: ScanResult) -> int:
     if injection_critical:
         score = min(score, 40)  # 存在 CRITICAL 注入/外泄 → 最高 D 档；_ci_exit 同时 exit 1 阻断
 
+    # 封顶必须覆盖**所有阻断档**，不能只覆盖注入/外泄：
+    # 实测一个读凭证并外发的样本被判 HIGH（组合判定为 exfil），扣 8 分后仍得
+    # 87/100（A）—— 门禁说"阻断发布"、徽章说"A 级可信"，两句互相打脸。
+    # 与 evaluate.py 的 VETO 语义对齐：CRITICAL → ≤49(D)、HIGH → ≤69(C)。
+    if result.critical_count > 0:
+        score = min(score, 49)
+    elif result.high_count > 0:
+        score = min(score, 69)
+
     # Clamp to 0-100
     return max(0, min(100, score))
 
@@ -1135,7 +1862,102 @@ def find_skill_documents(skill_path: Path) -> list[Path]:
     return docs
 
 
-def scan_skill(skill_dir: str) -> ScanResult:
+# 安装期钩子：这些生命周期脚本会在 `npm install` 时自动执行
+INSTALL_HOOKS = ("preinstall", "install", "postinstall", "prepare", "prepublish",
+                 "prepublishOnly", "prepack")
+
+# 远程取码并执行的形态：curl/wget 接管道进 shell，或 PowerShell 的 iex
+#
+# 2026-11-15 红队复测（灭类不灭例）：原先 5 条只覆盖"管道进 shell"和"node -e"两个例，
+# 同类里另有 7 种真实在用的写法全漏——bash -c "$(curl …)"、node <(curl …)、
+# python -c 里 urlopen+exec、npx/npm exec 直接拉远程包、curl -o 落地再执行。
+# 已按类补齐。仍守一条边界：本地脚本（node ./scripts/build.mjs）不算，报了就是误伤。
+REMOTE_EXEC_PATTERNS = (
+    r"curl[^|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh)",
+    r"wget[^|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh)",
+    r"\b(?:sh|bash|zsh)\s+<\(\s*(?:curl|wget)",
+    r"(?:iwr|invoke-webrequest|curl)[^;]*\|\s*(?:iex|invoke-expression)",
+    r"\bnode\s+-e\b",
+    # bash -c "$(curl …)" / bash -lc "$(wget …)"：命令替换里取码，再交给 shell 执行
+    r"\b(?:sh|bash|zsh)\s+-[a-z]*c\b[^\n]*\$\(\s*(?:curl|wget)",
+    # node <(curl …)：进程替换把远程脚本当成文件参数喂给解释器
+    r"\b(?:node|python|python3)\s+<\(\s*(?:curl|wget)",
+    # python -c 一条命令里"取远程 + 执行"（两个特征不分先后，故用前视）
+    r"\b(?:python|python3)\s+-c\b(?=[^\n]*(?:urlopen|urlretrieve|requests\.get))[^\n]*(?:exec|eval)",
+    # npx / npm exec 直接拉远程包执行（只认带 URL 或 --package= 的形态，不误伤 npx tsc）
+    r"\bnpx\b[^|;]*(?:https?://|--package=)",
+    r"\bnpm\s+exec\b[^|;]*--package=",
+    # 先落盘再执行：curl -o 写文件，同一条命令里接着 sh/node/python 它
+    r"(?:curl|wget)[^\n]*\s-o\s+\S+[^\n]*&&\s*(?:sh|bash|zsh|node|python|python3)",
+)
+
+
+def scan_package_install_scripts(pkg_file: Path, result: ScanResult):
+    """package.json 的安装钩子里出现远程取码执行 → CRITICAL。
+
+    只判"取远程代码并执行"这一类，不把所有 postinstall 都算风险：
+    本地脚本（node ./scripts/x.mjs）是正常构建动作，报了就是误伤。
+    """
+    try:
+        pkg = json.loads(pkg_file.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return
+    scripts = pkg.get("scripts") or {}
+    if not isinstance(scripts, dict):
+        return
+    for hook in INSTALL_HOOKS:
+        cmd = scripts.get(hook)
+        if not isinstance(cmd, str) or not cmd.strip():
+            continue
+        low = cmd.lower()
+        for pat in REMOTE_EXEC_PATTERNS:
+            if re.search(pat, low):
+                result.findings.append(Finding(
+                    severity="CRITICAL", category="supply-chain",
+                    message="安装钩子 %s 在执行期从远程取代码并运行：%s" % (hook, cmd[:80]),
+                    file=str(pkg_file), line=1
+                ))
+                break
+
+
+# 路径守卫的写法：删除前先校验"目标在工作目录内"。只认这些具体惯用法，
+# 不认"文件里出现过 raise"这类宽泛信号（那样恶意样本也能被放过）。
+PATH_GUARD_MARKERS = (
+    "is_relative_to",
+    ".startswith(",
+    "realpath(",
+    "abspath(",
+    "raise SystemExit",
+    "raise ValueError",
+    "raise RuntimeError",
+    "raise PermissionError",
+)
+
+
+def has_path_guard(lines, line_no):
+    """在命中行之前（同文件）找路径守卫。找不到就认为没有守卫。"""
+    if not line_no or line_no < 1:
+        return False
+    head = "\n".join(lines[:line_no - 1])
+    return any(m in head for m in PATH_GUARD_MARKERS)
+
+
+def scan_invisible_file(filepath: Path, result: ScanResult):
+    """对任意文本文件做不可见字符扫描（元数据、配置同样承载指令）。"""
+    try:
+        text = filepath.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    for cp, label, _ctx in invisible_payloads(text):
+        line_no = text[:text.find(chr(cp))].count("\n") + 1
+        result.findings.append(Finding(
+            severity="CRITICAL", category="prompt-injection",
+            message="不可见字符承载指令：%s（U+%04X）" % (label, cp),
+            file=str(filepath), line=line_no
+        ))
+
+
+def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
     skill_path = Path(skill_dir).resolve()
     if not skill_path.is_dir():
         print(f"错误: 目录不存在 - {skill_dir}", file=sys.stderr)
@@ -1151,10 +1973,32 @@ def scan_skill(skill_dir: str) -> ScanResult:
     result = ScanResult(skill_dir=str(skill_path))
 
     # Default excluded directories
-    DEFAULT_EXCLUDES = {"tests", "test", "docs", "doc", ".git", "__pycache__", "node_modules", "._test_scratch", "_backup"}
+    # 故意投毒的检测夹具目录：评测器（evaluate.py）早就跳过它们，gate 不跳，
+    # 结果就是"安全工具扫自己得 0/F"——那是对外最难解释的一种自相矛盾。
+    DEFAULT_EXCLUDES = {"tests", "test", "docs", "doc", ".git", "__pycache__",
+                        "node_modules", "._test_scratch", "_backup",
+                        "_demo", "demo", "samples", "benchmarks", "corpus",
+                        "fixtures", "testdata", "red-team"}
+
+    # 显式排除（--exclude）：用于把"故意投毒的检测夹具"排除出发布门禁，
+    # 同时把排除项写进结果里，保证别人能复现"我到底扫了什么"。
+    # 注意：这是报告字段，不是隐身衣——被排除的路径会打印出来。
+    ex_parts = []
+    for e in (excludes or []):
+        p = str(e).replace("\\", "/").strip()
+        while p.startswith("./"):
+            p = p[2:]
+        p = p.strip("/")
+        if p:
+            ex_parts.append(p)
+    result.excluded = ex_parts
 
     def should_exclude(filepath: Path) -> bool:
         """Check if a file should be excluded from scanning."""
+        rel = filepath.relative_to(skill_path).as_posix()
+        for e in ex_parts:
+            if rel == e or rel.startswith(e + "/"):
+                return True
         parts = filepath.relative_to(skill_path).parts
         for part in parts:
             if part in DEFAULT_EXCLUDES:
@@ -1197,6 +2041,7 @@ def scan_skill(skill_dir: str) -> ScanResult:
         result.files_scanned += 1
 
     # Scan all JS/TS files
+    js_facts = {}
     if scan_js_file:
         for js_file in list(skill_path.rglob("*.js")) + list(skill_path.rglob("*.ts")):
             if should_exclude(js_file):
@@ -1208,9 +2053,22 @@ def scan_skill(skill_dir: str) -> ScanResult:
                         severity=sev, category=cat,
                         message=msg, file=str(js_file), line=line
                     ))
+                js_facts[str(js_file)] = js_flags(js_file)
             except Exception:
                 pass
             result.files_scanned += 1
+
+    # 夹具目录只豁免"语义规则"，不豁免"隐形字符"：
+    # 默认排除（_demo/samples/fixtures…）是必要的，否则安全工具扫自己得 0/F；
+    # 但它同时是一条规避通道——把载荷放进叫 demo 的目录就没人看。
+    # 实测证据：audit2/probe/_evasion-demo 的 Tags 载荷修复前两引擎均无否决。
+    # 干净夹具里不会有不可见字符，所以这里报出来的一定是有人放进去的。
+    for any_file in skill_path.rglob("*"):
+        if not any_file.is_file() or any_file.suffix.lower() not in (
+                ".md", ".markdown", ".txt", ".json", ".yaml", ".yml"):
+            continue
+        if should_exclude(any_file):
+            scan_invisible_file(any_file, result)
 
     # Scan all Markdown files (excluding already-scanned skill docs)
     for md_file in skill_path.rglob("*.md"):
@@ -1219,6 +2077,24 @@ def scan_skill(skill_dir: str) -> ScanResult:
         if should_exclude(md_file):
             continue
         scan_md_file(md_file, result)
+        result.files_scanned += 1
+
+    # 元数据文件也承载指令：MCP 服务器把工具描述直接注入模型上下文，
+    # arXiv 2607.05744 证明的正是"审批视图与送进模型的字节可以不一致"。
+    for meta_glob in ("*.json", "*.yaml", "*.yml"):
+        for meta_file in skill_path.rglob(meta_glob):
+            if should_exclude(meta_file):
+                continue
+            scan_invisible_file(meta_file, result)
+            result.files_scanned += 1
+
+    # 安装期脚本：package.json 的 postinstall 是一条装载代码的执行通道。
+    # OWASP AST02 与 arXiv 2601.10338 都把它列为供应链风险的典型形态；
+    # 修复前实测 curl | sh 的 postinstall 样本在本引擎拿 100/A+（完全放行）。
+    for pkg_file in skill_path.rglob("package.json"):
+        if should_exclude(pkg_file):
+            continue
+        scan_package_install_scripts(pkg_file, result)
         result.files_scanned += 1
 
     # Scan dependencies for known vulnerabilities
@@ -1246,25 +2122,101 @@ def scan_skill(skill_dir: str) -> ScanResult:
             return False
         return True
 
+    def _line_has(fp, ln, needles):
+        """这一行里是否出现了某个"读动作"记号。用来区分「只是提到了密钥路径」
+        和「真的把它读进来了」——后者才够得上跨文件外发的读取端。"""
+        try:
+            with open(fp, encoding="utf-8", errors="ignore") as _f:
+                _lines = _f.read().splitlines()
+        except OSError:
+            return False
+        if not (0 < ln <= len(_lines)):
+            return False
+        return any(n in _lines[ln - 1] for n in needles)
+
     # 只认两类：整份导出（前兆）与真实外发动作。
     # "遍历全部环境变量"不算导出——构造子进程环境变量（env={**os.environ}）是正常做法；
     # "网络库（常见）"这类 INFO 也不算外发，否则同一个文件里既有 environ 又有 import 就误报。
     _ENV_MSGS = ("整份环境变量导出（外泄前兆）", "整份环境变量复制（外泄前兆）")
     _NET_MSGS = ("POST 数据到外部 URL", "urlopen 网络请求", "向外发请求",
                  "原始 socket 网络连接", "向外发 POST 请求", "发送邮件")
-    env_by_file, net_by_file = {}, {}
+    # 凭证类：单条规则只能说"碰了这个文件"，碰了之后有没有发出去要看同一文件里
+    # 后面还有没有网络动作。evaluate.py 的口径是 R-SEC-09/10（凭证外泄）= CRITICAL，
+    # 这边若只报 HIGH，同一个技能就会被两个引擎判成两个等级。
+    _CRED_MSGS = ("访问 AWS 凭证文件", "访问 SSH 密钥目录", "访问 Git 凭证文件",
+                 "访问 SSH 私钥", "访问 AWS 凭证文件（路径分段拼接）",
+                 "访问 SSH 私钥（路径分段拼接）")
+    env_by_file, net_by_file, cred_by_file = {}, {}, {}
     for f in result.findings:
         if f.message in _ENV_MSGS and _behaviour_line(f.file, f.line):
             env_by_file.setdefault(f.file, []).append(f.line)
         elif f.message in _NET_MSGS and _behaviour_line(f.file, f.line):
             net_by_file.setdefault(f.file, []).append(f.line)
+        elif f.message in _CRED_MSGS and _behaviour_line(f.file, f.line):
+            cred_by_file.setdefault(f.file, []).append(f.line)
+
+    handled = set()
+    # 跨文件：读凭证在一个文件、发出去在另一个文件 —— 单个文件看不出因果，
+    # 但 evaluate.py 的 AST 污点分析把这种情形判 CRITICAL（R-SEC-10 跨文件线性）。
+    # 这里没有污点分析，用"读动作 + 网络 sink 分处两个文件"做保守近似：
+    # 代价只是等级从 C 降到 D（本来两者都阻断发布），换来的是两个引擎对同一技能
+    # 给出同一个结论——不一致本身就是缺陷。
+    _READ_HINTS = ("open(", "read(", "read_text", "Path(", "expanduser", ".load(")
+    for cred_fp, cred_lines in sorted(cred_by_file.items()):
+        read_lines = [ln for ln in cred_lines if _line_has(cred_fp, ln, _READ_HINTS)]
+        if not read_lines:
+            continue
+        for net_fp, net_lines in sorted(net_by_file.items()):
+            if net_fp == cred_fp or net_fp in handled:
+                continue
+            if read_lines and net_lines:
+                result.findings.append(Finding(
+                    severity="CRITICAL", category="exfil",
+                    message="凭证跨文件外发（读取与网络外发分处不同文件，组合判定）",
+                    file=net_fp, line=min(net_lines)
+                ))
+                handled.add(net_fp)
+                break
+
+    # JS 跨文件：A 里读凭证，B 里 import 了 A 又发出去。单文件规则看不见因果，
+    # 但 evaluate.py 的 js 跨文件判定会报 CRITICAL——两侧必须同结论。
+    # 只认显式相对导入（require('./a') / import './a'），不靠目录相邻猜因果。
+    for src_fp, src_flags in sorted(js_facts.items()):
+        if not (src_flags.get("cred") and src_flags.get("read")):
+            continue
+        src_mod = os.path.splitext(os.path.basename(src_fp))[0]
+        for dst_fp, dst_flags in sorted(js_facts.items()):
+            if dst_fp == src_fp or not dst_flags.get("sink"):
+                continue
+            if src_mod in dst_flags.get("imports", set()):
+                result.findings.append(Finding(
+                    severity="CRITICAL", category="exfil",
+                    message="凭证跨文件外发（JS：读取与网络外发分处不同文件，组合判定）",
+                    file=dst_fp, line=dst_flags["sink"]
+                ))
+                break
+
+    # 凭证外泄比环境变量外泄更重：先判，判中就跳过该文件的环境变量合并，
+    # 免得同一份证据被报成两条 CRITICAL（重复计数会虚增发现数）。
+    for fp, cred_lines in sorted(cred_by_file.items()):
+        first_cred = min(cred_lines)
+        if any(ln >= first_cred for ln in net_by_file.get(fp, [])):
+            result.findings.append(Finding(
+                severity="CRITICAL", category="exfil",
+                message="凭证读取后网络外发（凭证文件 + 网络外发同文件，组合判定）",
+                file=fp, line=1
+            ))
+            handled.add(fp)
+
     # 与 evaluate.py R-SEC-21 同序：外发必须发生在导出之后，才构成"导出了又发出去"。
     # 只是同一个文件里先有网络代码、后面才构造环境变量，不构成因果。
     for fp, env_lines in sorted(env_by_file.items()):
+        if fp in handled:
+            continue
         first_env = min(env_lines)
         if any(ln >= first_env for ln in net_by_file.get(fp, [])):
             result.findings.append(Finding(
-                severity="HIGH", category="exfil",
+                severity="CRITICAL", category="exfil",
                 message="环境变量整份外发（导出 + 网络外发同文件，组合判定）",
                 file=fp, line=1
             ))
@@ -1297,6 +2249,8 @@ def print_terminal_report(result: ScanResult, fail_under: int = None):
     print(f"  Skill: {result.skill_name}")
     print(f"  目录: {result.skill_dir}")
     print(f"  扫描文件数: {result.files_scanned}")
+    if result.excluded:
+        print(f"  显式排除: {', '.join(result.excluded)}")
     print(f"{'='*60}")
     print(f"  Trust Score: {result.trust_score}/100  ({result.grade})")
     print(f"{'='*60}")
@@ -1515,6 +2469,10 @@ def main():
                              help="批量扫描：扫描目录下所有子目录")
     scan_parser.add_argument("--lenient", action="store_true",
                              help="宽松模式：所有规则降一级别（减少误报）")
+    scan_parser.add_argument("--exclude", nargs="*", default=[], metavar="PATH",
+                             action="extend",
+                             help="显式排除的路径（相对 skill_dir），如 _demo；可重复指定，"
+                                  "排除项会记入结果，用于复现")
 
     # Quickstart subcommand
     quickstart_parser = sub.add_parser("quickstart", help="快速演示 SkillGate 怎么用")
@@ -1582,7 +2540,7 @@ def main():
             else:
                 sys.exit(0)
 
-        result = scan_skill(args.skill_dir)
+        result = scan_skill(args.skill_dir, args.exclude)
 
         # Lenient mode: downgrade all findings by one level
         if args.lenient:
@@ -1651,6 +2609,7 @@ def main():
                 f"- **Skill**: {result.skill_name}",
                 f"- **Trust Score**: {result.trust_score}/100 ({result.grade})",
                 f"- **扫描文件数**: {result.files_scanned}",
+                (f"- **显式排除**: {', '.join(result.excluded)}" if result.excluded else ""),
                 f"",
                 f"## Findings",
                 f"",
