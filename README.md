@@ -13,14 +13,24 @@ AI Agent 技能评测引擎。给任意技能目录打一个 0–100 的 Trust S
 ## 一行跑
 
 ```bash
+# 方式 A（今天就能用）：从 Release 下 tgz，解包后运行 —— 这条路线已实测通过
+#   https://github.com/LGD-Eval/lgd-gate/releases/download/v1.0.0/lgd-eval-1.0.0.tgz
+# 方式 B（尚未发布）：npx lgd-eval —— 该包还没有发布到 npm registry，
+#   `GET https://registry.npmjs.org/lgd-eval` 现在返回 404，所以这条命令暂时会失败。
 npx lgd-eval ./my-skill
 ```
+
+> 诚实说明：`package.json` 里声明了 `name: lgd-eval` / `bin: lgd-eval`，但**没有发布**。
+> 在没有发布之前跑 `npx` 会去 registry 拉一个不存在的包——所以我们把「能用的那条」写在前面。
+> 发布属于对外动作，需要作者单独批准。
 
 ## 卡住不合格的 PR
 
 ```bash
 npx lgd-eval ./my-skill --fail-under 90 --fix-json fix-plan.json
 ```
+
+（同上：该命令依赖已发布的 npm 包。tgz 路线里用 `bin/lgd-eval.js` 直接运行即可。）
 
 - 分数 < 90 → 退出码 1，CI 直接红
 - `fix-plan.json` 里每一项都是「缺口 → 整改动作 → 可判定验收」，AI 或人改完再跑一次即闭环
