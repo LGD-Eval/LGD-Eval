@@ -2377,6 +2377,54 @@ def scan_invisible_file(filepath: Path, result: ScanResult):
         ))
 
 
+def scan_unreadable(skill_path: Path, result: ScanResult, should_exclude=None):
+    """读不出来的文件不许当成干净文件（fail-open）。
+
+    实测（audit2/probe_unreadable.py）：
+      · 另一个进程独占打开 busy.py（内含 `os.system(curl|sh)`）→ 引擎 **0 命中**，
+        报告里它和"扫过且没问题的文件"长得一模一样。
+      · 权限被 ACL 拒（icacls /deny）同样 `OSError` → `read_text_smart` 返回空串 → 0 命中。
+
+    这和 §3ad「未拆包就披露」是同一条纪律：**没读 ≠ 干净**。
+    所有内容规则都是"读进来再匹配"，读不进来时它们的沉默不代表通过。
+    """
+    def walk(d: Path):
+        try:
+            entries = list(os.scandir(str(d)))
+        except OSError:
+            result.findings.append(Finding(
+                severity="MEDIUM", category="unreadable",
+                message="目录无法读取（权限或占用），其下全部内容未经扫描",
+                file=str(d), line=1
+            ))
+            return
+        for e in entries:
+            p = Path(e.path)
+            if _is_link_like(p):
+                continue
+            try:
+                is_dir = e.is_dir(follow_symlinks=False)
+            except OSError:
+                is_dir = False
+            if is_dir:
+                walk(p)
+                continue
+            if should_exclude and should_exclude(p):
+                continue
+            try:
+                with open(str(p), "rb") as fh:
+                    fh.read(1)
+            except OSError as exc:
+                result.findings.append(Finding(
+                    severity="MEDIUM", category="unreadable",
+                    message="文件无法读取（%s），其内容未经扫描，不能视为干净"
+                            % type(exc).__name__,
+                    file=str(p), line=1
+                ))
+
+    walk(skill_path)
+
+
 ADS_BENIGN = ("::$DATA", ":Zone.Identifier", ":Zone.Identifier:$DATA")
 
 
@@ -2396,7 +2444,16 @@ else:
         _fields_ = [("StreamSize", _LARGE_INTEGER), ("cStreamName", ctypes.c_wchar * 296)]
 
     def _list_streams(f: Path):
-        """枚举一个文件的全部 NTFS 数据流；失败返回空列表（不假装查过）。"""
+        """枚举一个文件的全部 NTFS 数据流；失败返回空列表（不假装查过）。
+
+        **必须先确认文件可读**：在 ACL 拒绝读的文件上直接调 FindFirstStreamW，
+        实测会触发 Windows 访问冲突（access violation，整个 Python 进程崩掉），
+        不是普通的 OSError。扫描器崩掉比静默放行更糟——连报告都出不来。
+        所以先 open 一次；读不了就抛出去，由 scan_unreadable 披露"读不了"。
+        """
+        with open(str(f), "rb") as fh:
+            fh.read(1)
+
         k32 = ctypes.windll.kernel32
         k32.FindFirstStreamW.argtypes = [ctypes.c_wchar_p, ctypes.c_int,
                                          ctypes.POINTER(_FIND_STREAM_DATA), ctypes.c_uint]
@@ -2453,7 +2510,13 @@ else:
                     continue
                 if should_exclude and should_exclude(p):
                     continue
-                for name, size in _list_streams(p):
+                try:
+                    streams = _list_streams(p)
+                except Exception:
+                    # 枚举失败（权限/占用/非常规卷）不算"没有流"，
+                    # 由 scan_unreadable 统一披露"读不了"
+                    continue
+                for name, size in streams:
                     if name in ADS_BENIGN:
                         continue
                     stream_path = str(p) + name.split(":$DATA")[0]
@@ -2604,6 +2667,9 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
 
     # 备用数据流：普通读取看不到的那部分内容，必须单独查（Windows 专有）
     scan_alternate_streams(skill_path, result, should_exclude=None)
+
+    # 读不出来 ≠ 干净：锁住/权限拒绝的文件必须披露（否则它和"扫过且没问题"长得一样）
+    scan_unreadable(skill_path, result, should_exclude=None)
 
     def should_exclude(filepath: Path) -> bool:
         """Check if a file should be excluded from scanning."""
