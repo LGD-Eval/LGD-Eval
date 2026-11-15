@@ -342,6 +342,9 @@ INTERP_INLINE_FLAGS = {
     "bun": {"-e", "--eval", "eval"}, "deno": {"eval"},
     "perl": {"-e", "-E"}, "ruby": {"-e"}, "php": {"-r"},
     "osascript": {"-e"}, "lua": {"-e"}, "tclsh": {"-e"},
+    # §3bh：这几家的代码是位置参数或自家开关，清单再长也是枚举
+    "rscript": {"-e", "-E"}, "groovy": {"-e", "--expression"},
+    "expect": {"-c"}, "tsx": {"-e"}, "zx": {"-e"},
 }
 # PowerShell 的编码命令：连内容都读不出来，只能按"无法静态判定"处理
 PS_ENCODED_FLAGS = {"-encodedcommand", "-enc"}
@@ -363,6 +366,56 @@ def _inline_flag_for(base: str):
 def _assemble(*parts) -> str:
     """判据词拼接：规则源码里不出现可被自己文表命中的连续字面量。"""
     return "".join(parts)
+
+
+# ── §3bh 参数形状判据：不看程序名，看"这段参数是不是代码" ────────────────
+# §3bg 把"哪个开关后面是代码"枚举成表。可 `deno eval <CODE>` 是位置参数、
+# `node -p` 不在表里、`awk 'BEGIN{…}'` 整段程序就是第一个位置参数、
+# `sqlite3 :memory: ".shell …"` 也一样——清单枚举注定漏，漏一处等于没判。
+# 改用形状：这些片段是"代码"的特征，散文里几乎不会出现（刻意排除 "rm -rf"
+# 这类散文也可能出现的词，避免 git commit -m 之类被误杀）。
+CODE_SIGNATURES = (
+    (_assemble("shutil.", "rmtree("), "CRITICAL", "参数里是删目录代码"),
+    (_assemble("rmSync("), "CRITICAL", "参数里是删目录代码"),
+    (_assemble("rmdirSync("), "CRITICAL", "参数里是删目录代码"),
+    (_assemble("unlinkSync("), "HIGH", "参数里是删文件代码"),
+    (_assemble("unlink", "("), "HIGH", "参数里是删文件代码"),
+    (_assemble("Deno.", "remove("), "CRITICAL", "参数里是删目录代码"),
+    (_assemble("fs.", "rm("), "HIGH", "参数里是删文件代码"),
+    (_assemble("child_", "process"), "CRITICAL", "参数里是子进程调用"),
+    (_assemble("exec", "Sync("), "CRITICAL", "参数里是 shell 执行"),
+    (_assemble("spawn", "Sync("), "CRITICAL", "参数里是子进程调用"),
+    (_assemble("os.", "system("), "CRITICAL", "参数里是 os.system"),
+    (_assemble("os.", "popen("), "CRITICAL", "参数里是 os.popen"),
+    (_assemble("getRuntime()", ".exec("), "CRITICAL", "参数里是运行时执行"),
+    (_assemble("system", "("), "CRITICAL", "参数里是 system()"),
+    (_assemble("__import", "__("), "HIGH", "参数里是动态导入"),
+    (_assemble("sub", "process."), "HIGH", "参数里是子进程调用"),
+    (_assemble("dd if=/dev/", ""), "CRITICAL", "参数里写块设备"),
+    (_assemble(".shell", " "), "HIGH", "参数里是 sqlite 点命令执行"),
+    (_assemble("Remove", "-Item"), "HIGH", "参数里是递归删除"),
+    (_assemble("mkfs.", ""), "CRITICAL", "参数里是格式化命令"),
+)
+# 纯文本匹配器：它们的位置参数天然就是"要搜的东西"，不是代码
+TEXT_ONLY_TOOLS = {"grep", "egrep", "fgrep", "rg", "ack", "ag", "findstr",
+                   "echo", "printf", "man", "less", "head", "tail", "wc", "sort", "uniq"}
+
+
+def _arg_code_verdict(tokens):
+    """在任意位置参数上判"这段是不是代码"，与程序名无关。"""
+    if len(tokens) < 2:
+        return None
+    base = _basename(tokens[0])
+    if base in TEXT_ONLY_TOOLS:
+        return None
+    for tok in tokens[1:]:
+        if not isinstance(tok, str):
+            continue
+        low = tok.lower()
+        for pat, sev, why in CODE_SIGNATURES:
+            if pat.lower() in low:
+                return sev, "%s（%s）" % (why, pat)
+    return None
 
 
 INLINE_DANGER = (
@@ -627,6 +680,12 @@ def destructive_tokens(tokens, depth: int = 0):
 
     if ":(){" in joined or "(){ :|" in joined:
         return "CRITICAL", "fork bomb 形态"
+
+    # §3bh：先按"参数形状"判，不看程序名。程序名白名单只当加速器，
+    # 位置参数、未登记开关上的代码由这一步兜住。
+    shape = _arg_code_verdict(tokens)
+    if shape:
+        return shape
 
     if base in DELETE_BINS or base.startswith("rm "):
         flags = [t for t in tokens[1:] if _FLAG_RE.match(t.strip())]
