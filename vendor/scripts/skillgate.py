@@ -399,6 +399,8 @@ ACTIVE_RULE_TABLES = (
     "REMOTE_EXEC_PATTERNS",
     # §3as：配置里的"远程下载落盘"写法（certutil/bitsadmin/curl -o/Invoke-WebRequest -OutFile）
     "REMOTE_DOWNLOAD_PATTERNS",
+    # §3az：管道/命令替换进解释器（解释器写谁不改变行为）
+    "PIPE_TO_INTERP_PATTERNS",
 )
 
 RULE_TABLES_DECLARED_OFF = {
@@ -1978,8 +1980,6 @@ def scan_shell_file(filepath: Path, result: ScanResult):
     lines = content.splitlines()
     dangerous_sh_patterns = [
         (r"\brm\s+-rf?\s+/\s*(;|&&|\||$)", "CRITICAL", "rm -rf / 危险删除（仅根目录）"),
-        (r"\bcurl\s+.*\|\s*sh", "HIGH", "curl | sh 管道执行远程脚本（管道 = 远程代码直接进解释器）"),
-        (r"\bwget\s+.*\|\s*bash", "HIGH", "wget | bash 管道执行远程脚本（管道 = 远程代码直接进解释器）"),
         (r"\bchmod\s+777", "MEDIUM", "chmod 777 权限过松"),
         (r"\bsudo\s+", "MEDIUM", "sudo 权限提升"),
     ]
@@ -1991,6 +1991,72 @@ def scan_shell_file(filepath: Path, result: ScanResult):
                     severity=severity, category="dangerous-shell",
                     message=msg, file=str(filepath), line=i
                 ))
+
+    # 管道/命令替换把远程内容送进解释器：解释器写谁不改变行为（§3az）。
+    # 修复前只覆盖 `| sh` 与 `wget | bash`，实测（audit2/probe_official_installers.py）：
+    #   `curl -fsSL https://deb.nodesource.com/setup_20.x | bash -`  → 100/A+，一条不报
+    #   `curl -sSL https://install.python-poetry.org | python3 -`    → 100/A+
+    #   `/bin/bash -c "$(curl -fsSL https://raw…/install.sh)"`       → 100/A+
+    # 三种都是"远程内容直接进解释器"，只是换了解释器名字或同样行为的另一种语法。
+    #
+    # 这里**不能用 clean_line**：它按 Python 的口径剥掉字符串字面量，而在 shell 里
+    # 引号内就是命令本身。`sh -c "curl … | sh"`、`eval "$(curl …)"` 一旦剥掉引号，
+    # 危险部分就整段消失了——这本身就是一类盲区（引号即代码）。
+    for i, line in enumerate(lines, 1):
+        raw = line.rstrip("\n")
+        if raw.lstrip().startswith("#"):
+            continue            # 纯注释行不算
+        # 只是把命令印出来的，不算执行：`echo "安装：curl … | sh"`
+        if re.match(r"\s*(?:echo|printf|logger|say|cat\s+<<)", raw):
+            continue
+        if not re.search(r"\b(?:curl|wget|iwr|invoke-webrequest)\b", raw, re.IGNORECASE):
+            continue
+        if not _search_any(PIPE_TO_INTERP_PATTERNS[0], raw):
+            continue
+        sev, msg = pipe_severity(raw)
+        result.findings.append(Finding(
+            severity=sev, category="dangerous-shell",
+            message=msg, file=str(filepath), line=i
+        ))
+
+    # 解释器取代码执行：`python3 -c "import os; os.system('id')"`（引号即代码，§3az）
+    for i, line in enumerate(lines, 1):
+        raw = line.rstrip("\n")
+        if raw.lstrip().startswith("#") or re.match(r"\s*(?:echo|printf|logger|say)\b", raw):
+            continue
+        m = re.search(r"\b(?:python[0-9.]*|node|nodejs|perl|ruby)\s+-[a-z]*c\b", raw, re.I)
+        if not m:
+            continue
+        tail = raw[m.end():]
+        if re.search(r"\b(?:os\.system|os\.popen|subprocess|shutil\.rmtree|\beval\b|\bexec\b|"
+                     r"child_process|__import__)", tail):
+            result.findings.append(Finding(
+                severity="HIGH", category="dangerous-shell",
+                message="解释器 -c 参数里直接执行危险代码（引号内即代码）",
+                file=str(filepath), line=i
+            ))
+
+
+def _first_url_host(text: str) -> str:
+    m = re.search(r"https?://([^/\s'\"]+)", text)
+    return m.group(1).lower() if m else ""
+
+
+def pipe_severity(text: str):
+    """管道/命令替换把远程内容送进解释器 —— 判多严重，看来源是不是厂商固定端点。
+
+    为什么要有这一层：真实世界里 `curl … | sh` 是 docker/rustup/uv 的官方安装写法，
+    一律判 HIGH 会把正常技能拦下（实测 6 份官方写法里 3 份被拦）。
+    但放宽必须窄：只有**厂商自己控制的固定端点**才降级，且 github.com /
+    raw.githubusercontent.com **不在名单里**——那是可变仓库，今天干净不代表明天干净，
+    放行等于开洞。Homebrew 那种"从仓库拉 install.sh"的写法会照旧被判 HIGH，这是有意的。
+    """
+    host = _first_url_host(text)
+    if host and host in OFFICIAL_INSTALL_HOSTS:
+        return ("MEDIUM",
+                "从厂商固定端点取安装脚本并交给解释器（%s）——来源在允许名单，仍需人工确认版本"
+                % host)
+    return ("HIGH", "管道/命令替换把远程内容送进解释器（管道 = 远程代码直接执行）")
 
 
 def parse_frontmatter(filepath: Path, result: ScanResult):
@@ -2241,6 +2307,41 @@ REMOTE_EXEC_PATTERNS = (
     # 先落盘再执行：curl -o 写文件，同一条命令里接着 sh/node/python 它
     r"(?:curl|wget)[^\n]*\s-o\s+\S+[^\n]*&&\s*(?:sh|bash|zsh|node|python|python3)",
 )
+
+
+# §3az：管道 / 进程替换 / 命令替换，把远程内容交给解释器。
+# 覆盖的解释器是"能执行脚本文本"的那一族；解释器写 sh 还是 zsh、python3 还是 perl，
+# 对执行面没有任何区别，规则不该由这个字决定。
+#
+# 用元组（而不是单个已编译 Pattern）登记，是为了让 test_table_registry 的
+# "启用表非空 / 有人读" 两条自证能真的跑——已编译对象没有 len，登记进去就等于自证失灵。
+PIPE_TO_INTERP_PATTERNS = (
+    # `… | sh` / `… | bash -` / `… | python3 -` / `… | node`
+    r"(?:\|(?!\|)\s*(?:sudo\s+)?"
+    r"(?:sh|bash|zsh|dash|ksh|fish|ash|python[0-9.]*|node|nodejs|perl|ruby|php)\b"
+    # `sh -c "$(curl …)"` / `bash -lc "$(wget …)"`
+    r"|(?:sh|bash|zsh)\s+-[a-z]*c\s*[^\n]*\$\(\s*(?:curl|wget)"
+    # `node <(curl …)` / `python3 <(curl …)`
+    r"|(?:node|nodejs|python[0-9.]*)\s+<\(\s*(?:curl|wget)"
+    r")",
+)
+PIPE_TO_INTERP_RE = re.compile(PIPE_TO_INTERP_PATTERNS[0], re.IGNORECASE)
+
+# 允许名单：只放**厂商自己控制的固定安装端点**。加进来要有理由，且必须窄。
+# 刻意不包含 github.com / raw.githubusercontent.com / gist —— 可变仓库里的脚本，
+# 今天干净不代表明天干净（§3ad 的"未读载体"同一条道理）。
+OFFICIAL_INSTALL_HOSTS = {
+    "get.docker.com",
+    "sh.rustup.rs",
+    "nixos.org",
+    "install.python-poetry.org",
+    "astral.sh",
+    "bun.sh",
+    "deno.land",
+    "deb.nodesource.com",
+    "get.helm.sh",
+    "cli.github.com",
+}
 
 
 def _search_any(pattern, text: str) -> bool:

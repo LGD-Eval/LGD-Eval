@@ -109,12 +109,13 @@ Per A-31, every change that can move a score requires re-running this table. Re-
 |---|---|---|
 | `867dc96189abf2bb` | .ipynb / config-exec / nosuffix detection landed | identical cell by cell |
 | `9ccad7ebcbfcfd9b` | dynamic-call (getattr/`__dict__`) detection; `curl \| sh` raised MEDIUM→HIGH in `.sh`; exec carriers (`.hta/.vbs/.wsf/.service/.plist/.desktop`/shebang) added | identical cell by cell |
+| `38f6e4d4811e8073` | pipe-to-interpreter generalised to every interpreter name (`bash -`/`python3 -`/`node`/`perl`…), quoted-command forms (`sh -c "…"`, `bash -c "$(curl …)"`), `python -c` dangerous code; vendor-endpoint downgrade | identical cell by cell (`audit2/calib_20_run_after_engine84.txt`) |
 
 So A-17's conclusion is **not** affected by the engine changes above: 40–75 stay at 0% false-block / 0% false-pass, 80→40%, 89/90→50%, 96→60%.
 
-**Disclosed gap / 已披露的缺口** — the 20-sample corpus contains **no** `.sh`, `.service`, `.ipynb` or `.hta` sample, so this table does not by itself measure the false-positive surface of the new carriers. A separate 4-benign / 4-malicious carrier corpus was run for that (`audit2/probe_carrier_corpus.py`): all four benign carriers score 100/A+ and are released at the default threshold, all four malicious ones are blocked (69/C and 49/D×3). The decisive distinction is **pipe into an interpreter**, not **download happened** — a download → checksum → execute script stays at 100.
+**Disclosed gap / 已披露的缺口** — the 20-sample corpus contains **no** `.sh`, `.service`, `.ipynb` or `.hta` sample, so this table does not by itself measure the false-positive surface of the new carriers. Two separate probes cover that: a 4-benign / 4-malicious carrier corpus (`audit2/probe_carrier_corpus.py`; benign 4/4 at 100/A+, malicious 4/4 blocked), and an official-installer probe (`audit2/probe_official_installers.py`; docker/rustup/nodesource/poetry/uv stay at 96/A on the allowlist, three look-alike hosts blocked at 69/C). The decisive distinction is **pipe into an interpreter**, not **download happened** — a download → checksum → execute script stays at 100.
 
-**中文** — 按 A-31，任何可能移动分数的改动都必须重跑本表。已复跑两次（引擎指纹 `867dc96189abf2bb`、`9ccad7ebcbfcfd9b`），结果与首次**逐格一致**，A-17 的结论不受这些引擎改动影响。同时如实披露：20 份语料里**没有** `.sh/.service/.ipynb/.hta` 样本，本表本身不度量新载体的误杀面；另跑了一组 4 良 4 恶载体语料（`audit2/probe_carrier_corpus.py`），良性载体 4 份全 100/A+ 且在默认门槛放行、恶意 4 份全被拦（69/C 与 49/D×3）。决定性的区分点是**是否管道进解释器**，不是**有没有下载过**——"下载 → 校验和 → 执行"保持 100 分。
+**中文** — 按 A-31，任何可能移动分数的改动都必须重跑本表。已复跑三次（引擎指纹 `867dc96189abf2bb`、`9ccad7ebcbfcfd9b`、`38f6e4d4811e8073`），结果与首次**逐格一致**，A-17 的结论不受这些引擎改动影响。同时如实披露：20 份语料里**没有** `.sh/.service/.ipynb/.hta` 样本，本表本身不度量新载体的误杀面。两组独立探针补这个面：一是 4 良 4 恶载体语料（`audit2/probe_carrier_corpus.py`，良性 4/4 得 100/A+、恶意 4/4 被拦）；二是官方安装脚本探针（`audit2/probe_official_installers.py`，docker/rustup/nodesource/poetry/uv 在允许名单上为 96/A，三种仿冒主机 69/C 被拦）。决定性的区分点是**是否管道进解释器**，不是**有没有下载过**——"下载 → 校验和 → 执行"保持 100 分。
 
 ---
 
