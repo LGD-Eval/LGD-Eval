@@ -757,6 +757,14 @@ def _fold_confusables(text: str) -> str:
     return re.sub(r"\s+", " ", "".join(out)).strip()
 
 
+# 单文件读取上限：超过就只读前面这一段，并且**必须披露**读了多少。
+# 由来（audit2/probe_big_file.py）：40.3 MB 的单文件扫了 15 分钟没跑完（人工中止）。
+# 但比"跑得慢"更要紧的是口径：一旦截断，报告必须与"扫过且没问题"长得不一样，
+# 否则就是 §3aj「读不出来 ≠ 干净」的同类缺陷。
+MAX_SCAN_BYTES = 8 * 1024 * 1024
+_TRUNCATED_FILES: list = []
+
+
 def read_text_smart(filepath: Path) -> str:
     """按 BOM 与真实编码解码，而不是一律当成 UTF-8。
 
@@ -776,6 +784,9 @@ def read_text_smart(filepath: Path) -> str:
         raw = filepath.read_bytes()
     except OSError:
         return ""
+    if len(raw) > MAX_SCAN_BYTES:
+        _TRUNCATED_FILES.append((str(filepath), len(raw)))
+        raw = raw[:MAX_SCAN_BYTES]
     return _decode_bytes(raw)
 
 
@@ -1220,21 +1231,40 @@ def scan_md_file(filepath: Path, result: ScanResult):
     if para:
         blocks.append((para_start, " ".join(para)))
 
+    # 分窗：段落折叠不能整段硬塞进正则。
+    # 实测（audit2/probe_big_profile.py）：0.2 MB 的单段落文档扫 111 s，
+    # cProfile 显示 110 s 全在 re.Pattern.search 上——注入规则里有
+    # `(?=[^\n]*(?:系统提示词|…))(?:输出|…)` 这种前瞻，在长串上退化成 O(n²)，
+    # 130 KB 的一个段落 = 130 KB × 130 KB。数据 10 倍、时间 100 倍，就是它。
+    # 4000 字符一窗、相邻窗重叠 300 字符，跨窗的拆行写法仍能命中，复杂度回到线性。
+    WIN, OVERLAP = 4000, 300
+
+    def _windows(text: str):
+        if len(text) <= WIN:
+            yield text
+            return
+        step = WIN - OVERLAP
+        for off in range(0, len(text), step):
+            yield text[off:off + WIN]
+            if off + WIN >= len(text):
+                return
+
     for start_line, block in blocks:
-        folded = _fold_confusables(block)
         if is_safety_discussion(block):
             continue
-        for pattern, severity, msg in PROMPT_INJECTION_PATTERNS:
-            if msg in reported_msgs:
-                continue
-            if re.search(pattern, folded, re.IGNORECASE):
-                result.findings.append(Finding(
-                    severity=severity, category="prompt-injection",
-                    message=msg + "（同形字/拆行归一后命中）",
-                    file=str(filepath), line=start_line
-                ))
-                reported_msgs.add(msg)
-                break
+        for window in _windows(block):
+            folded = _fold_confusables(window)
+            for pattern, severity, msg in PROMPT_INJECTION_PATTERNS:
+                if msg in reported_msgs:
+                    continue
+                if re.search(pattern, folded, re.IGNORECASE):
+                    result.findings.append(Finding(
+                        severity=severity, category="prompt-injection",
+                        message=msg + "（同形字/拆行归一后命中）",
+                        file=str(filepath), line=start_line
+                    ))
+                    reported_msgs.add(msg)
+                    break
 
 
     # 1.2 编码载荷：base64 解出来再判。只看"一长串 base64"会全员误报
@@ -2770,6 +2800,7 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
             sys.exit(3)
 
     result = ScanResult(skill_dir=str(skill_path))
+    trunc_baseline = len(_TRUNCATED_FILES)
 
     # Default excluded directories
     # 故意投毒的检测夹具目录：评测器（evaluate.py）早就跳过它们，gate 不跳，
@@ -3084,6 +3115,20 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
                 file=fp, line=1
             ))
 
+    # 超大文件被截断：必须披露"读了多少、还剩多少没读"。
+    # "跑得慢"可以忍，"读了一半还说通过"不能忍——这条披露不计分（事实陈述），
+    # 但它把"我没读全"写进了报告，避免与"扫过且没问题"混同。
+    truncated_any = len(_TRUNCATED_FILES) > trunc_baseline
+    while _TRUNCATED_FILES[trunc_baseline:]:
+        path, total = _TRUNCATED_FILES.pop()
+        result.findings.append(Finding(
+            severity="MEDIUM", category="coverage",
+            message="文件超过 %d MB 上限，仅扫描前 %d MB（原始 %.1f MB），其余未读"
+                    % (MAX_SCAN_BYTES // (1024 * 1024), MAX_SCAN_BYTES // (1024 * 1024),
+                       total / 1048576),
+            file=path, line=1
+        ))
+
     # 兑现"只披露、不计分"：coverage 类讲的是"我读不到 / 读不全"这种事实，
     # 不是问题本身。集中在这里标记，避免每个披露点各写一遍 scoring=False。
     for f in result.findings:
@@ -3091,7 +3136,12 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
             f.scoring = False
 
     # Compute score
+    # 截断不按条扣分（它只是"我没读全"），但**封顶 A，不给 A+**：
+    # 最高档只留给"我确实读完了"的扫描。否则 12 MB 文件里 4 MB 没读，却照样 A+，
+    # 与 §3aj「读不出来 ≠ 干净」是同一种错。
     result.trust_score = compute_trust_score(result)
+    if truncated_any:
+        result.trust_score = min(result.trust_score, 89)
     result.grade = grade_from_score(result.trust_score)
 
     return result
