@@ -2368,6 +2368,74 @@ def scan_invisible_file(filepath: Path, result: ScanResult):
         ))
 
 
+def _is_link_like(p: Path) -> bool:
+    """符号链接、目录 junction、以及其他 reparse point。"""
+    try:
+        st = p.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    if getattr(st, "st_file_attributes", 0) & 0x400:  # FILE_ATTRIBUTE_REPARSE_POINT
+        return True
+    try:
+        return p.is_symlink()
+    except OSError:
+        return False
+
+
+def scan_links(skill_path: Path, result: ScanResult) -> set:
+    """链接指向哪里：指向目录之外就只披露、不跟随。
+
+    实测（audit2/probe_link_coverage.py）：
+      · Windows 上文件/目录 symlink 需特权（WinError 1314），但 **junction 不需要**——
+        `mklink /J` 一条命令就能造出来。
+      · 修复前引擎会走进 junction 读到仓库外的文件，而报告把路径写成"仓库内"：
+        命中的是外面的 evil.py 和 host_secret.txt，路径却全在技能目录里。
+        于是**证据链本身失真**，链接本身一句不提。
+
+    口径：扫描边界 = 物理上仍在技能目录内的东西。
+      外链 → HIGH 披露（写明指向哪、未读取），并把它及其子树排除出扫描；
+      内链 → LOW 披露，照常扫描。
+    """
+    root = os.path.normcase(str(skill_path.resolve()))
+    escapes = set()
+
+    def walk(d: Path):
+        try:
+            entries = list(os.scandir(str(d)))
+        except OSError:
+            return
+        for e in entries:
+            p = Path(e.path)
+            if _is_link_like(p):
+                try:
+                    tgt = os.path.realpath(str(p))
+                except OSError:
+                    tgt = str(p)
+                if not os.path.normcase(tgt).startswith(root):
+                    result.findings.append(Finding(
+                        severity="HIGH", category="link",
+                        message="链接指向技能目录之外：%s → %s（未跟随，未读取其内容）"
+                                % (p.name, tgt),
+                        file=str(p), line=1
+                    ))
+                    escapes.add(os.path.normcase(str(p)))
+                else:
+                    result.findings.append(Finding(
+                        severity="LOW", category="link",
+                        message="目录内链接：%s（已照常扫描）" % p.name,
+                        file=str(p), line=1
+                    ))
+                continue  # 一律不跟随链接向下走
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    walk(p)
+            except OSError:
+                continue
+
+    walk(skill_path)
+    return escapes
+
+
 def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
     skill_path = Path(skill_dir).resolve()
     if not skill_path.is_dir():
@@ -2404,8 +2472,17 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
             ex_parts.append(p)
     result.excluded = ex_parts
 
+    # 链接先定性：指向外部的链接只披露、不进内容扫描（否则读的是宿主机文件，
+    # 而报告会把外部路径写成"仓库内"，证据链失真）
+    escape_links = scan_links(skill_path, result)
+
     def should_exclude(filepath: Path) -> bool:
         """Check if a file should be excluded from scanning."""
+        # 落在"指向外部的链接"子树里 → 一律不扫
+        nc = os.path.normcase(str(filepath))
+        for esc in escape_links:
+            if nc == esc or nc.startswith(esc + os.sep):
+                return True
         rel = filepath.relative_to(skill_path).as_posix()
         for e in ex_parts:
             if rel == e or rel.startswith(e + "/"):
