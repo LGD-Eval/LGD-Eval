@@ -52,3 +52,26 @@ def test_carries_the_class_tables():
                    "ACTIVE_RULE_TABLES", "RULE_TABLES_DECLARED_OFF",
                    "INSTALL_HOOKS", "AUTH_PATTERNS", "CREDENTIAL_PATTERNS"):
         assert needle in body, "正典里的 %s 不在这份副本里" % needle
+
+
+JS_PINNED_SHA256 = "97bce99b6ba580aa10d213b3ed97453cd0f67c185a76710d8fbc067554d4c534"
+
+
+def test_js_analyzer_matches_source():
+    """JS 引擎同一个病：LGD-Eval 那份只有 4,062 B，正典 8,324 B。
+
+    少的是 CRED_PATHS（读 .aws/.ssh 不报）、{...process.env} 展开、
+    Object.keys/assign 变体，以及跨文件组合所需的 import 解析。
+    实测 8 个 JS 形态：同步前 4 个漏检，同步后 8/8 与正典一致。
+    """
+    js_src = SRC.parent / "js_analyzer.py"
+    js_ven = VENDOR.parent / "js_analyzer.py"
+    assert js_src.is_file() and js_ven.is_file()
+    assert _sha(js_ven) == _sha(js_src), "vendor 与源码的 js_analyzer.py 不一致"
+    assert _sha(js_src) == JS_PINNED_SHA256, (
+        "js_analyzer.py 与正典不一致。\n  期望 %s\n  实际 %s"
+        % (JS_PINNED_SHA256, _sha(js_src))
+    )
+    body = js_src.read_text(encoding="utf-8")
+    for needle in ("CRED_PATHS", "NET_SINKS", "IMPORT_RE", "TLS_OFF"):
+        assert needle in body, "正典里的 %s 不在这份 JS 引擎里" % needle
