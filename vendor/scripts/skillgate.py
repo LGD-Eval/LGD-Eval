@@ -3370,8 +3370,13 @@ def print_terminal_report(result: ScanResult, fail_under: int = None):
     return exit_code
 
 
-def generate_sarif(result: ScanResult) -> str:
-    """Generate SARIF 2.1.0 output for GitHub Code Scanning."""
+def generate_sarif(result: ScanResult, fail_under: int = None) -> str:
+    """Generate SARIF 2.1.0 output for GitHub Code Scanning.
+
+    §3ar：SARIF 本身没有"分数"，读它的一方只能看到 findings 条数——
+    所以分数与阈值必须显式写进 `run.properties`，否则同一份扫描在 JSON 出口和
+    SARIF 出口说的是两件事（JSON 说 85/100 且门槛 90 拦，SARIF 什么都不说）。
+    """
     # Map our severities to SARIF levels
     severity_map = {
         "CRITICAL": "error",
@@ -3398,6 +3403,7 @@ def generate_sarif(result: ScanResult) -> str:
             "ruleId": rule_id,
             "level": severity_map.get(f.severity, "warning"),
             "message": {"text": f.message},
+            "properties": {"severity": f.severity, "scoring": f.scoring},
             "locations": [{
                 "physicalLocation": {
                     "artifactLocation": {"uri": f.file},
@@ -3418,6 +3424,14 @@ def generate_sarif(result: ScanResult) -> str:
                     "rules": list(rules.values())
                 }
             },
+            "properties": {
+                "trust_score": result.trust_score,
+                "grade": result.grade,
+                "fail_under": fail_under,
+                "blocked": (fail_under is not None
+                            and result.trust_score < fail_under)
+                           or result.critical_count > 0 or result.high_count > 0,
+            },
             "results": sarif_results
         }]
     }
@@ -3425,29 +3439,45 @@ def generate_sarif(result: ScanResult) -> str:
     return json.dumps(sarif, indent=2, ensure_ascii=False)
 
 
-def generate_junit_xml(result: ScanResult) -> str:
-    """Generate JUnit XML output for CI test reporting."""
+def generate_junit_xml(result: ScanResult, fail_under: int = None) -> str:
+    """Generate JUnit XML output for CI test reporting.
+
+    §3ar：JUnit 是"通过/失败"协议，所以它必须说**和退出码同一件事**。
+    修复前它硬编码 `threshold 80`，完全不看命令行：
+      · 分 85 + `--fail-under 90` → 进程 exit 1（拦住），XML 却写 failures=0
+        —— 读 JUnit 的 CI（GitHub Test Reporter、IDE）看到一片绿，门禁其实已经拦了；
+      · 分 69 + `--fail-under 60` → 进程 exit 0（放行），XML 却记一条 failure
+        —— 反过来报红。
+    现在阈值跟随 `--fail-under`（未给时沿用本格式的历史默认 80，并写进 message），
+    failures 数按**实际写出的 failure 元素**统计，不再用 critical+high 估。
+    非计分披露（scoring=False）不产生 failure——否则披露会变成"测试失败"。
+    """
     import xml.etree.ElementTree as ET
     from xml.dom import minidom
+
+    threshold = fail_under if fail_under is not None else 80
 
     testsuites = ET.Element("testsuites")
     testsuite = ET.SubElement(testsuites, "testsuite", {
         "name": "SkillGate",
         "tests": str(len(result.findings) + 1),  # +1 for overall score
-        "failures": str(result.critical_count + result.high_count),
+        "failures": "0",                          # 最后按实际元素回填
         "errors": "0",
         "time": "0.1"
     })
+
+    n_fail = 0
 
     # Overall score test
     overall_test = ET.SubElement(testsuite, "testcase", {
         "name": f"Trust Score: {result.trust_score}/100",
         "classname": "skillgate.overall"
     })
-    if result.trust_score < 80:
-        failure = ET.SubElement(overall_test, "failure", {
-            "message": f"Score {result.trust_score} below threshold 80"
+    if result.trust_score < threshold:
+        ET.SubElement(overall_test, "failure", {
+            "message": f"Score {result.trust_score} below threshold {threshold}"
         })
+        n_fail += 1
 
     # Individual findings as test cases
     for i, f in enumerate(result.findings):
@@ -3455,10 +3485,13 @@ def generate_junit_xml(result: ScanResult) -> str:
             "name": f"{f.category}: {f.message[:50]}",
             "classname": f"skillgate.{f.category}"
         })
-        if f.severity in ("CRITICAL", "HIGH"):
-            failure = ET.SubElement(testcase, "failure", {
+        if f.scoring and f.severity in ("CRITICAL", "HIGH"):
+            ET.SubElement(testcase, "failure", {
                 "message": f"[{f.severity}] {f.message}"
             })
+            n_fail += 1
+
+    testsuite.set("failures", str(n_fail))
 
     # Pretty print
     rough = ET.tostring(testsuites, encoding="unicode")
@@ -3664,10 +3697,12 @@ def main():
             else:
                 print(output)
             # Exit code for CI usage
-            if result.critical_count > 0 or result.high_count > 0:
-                sys.exit(1)
+            # §3ar：这里原来自己写了一条"只有 CRITICAL/HIGH 才非零"的规则，
+            # 不看 --fail-under —— 同一份扫描，markdown 出口 exit 1（拦住），
+            # agent 出口 exit 0（放行）。六个出口只能有一套生死判定。
+            sys.exit(_ci_exit(result, fail_under=args.fail_under))
         elif args.format == "sarif":
-            output = generate_sarif(result)
+            output = generate_sarif(result, fail_under=args.fail_under)
             if args.output:
                 Path(args.output).write_text(output, encoding="utf-8")
                 print(f"SARIF 报告已写入: {args.output}")
@@ -3675,7 +3710,8 @@ def main():
                 print(output)
             sys.exit(_ci_exit(result, fail_under=args.fail_under))
         elif args.format == "junit":
-            output = generate_junit_xml(result)
+            # 阈值必须与退出码同源，否则读 JUnit 的 CI 会与门禁说两套话
+            output = generate_junit_xml(result, fail_under=args.fail_under)
             if args.output:
                 Path(args.output).write_text(output, encoding="utf-8")
                 print(f"JUnit XML 报告已写入: {args.output}")
