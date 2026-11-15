@@ -811,6 +811,90 @@ _MAX_SCRIPT_READ = 200 * 1024
 _SCRIPT_TEXT_EXTS = (".sh", ".bash", ".zsh", ".ksh", ".fish", ".ps1", ".bat",
                      ".cmd", ".vbs", ".hta")
 
+# §3bm：写入即执行——写进这些位置，命令就不是本进程跑的，是系统替我跑。
+# 基线：ATT&CK T1546.004（shell 配置）/ T1546.018（Python 启动钩子，DET0258）/
+#       T1547.001（Run 键）/ T1053.005（计划任务）/ T1098.004（authorized_keys）/
+#       T1543.002（systemd 服务）
+_AUTOSTART_TARGETS = [
+    ("shell-profile", re.compile(
+        r"(?:^|/)(?:\.bashrc|\.bash_profile|\.bash_login|\.profile|\.zshrc|"
+        r"\.zprofile|\.zlogin|\.kshrc|\.cshrc)$|/profile\.d/|/etc/profile$|"
+        r"/etc/bashrc$|/etc/zshrc$", re.I)),
+    ("cron", re.compile(r"/etc/crontab$|/etc/cron\.[a-z]+/|/var/spool/cron/", re.I)),
+    ("ssh-keys", re.compile(r"\.ssh[/\\]authorized_keys(?:2)?$", re.I)),
+    ("py-hook", re.compile(
+        r"(?:site-packages|dist-packages)[/\\][^/\\]*\.pth$|"
+        r"(?:sitecustomize|usercustomize)\.py$", re.I)),
+    ("systemd", re.compile(r"/etc/systemd/system/|\.config/systemd/(?:user|system)/|"
+                           r"\.service$", re.I)),
+    ("startup-folder", re.compile(
+        r"start menu[/\\]programs[/\\]startup|[/\\]startup[/\\]", re.I)),
+    ("run-key", re.compile(
+        r"currentversion[/\\]run(?:once)?$|currentversion[/\\]runonce", re.I)),
+    ("git-hooks", re.compile(r"\.git[/\\]hooks[/\\]|core\.hookspath", re.I)),
+]
+# 写进这些位置的内容本身就会被解释执行（.pth 里的 import 行、sitecustomize 是启动时导入）
+_CRITICAL_AUTOSTART = {"py-hook"}
+
+
+def _autostart_target(text):
+    """这段文字指向哪一类自启动位置；不是就返回 None。"""
+    if not text or len(str(text)) > 400:
+        return None
+    s = str(text)
+    for label, pat in _AUTOSTART_TARGETS:
+        if pat.search(s):
+            return label
+    return None
+
+
+def _autostart_verdict(tokens):
+    """注册/写入自启动位置 → (级别, 理由)；不是这类动作返回 None。"""
+    if not tokens:
+        return None
+    base = _basename(tokens[0])
+    low = [str(t).lower() for t in tokens]
+    joined = " ".join(low)
+
+    if base == "schtasks" and ("/create" in low or "-create" in low):
+        return ("HIGH", "注册计划任务（schtasks /create）：之后由系统按计划执行该命令")
+    if base == "at":
+        return ("HIGH", "投递 at 定时作业：之后由系统执行该命令")
+
+    if base == "reg" and "add" in low:
+        for t in tokens:
+            if _autostart_target(t) == "run-key":
+                return ("HIGH", "写注册表 Run 键：登录时由系统拉起该程序")
+
+    if base in {"systemctl", "update-rc.d", "rc-update", "chkconfig"} and (
+            "enable" in low or "add" in low or "on" in low):
+        return ("HIGH", "把服务设为开机自启（%s）：由系统在启动时执行" % base)
+
+    if base == "crontab" and any(t.strip() == "-" for t in low):
+        return ("HIGH", "用 crontab 写入计划任务：之后由系统按周期执行")
+
+    if base == "git" and "config" in low and "core.hookspath" in joined \
+            and "--get" not in low and "--unset" not in low:
+        return ("HIGH", "改 git core.hooksPath：下一次 git 操作会自动执行该目录里的钩子")
+
+    for i, t in enumerate(tokens):
+        if not isinstance(t, str):
+            continue
+        if ">>" not in t and not (base == "tee" and "-a" in low):
+            continue
+        tail = str(tokens[i + 1]) if i + 1 < len(tokens) else ""
+        cat = _autostart_target(tail) or _autostart_target(t.replace(">>", "").strip())
+        if cat:
+            return ("CRITICAL", "把命令追加进自启动文件（%s）：下次会话/启动被自动执行" % cat)
+
+    if base in {"cp", "mv", "install", "rsync", "scp", "unzip", "tar", "tee"}:
+        for t in tokens[1:]:
+            cat = _autostart_target(t)
+            if cat:
+                return ("HIGH", "把文件放进自启动位置（%s）：启动/登录时会被执行" % cat)
+
+    return None
+
 
 def _looks_like_script_path(tok: str) -> bool:
     t = _norm(tok)
@@ -1262,6 +1346,12 @@ def destructive_tokens(tokens, depth: int = 0):
     if delegate:
         return delegate
 
+    # §3bm：写入即执行——注册计划任务 / 写 Run 键 / 追加进 shell 配置、
+    # crontab、authorized_keys、git hooks。命令不是现在跑的，是下一次由系统跑。
+    autostart = _autostart_verdict(tokens)
+    if autostart:
+        return autostart
+
     # §3bj：破坏不止删除——清零/覆写、撤权、平移、删账户、删任务、删恢复、删库。
     verb = _destructive_verb_verdict(tokens)
     if verb:
@@ -1503,6 +1593,61 @@ class HardcodedSecretVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+class AutostartWriteVisitor(ast.NodeVisitor):
+    """§3bm：把内容写进"系统会自己执行"的位置。
+
+    open("<自启动路径>", "w"/"a"/"x") 与 shutil.copy(src, "<自启动路径>")。
+    写进 site-packages 下的 .pth / sitecustomize 是 CRITICAL——那一行 import
+    本身就等于命令；其余位置按 HIGH（登录/启动/下次会话时由系统执行）。
+    """
+
+    WRITE_MODES = ("w", "a", "x", "+")
+    OPENERS = {"open", "io.open", "codecs.open", "os.open"}
+    COPYERS = {"shutil.copy", "shutil.copy2", "shutil.copyfile", "shutil.move",
+               "shutil.copytree", "os.link", "os.symlink", "os.rename", "os.replace"}
+
+    def __init__(self):
+        self.findings: List[AstFinding] = []
+        self._note = set()
+
+    def _add(self, node, label, path):
+        key = (node.lineno, label, _norm(path))
+        if key in self._note:
+            return
+        self._note.add(key)
+        if label in _CRITICAL_AUTOSTART:
+            sev, msg = "CRITICAL", "写入 Python 启动钩子（%s）：解释器启动时自动执行" % path
+        else:
+            sev, msg = "HIGH", "写入自启动位置（%s，%s）：下次登录/启动时由系统执行" % (path, label)
+        self.findings.append(AstFinding(severity=sev, message=msg, line=node.lineno, col=0))
+
+    def visit_Call(self, node):
+        name = _dotted(node.func)
+        consts = {}
+        if name in self.OPENERS and node.args:
+            path = _fold_str(node.args[0], consts)
+            mode = "r"
+            if len(node.args) > 1:
+                m = _fold_str(node.args[1], consts)
+                if m:
+                    mode = m
+            if path and any(c in mode.lower() for c in self.WRITE_MODES):
+                label = _autostart_target(path)
+                if label:
+                    self._add(node, label, path)
+        elif name in self.COPYERS and len(node.args) >= 2:
+            dst = _fold_str(node.args[1], consts)
+            if dst:
+                label = _autostart_target(dst)
+                if label:
+                    self._add(node, label, dst)
+        self.generic_visit(node)
+
+
+class AutostartWriteVisitorPlaceholder:
+    pass
+
+
 def analyze_python_file(filepath: Path) -> List[AstFinding]:
     """Analyze a Python file with AST, return findings."""
     try:
@@ -1561,6 +1706,11 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
             if v:
                 findings.append(AstFinding(severity=v[0], message=v[1], line=line, col=0))
                 break
+
+    # §3bm：写入即执行——open(自启动位置, "w"/"a")、shutil.copy(…, 自启动位置)
+    auto_visitor = AutostartWriteVisitor()
+    auto_visitor.visit(tree)
+    findings.extend(auto_visitor.findings)
 
     return findings
 
