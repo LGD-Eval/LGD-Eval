@@ -149,6 +149,23 @@ class DangerousCallVisitor(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call):
         # Get the full function name (e.g. "os.system", "subprocess.run")
         func_name = self._get_func_name(node.func)
+
+        # §3bj：删库不走 subprocess——`cur.execute("DROP DATABASE prod")` 是方法调用，
+        # 前面的 argv 判据完全看不到它。只认 DB API 的三种执行入口，不看字符串变量。
+        # 用 Attribute 判而不是拼名字：`sqlite3.connect("x").execute(...)` 这种链式
+        # 调用，名字拼出来是空串，按 func_name 判会整个漏掉。
+        attr = getattr(node.func, "attr", "") or ""
+        if attr.lower() in SQL_CALLS or func_name.split(".")[-1] in SQL_CALLS:
+            for a in node.args:
+                if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                    up = a.value.upper()
+                    for pat in SQL_DESTROY:
+                        if pat in up:
+                            self.findings.append(AstFinding(
+                                severity="CRITICAL" if "DATABASE" in pat else "HIGH",
+                                message="执行删库语句 %s" % pat,
+                                line=node.lineno, col=node.col_offset))
+                            break
         # §3bf：别名先翻译——`run = subprocess.run` 之后，判据必须还认得它
         aliases = getattr(self, "aliases", None) or {}
         func_name = aliases.get(func_name, func_name)
@@ -535,6 +552,152 @@ def _unwrap_wrapper(tokens):
     return None
 
 
+# ── §3bj 破坏不止删除：清零 / 覆写 / 撤权 / 平移 / 删账户 / 删任务 / 删恢复 / 删库 ──
+# MITRE ATT&CK TA0040 Impact：T1485 Data Destruction（清零、覆写、删库）、
+# T1490 Inhibit System Recovery（删卷影、删备份目录）。GTFOBins 把 shred 单列为
+# "能写/毁本地文件"，chmod 单列为提权面。判据只盯 rm 时，这些都从旁边走过去了。
+ZERO_WRITE_BINS = {"truncate", "shred"}
+PERM_BINS = {"chmod", "chown", "chgrp", "icacls", "takeown", "attrib", "chattr", "setfacl"}
+MOVE_BINS = {"mv", "move", "move-item", "ren", "rename"}
+ACCOUNT_BINS = {"userdel", "deluser", "dscl", "remove-localuser", "netlocalgroup",
+                "net", "net.exe"}
+SQL_CALLS = {"execute", "executemany", "executescript"}
+TASK_BINS = {"crontab", "schtasks", "at", "at.exe"}
+RECOVERY_BINS = {"vssadmin", "wbadmin", "bcdedit", "diskpart"}
+SQL_DESTROY = ("DROP" + " DATABASE", "DROP" + " TABLE", "TRUNCATE" + " TABLE",
+               "DROP" + " SCHEMA")
+
+
+def _arg_zero(mode: str) -> bool:
+    """chmod 的目标模式是不是"把权限清零"（000/0000/0），不是 +x/644。"""
+    m = mode.strip()
+    if m.startswith("-") or m.startswith("+"):
+        return False
+    return bool(m) and all(c == "0" for c in m)
+
+
+def _hits_system(tokens) -> bool:
+    for t in tokens:
+        n = _norm(t)
+        if n in SYSTEM_TARGETS or any(n.startswith(p) for p in DEVICE_PREFIX + SYSTEM_PREFIXES):
+            return True
+    return False
+
+
+def _destructive_verb_verdict(tokens):
+    """判"破坏"而不是"删除"：清零/覆写、撤权、平移、删账户、删任务、删恢复、删库。"""
+    if not tokens:
+        return None
+    base = _basename(tokens[0])
+
+    # 字符串里的删库语句：DROP DATABASE / DROP TABLE / TRUNCATE TABLE
+    for t in tokens:
+        if not isinstance(t, str):
+            continue
+        up = t.upper()
+        for pat in SQL_DESTROY:
+            if pat in up:
+                sev = "CRITICAL" if "DATABASE" in pat else "HIGH"
+                return sev, "执行删库语句 %s" % pat
+
+    if base in ZERO_WRITE_BINS:
+        targets = [t for t in tokens[1:] if not t.strip().startswith("-")]
+        if base == "truncate" and any(t.strip().startswith("--size=+") for t in tokens[1:]):
+            return None  # 只把文件变长，不毁内容
+        if not targets:
+            return None
+        if _hits_system(tokens) or any(_norm(t).startswith("/") for t in targets):
+            return "CRITICAL", "%s 清零/覆写系统或绝对路径文件" % base
+        for t in targets:
+            if _is_benign_path(t):
+                return None
+        return "HIGH", "%s 清零/覆写文件" % base
+
+    if base in PERM_BINS:
+        flags = [t for t in tokens[1:] if t.strip().startswith("-") or t.strip().startswith("/")]
+        args = [t for t in tokens[1:] if t not in flags]
+        if base == "chmod":
+            if args and _arg_zero(args[0]):
+                if _hits_system(tokens) or (len(args) > 1 and _norm(args[1]).startswith("/")):
+                    return "CRITICAL", "chmod 把系统/绝对路径文件权限清零"
+                return "HIGH", "chmod 把文件权限清零"
+            return None
+        if base == "icacls":
+            norm_flags = {_norm(f) for f in tokens[1:]}
+            if "/reset" in norm_flags or "/deny" in norm_flags:
+                if _hits_system(tokens) or any(_norm(t).startswith("c:/") for t in tokens[1:]):
+                    return "CRITICAL", "icacls 重置/拒绝系统盘权限"
+                return "HIGH", "icacls 重置/拒绝权限"
+            return None
+        if base in {"chown", "chgrp", "chattr", "setfacl"}:
+            if any(_norm(f) in {"-r", "--recursive"} for f in tokens[1:]) and _hits_system(tokens):
+                return "CRITICAL", "%s 递归改系统目录属主/属性" % base
+            return None
+        if base in {"takeown", "attrib"} and _hits_system(tokens):
+            return "CRITICAL", "%s 改系统文件所有权/属性" % base
+        return None
+
+    if base in MOVE_BINS:
+        args = [t for t in tokens[1:] if not t.strip().startswith("-")]
+        if not args:
+            return None
+        src = args[0]
+        if _hits_system([src]) or (_norm(src).startswith("/") and not _is_benign_path(src)):
+            return "CRITICAL", "%s 把系统/绝对路径文件移走（原地消失）" % base
+        return None
+
+    if base in ACCOUNT_BINS:
+        joined = [_norm(t) for t in tokens[1:]]
+        if base == "netlocalgroup":
+            return None
+        if base in {"net", "net.exe"}:
+            # `net user Administrator /delete`、`net localgroup administrators x /delete`
+            if "/delete" in joined and any(w in joined for w in ("user", "localgroup", "group")):
+                return "CRITICAL", "net 删除本地账户/组"
+            return None
+        if base == "dscl":
+            if "-delete" in joined or "delete" in joined:
+                return "CRITICAL", "dscl 删除本地账户"
+            return None
+        if base == "remove-localuser" or base == "userdel" or base == "deluser":
+            if base == "userdel" and any("--help" in t for t in tokens):
+                return None
+            return "CRITICAL", "%s 删除本地账户" % base
+        return None
+
+    if base in TASK_BINS:
+        if base == "crontab":
+            if any(_norm(t) in {"-r", "--remove"} for t in tokens[1:]):
+                return "HIGH", "crontab -r 清空全部定时任务"
+            return None
+        if base == "schtasks":
+            for i, t in enumerate(tokens[1:]):
+                if _norm(t) == "/delete":
+                    return "HIGH", "schtasks /delete 删除计划任务"
+            return None
+        return None
+
+    if base in RECOVERY_BINS:
+        joined = " ".join(_norm(t) for t in tokens[1:])
+        if base == "vssadmin" and " delete " in " %s " % joined and "shadows" in joined:
+            return "CRITICAL", "删除卷影副本（破坏系统恢复能力）"
+        if base == "wbadmin" and "delete" in joined:
+            return "CRITICAL", "wbadmin 删除备份目录/系统状态备份"
+        if base == "bcdedit" and ("delete" in joined or "recoveryenabled" in joined):
+            return "CRITICAL", "bcdedit 破坏引导/恢复配置"
+        return None
+
+    if base == "git":
+        args = [_norm(t) for t in tokens[1:]]
+        if "reset" in args and "--hard" in args:
+            return "HIGH", "git reset --hard 丢弃本地未提交改动"
+        if "clean" in args and any(a in {"-xfd", "-fdx", "-fd", "-fx"} for a in args):
+            return "HIGH", "git clean -xfd 删除未跟踪文件"
+        return None
+
+    return None
+
+
 def _inline_code_verdict(code: str):
     """看内联脚本的正文，而不是只看"有没有字符串"。"""
     if not code:
@@ -775,6 +938,11 @@ def destructive_tokens(tokens, depth: int = 0):
         nested = destructive_tokens(inner, depth + 1)
         if nested:
             return nested
+
+    # §3bj：破坏不止删除——清零/覆写、撤权、平移、删账户、删任务、删恢复、删库。
+    verb = _destructive_verb_verdict(tokens)
+    if verb:
+        return verb
 
     # §3bh：先按"参数形状"判，不看程序名。程序名白名单只当加速器，
     # 位置参数、未登记开关上的代码由这一步兜住。
