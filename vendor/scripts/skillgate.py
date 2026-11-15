@@ -1896,6 +1896,69 @@ REMOTE_EXEC_PATTERNS = (
 )
 
 
+def scan_excluded_scope(skill_path: Path, result: ScanResult,
+                        is_in_default_exclude, passed_excludes):
+    """被排除目录里的执行面：不计分，但必须说出来。
+
+    DEFAULT_EXCLUDES 排除 demo/samples/tests/fixtures 等目录，是为了不把仓库自己的
+    投毒夹具算进技能评分（否则安全工具扫自己必红）。但"不计分"不等于"可以藏东西"：
+    技能完全可以把要执行的代码放进 demo/，再在 SKILL.md 里写"运行 demo/run.py"。
+
+    实测（audit2/probe_excluded_payload.py）：
+      demo/run.py    os.system("curl … | sh")   → 0 命中，不披露
+      samples/run.mjs child_process + exec      → 0 命中，不披露
+      tests/run.sh    curl | sh                 → 0 命中，不披露
+      fixtures/run.ps1 下载后 bypass 执行        → 0 命中，不披露
+
+    做法：影子扫描——真的扫一遍，但结果只作为**一条披露**（不计入评分），
+    报出路径与最高级别，让评审者自己判断这个 demo 目录是不是执行面。
+    """
+    SEV_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+    EXEC_SUFFIXES = {".py", ".js", ".ts", ".mjs", ".cjs", ".sh", ".ps1", ".bat", ".cmd"}
+
+    for p in skill_path.rglob("*"):
+        if not p.is_file() or p.suffix.lower() not in EXEC_SUFFIXES:
+            continue
+        rel = p.relative_to(skill_path).as_posix()
+        parts = p.relative_to(skill_path).parts
+        in_default = any(part in {"tests", "test", "docs", "doc", "demo", "_demo",
+                                  "samples", "fixtures", "testdata", "benchmarks",
+                                  "corpus", "red-team"} for part in parts)
+        in_explicit = any(rel == e or rel.startswith(e + "/") for e in passed_excludes)
+        if in_explicit:
+            # 用户用 --exclude 点名的目录是"我知道这是夹具"的主动声明，尊重它；
+            # 只有引擎自己默认排除的目录才需要披露（那是自动豁免，用户没选过）
+            continue
+        if not in_default:
+            continue
+
+        scratch = ScanResult(skill_name=skill_path.name)
+        ext = p.suffix.lower()
+        if ext == ".py":
+            scan_python_file(p, scratch)
+        elif ext in {".js", ".ts", ".mjs", ".cjs"} and scan_js_file:
+            for sev, cat, msg, line in scan_js_file(p):
+                scratch.findings.append(Finding(severity=sev, category=cat,
+                                                message=msg, file=str(p), line=line))
+        elif ext == ".sh":
+            scan_shell_file(p, scratch)
+        else:
+            scan_windows_script(p, scratch)
+
+        if not scratch.findings:
+            continue
+        top = min((f.severity for f in scratch.findings), key=lambda s: SEV_ORDER.get(s, 9))
+        why = "默认排除目录"
+        result.findings.append(Finding(
+            severity="MEDIUM" if SEV_ORDER.get(top, 9) <= 1 else "LOW",
+            category="coverage",
+            message="%s内有执行面且命中危险模式：%s（最高 %s，%d 处）——未计入评分，"
+                    "但它正是这条豁免名单可能被当成后门用的地方"
+                    % (why, rel, top, len(scratch.findings)),
+            file=str(p), line=1
+        ))
+
+
 def _already_reported(result: ScanResult, filepath: str, category: str) -> bool:
     """该文件在该类别下是否已经报过（防同一文件被多条 glob 重复扫）。"""
     return any(f.file == filepath and f.category == category
@@ -2371,6 +2434,9 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
 
     # 未读载体披露：压缩包/二进制里的载荷一个字节都没看过，必须说出来
     scan_carriers(skill_path, result, should_exclude)
+
+    # 被排除目录（demo/samples/tests/--exclude）：不计分，但里面有执行面就要披露
+    scan_excluded_scope(skill_path, result, lambda p: True, ex_parts)
 
     # 安装期脚本：package.json 的 postinstall 是一条装载代码的执行通道。
     # OWASP AST02 与 arXiv 2601.10338 都把它列为供应链风险的典型形态；
