@@ -1978,8 +1978,8 @@ def scan_shell_file(filepath: Path, result: ScanResult):
     lines = content.splitlines()
     dangerous_sh_patterns = [
         (r"\brm\s+-rf?\s+/\s*(;|&&|\||$)", "CRITICAL", "rm -rf / 危险删除（仅根目录）"),
-        (r"\bcurl\s+.*\|\s*sh", "MEDIUM", "curl | sh 管道执行远程脚本（常见安装方式，需确认来源可信）"),
-        (r"\bwget\s+.*\|\s*bash", "MEDIUM", "wget | bash 管道执行远程脚本（常见安装方式，需确认来源可信）"),
+        (r"\bcurl\s+.*\|\s*sh", "HIGH", "curl | sh 管道执行远程脚本（管道 = 远程代码直接进解释器）"),
+        (r"\bwget\s+.*\|\s*bash", "HIGH", "wget | bash 管道执行远程脚本（管道 = 远程代码直接进解释器）"),
         (r"\bchmod\s+777", "MEDIUM", "chmod 777 权限过松"),
         (r"\bsudo\s+", "MEDIUM", "sudo 权限提升"),
     ]
@@ -2538,6 +2538,97 @@ def scan_config_secrets(filepath: Path, result: ScanResult):
             line=text[:m.start()].count("\n") + 1
         ))
         break
+
+
+def scan_exec_scripts(skill_path: Path, result: ScanResult, should_exclude):
+    """"这是不是要审的东西"，不能靠后缀白名单回答（§3aw）。
+
+    实测（audit2/probe_exec_filetypes.py，修复前）：
+      install.hta（mshta 一键装）              → 100/A+，一条不报
+      setup.vbs（WScript.Shell 跑 iwr|iex）    → 100/A+，一条不报
+      job.wsf（JScript + WScript.Shell）        → 100/A+，一条不报
+      evil.service（systemd ExecStart=curl|sh） → 100/A+，一条不报
+      com.evil.plist（launchd ProgramArguments）→ 100/A+，一条不报
+      evil.desktop（Exec=bash -c "curl…|sh"）   → 100/A+，一条不报
+      run（无后缀，首行 #!/bin/sh + curl|sh）   → 100/A+，一条不报
+    对照：同内容的 build.bat 是 CRITICAL 49/D、run.sh 只到 MEDIUM 96/A。
+
+    两类判据：
+      ① 后缀：.hta/.vbs/.vba/.wsf（Windows 脚本宿主，双击或 mshta <url> 即执行）、
+              .service/.plist/.desktop（系统按文件启用的执行入口）
+      ② 无后缀 + 首行 shebang（`#!/bin/sh`、`#!/usr/bin/env python` …）
+
+    判级与配置即命令（§3as）同一张表：远程取码执行 → CRITICAL；下载落盘后执行 → CRITICAL；
+    仅联网取文件 → HIGH。另给一条不计分 LOW 披露，说明只判这两类。
+    """
+    SHEBANG_SUFFIXES_FREE = ("", ".in", ".tmpl")
+    WINDOWS_HOST_SUFFIXES = {".hta", ".vbs", ".vba", ".wsf", ".wsh"}
+    SYSTEM_ENTRY_SUFFIXES = {".service", ".plist", ".desktop"}
+
+    for path in skill_path.rglob("*"):
+        if not path.is_file() or should_exclude(path):
+            continue
+        suffix = path.suffix.lower()
+        carrier = None
+        if suffix in WINDOWS_HOST_SUFFIXES:
+            carrier = "Windows 脚本宿主（%s）" % suffix
+        elif suffix in SYSTEM_ENTRY_SUFFIXES:
+            carrier = "系统执行入口（%s）" % suffix
+        elif suffix in SHEBANG_SUFFIXES_FREE:
+            try:
+                head = read_text_smart(path)[:160]
+            except OSError:
+                continue
+            if not head.startswith("#!"):
+                continue
+            carrier = "无后缀 shebang 可执行件（%s）" % head.splitlines()[0][:40]
+        if not carrier:
+            continue
+
+        result.files_scanned += 1
+        try:
+            text = read_text_smart(path)
+        except OSError:
+            continue
+        low = text.lower()
+
+        fired = False
+        for pat in REMOTE_EXEC_PATTERNS:
+            if re.search(pat, low):
+                result.findings.append(Finding(
+                    severity="CRITICAL", category="supply-chain",
+                    message="%s 在执行期从远程取代码并运行：%s" % (carrier, path.name),
+                    file=str(path), line=1
+                ))
+                fired = True
+                break
+
+        if not fired:
+            fetch = any(t in low for t in ("curl", "wget", "iwr", "invoke-webrequest",
+                                           "downloadstring", "certutil -urlcache",
+                                           "bitsadmin", "start-bitstransfer"))
+            execu = any(t in low for t in ("| sh", "| bash", "iex", "invoke-expression",
+                                           "wscript.shell", "cmd /c", "powershell",
+                                           "/bin/sh", "/bin/bash", "execstart", "exec="))
+            if fetch and execu:
+                result.findings.append(Finding(
+                    severity="CRITICAL", category="supply-chain",
+                    message="%s 下载远程文件并随后执行：%s" % (carrier, path.name),
+                    file=str(path), line=1
+                ))
+            elif fetch:
+                result.findings.append(Finding(
+                    severity="HIGH", category="supply-chain",
+                    message="%s 在运行期联网取文件：%s" % (carrier, path.name),
+                    file=str(path), line=1
+                ))
+
+        # 披露不计分：本扫描只判"取码"与"下载"两类，别的一律没看
+        result.findings.append(Finding(
+            severity="LOW", category="coverage", scoring=False,
+            message="%s 已纳入扫描，但只判取码执行与远程下载两类：%s" % (carrier, path.name),
+            file=str(path), line=1
+        ))
 
 
 def scan_windows_script(filepath: Path, result: ScanResult):
@@ -3439,6 +3530,9 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
 
     # Jupyter 笔记本：后缀不在文本名单里，整本被跳过，而 `!` 前缀直接跑 shell。
     scan_notebooks(skill_path, result, should_exclude)
+
+    # Windows 脚本宿主 / 系统执行入口 / 无后缀 shebang（§3aw）
+    scan_exec_scripts(skill_path, result, should_exclude)
 
     # 同一类的另一条通道：binding.gyp / *.gyp 里的 `<!@(cmd)` 会在生成阶段执行 shell。
     # 实测（audit2/probe_install_bypass.py）：同样的 curl|sh，写在 postinstall 报 CRITICAL，
