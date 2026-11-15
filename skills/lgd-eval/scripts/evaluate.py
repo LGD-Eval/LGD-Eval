@@ -471,7 +471,11 @@ def evaluate_skill(skill_path, provenance="self"):
         ("R-SEC-11", "越权指令：要求忽略既有规则",
          r"(ignore\s+(all\s+)?(previous|prior|above)\s+instructions"
          r"|disregard\s+(all\s+)?(previous|prior|above)\s+(instructions|rules)"
-         r"|忽略(之前|以上|前面|所有)的?(指令|提示|规则)|无视(之前|以上)的?(指令|要求))", 6),
+         # 2026-11-15 类覆盖：原写法只允许「忽略+提示语+的?+指令」，中间夹一个「所有」
+         # 就漏（"忽略以上所有指令"）。中文表达里这个修饰位几乎必有，必须允许夹层。
+         r"|忽略(之前|以上|前面|先前|此前)的?(所有|全部)?的?(指令|指示|提示|规则|设定|要求)"
+         r"|无视(之前|以上|前面|上述)的?(所有|全部)?的?(指令|要求|规则|提示)"
+         r"|忘掉(你)?(之前|原来)的?(所有)?(规则|指令|设定|限制))", 6),
         ("R-SEC-12", "隐瞒用户：要求不告知真实行为",
          r"(do\s+not\s+(tell|inform|notify)\s+the\s+user|without\s+telling\s+the\s+user"
          r"|不要(告诉|通知|提醒)用户|对用户隐瞒|不要让用户知道)", 4),
@@ -489,6 +493,20 @@ def evaluate_skill(skill_path, provenance="self"):
         ("R-SEC-16", "免确认执行",
          r"(without\s+(asking|confirmation|approval|permission)|no\s+confirmation\s+needed"
          r"|无需(确认|授权|同意)|不需要用户(同意|确认))", 4),
+        # 2026-11-15 类覆盖：下面三条是产品层补的。
+        # 缘由：SKILL.md 里 9 类注入样本，产品（本文件）静默放行 5 类——
+        # 中文「忽略以上所有指令」、<system> 结构伪造、base64 载荷、TLS 校验关闭。
+        # 规则都补了，这里补产品：规则在库里生效、在 CLI 里不生效，等于对外没修。
+        ("R-SEC-23", "结构伪造：伪装 system 角色",
+         r"(<\s*/?\s*system\s*>|\[\s*system\s*\]|\"role\"\s*:\s*\"system\""
+         r"|<<\s*SYS\s*>>|system_prompt_override|override_system_prompt"
+         r"|]]>\s*</?\w+>)", 6),
+        ("R-SEC-24", "编码载荷：base64 里藏着指令",
+         r"(__BASE64_INJECTION__)", 6),  # 占位：实际判定在文本层解码后做，见下方 base64 段
+        ("R-SEC-25", "私钥块或带口令的连接串",
+         r"(-----BEGIN[ A-Z]*PRIVATE KEY-----"
+         r"|(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s/]+:[^@\s]{3,}@"
+         r"|AccountKey\s*=\s*[A-Za-z0-9+/]{20,}={0,2})", 8),
     ]
 
     # ---- 跨文件污点：敏感文件读取 → 网络外发 ----
@@ -622,6 +640,24 @@ def evaluate_skill(skill_path, provenance="self"):
         ("R-SEC-20", "代理被指向外部主机（流量可能被截获）",
          r"(?:HTTPS?_PROXY|ALL_PROXY)\s*[=:]\s*[\"']?https?://"
          r"(?!(?:127\.0\.0\.1|localhost|0\.0\.0\.0))", 4),
+        # 2026-11-15 类覆盖：关 TLS 校验这一类，产品层原先只认 requests 的 verify=False
+        # 一处，其余写法（unverified context / CERT_NONE / rejectUnauthorized / 环境变量）
+        # 全部静默放过。按语言与容器各补一条。
+        ("R-SEC-26", "TLS 校验被关闭",
+         r"(\bverify\s*=\s*False"
+         r"|ssl\._create_unverified_context\s*\("
+         r"|verify_mode\s*=\s*(?:ssl\.)?CERT_NONE"
+         r"|check_hostname\s*=\s*False"
+         r"|rejectUnauthorized\s*:\s*false"
+         r"|NODE_TLS_REJECT_UNAUTHORIZED[^\n]{0,20}['\"]?\s*=?\s*['\"]?0"
+         r"|PYTHONHTTPSVERIFY[^\n]{0,20}['\"]?\s*=?\s*['\"]?0"
+         r"|GIT_SSL_NO_VERIFY)", 6),
+        # 凭证形状规则：前四条只认三家厂商的固定前缀，私钥块与带口令的 DSN 不在其中。
+        # 它们活在字符串里，必须看原文（见下方 target 选择）。
+        ("R-SEC-25", "私钥块或带口令的连接串",
+         r"(-----BEGIN[ A-Z]*PRIVATE KEY-----"
+         r"|(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s/]+:[^@\s]{3,}@"
+         r"|AccountKey\s*=\s*[A-Za-z0-9+/]{20,}={0,2})", 8),
     ]
 
     def _ast_security(src):
@@ -843,9 +879,12 @@ def evaluate_skill(skill_path, provenance="self"):
                 break
         # 行为类规则只看可执行部分；凭证类规则必须看字符串，故用原文
         code_behavior = _strip_literals(code) if ext == ".py" else code
+        # 判断"内容"而非"动作"的规则必须看原文：凭证字面量、被改写的域名/代理地址；
+        # 私钥块与带口令 DSN、以及环境变量形式的 TLS 关闭开关，同样活在字符串里，
+        # 用剥离后的可执行文本去搜是搜不到的。
         for rid, rule_name, pat, points in SEC_RULES:
-            # 判断"内容"而非"动作"的规则必须看原文：凭证字面量、被改写的域名/代理地址
-            target = code if rid in ("R-SEC-01", "R-SEC-02", "R-SEC-19", "R-SEC-20") else code_behavior
+            target = code if rid in ("R-SEC-01", "R-SEC-02", "R-SEC-19", "R-SEC-20",
+                                     "R-SEC-25", "R-SEC-26") else code_behavior
             for m in re.finditer(pat, target):
                 line_no = code[:m.start()].count("\n") + 1
                 hit_line = code_lines[line_no - 1] if line_no - 1 < len(code_lines) else ""
@@ -947,6 +986,33 @@ def evaluate_skill(skill_path, provenance="self"):
         except OSError:
             md_text = ""
         md_lines = md_text.splitlines()
+        # ---- 编码载荷：base64 解出来再判，不按"长得像"判 ----
+        # 一长串 base64 同时是哈希、指纹、证书的形状，按形状报会让每个仓库都中招；
+        # 先解码、再看里面的明文有没有指令，才既不瞎报也不瞎放。
+        import base64 as _b64
+        for _m in re.finditer(r"[A-Za-z0-9+/]{40,}={0,2}", md_text):
+            _blob = _m.group(0)
+            try:
+                _dec = _b64.b64decode(_blob + "=" * (-len(_blob) % 4),
+                                     validate=False).decode("utf-8", "ignore")
+            except Exception:
+                continue
+            if not _dec or len(_dec) < 8:
+                continue
+            _low = _dec.lower()
+            if not any(k in _low for k in ("ignore", "system prompt", "jailbreak",
+                                           "忽略", "指令")):
+                continue
+            _line_no = md_text[:_m.start()].count("\n") + 1
+            _hit = md_lines[_line_no - 1] if _line_no - 1 < len(md_lines) else ""
+            if "lgd: ignore" in _hit or "skillgate: ignore" in _hit:
+                continue
+            msg = "SKILL.md:%d: 编码载荷：base64 解码后含注入指令（%s…）" % (
+                _line_no, _dec.strip()[:30])
+            if msg not in security_issues:
+                security_issues.append(msg)
+                score -= 6
+
         for rid, rule_name, pat, points in TEXT_SEC_RULES:
             for m in re.finditer(pat, md_text, re.IGNORECASE):
                 line_no = md_text[:m.start()].count("\n") + 1
