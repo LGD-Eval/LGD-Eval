@@ -64,3 +64,14 @@ def test_the_checker_accepts_the_fixed_shape():
     good = ("# lgd-eval\n\n```bash\n# 尚未发布：registry 返回 404\n"
             "npx lgd-eval ./my-skill\n```\n")
     assert not check(good)
+
+
+def test_readme_teaches_the_tgz_entry():
+    """tgz 解包后没有 node_modules，`npx` 跑不了 —— README 必须给出可直接执行的入口。
+
+    这条是外人席实测出来的：包内 README 只教 npx，外人解包后卡住，
+    靠「自己想到 bin/lgd-eval.js」才走通。文档不该指望外人猜。
+    """
+    text = io.open(READMES[0], encoding="utf-8").read()
+    assert "bin/lgd-eval.js" in text, "README 没写 tgz 解包后怎么跑（bin/lgd-eval.js）"
+    assert "Python 3" in text, "README 没写需要本机 Python 3（否则外人会以为是纯 Node 包）"

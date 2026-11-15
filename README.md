@@ -32,6 +32,23 @@ npx lgd-eval ./my-skill --fail-under 90 --fix-json fix-plan.json
 
 （同上：该命令依赖已发布的 npm 包。tgz 路线里用 `bin/lgd-eval.js` 直接运行即可。）
 
+## 用 tgz 装完之后怎么跑（外人最常卡在这）
+
+解包后你手上是一个 `package/` 目录，里面**没有 node_modules**，所以 `npx` 那条在这里跑不了。
+**下面三条都在 tgz 所在的那层目录执行（不是 `package/` 里面）**：
+
+```bash
+# 在 tgz 所在目录（解包后出现 package/ 的那一层）
+tar -xzf lgd-eval-<版本>.tgz
+node package/bin/lgd-eval.js --version
+# 把 ./my-skill 换成你自己的技能目录
+node package/bin/lgd-eval.js ./my-skill
+```
+
+- 需要本机有 **Python 3**：`bin/lgd-eval.js` 只做启动器，打分在包内 `vendor/scripts/evaluate.py`；
+- 分数 < 90 想直接卡 CI：`node package/bin/lgd-eval.js ./my-skill --fail-under 90`（退出码 1）；
+- 看五维雷达：`node package/bin/lgd-eval.js ./my-skill --ascii`。
+
 - 分数 < 90 → 退出码 1，CI 直接红
 - `fix-plan.json` 里每一项都是「缺口 → 整改动作 → 可判定验收」，AI 或人改完再跑一次即闭环
 
