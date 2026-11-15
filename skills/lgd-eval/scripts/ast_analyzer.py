@@ -783,6 +783,239 @@ def _remote_exec_verdict(tokens):
     return None
 
 
+# ── §3bl 命令不在这一行里：先落盘再执行 / 命令交给别人代跑 ────────────
+# §3bk 只判"同一行里既取回又执行"。可真实流程常常是两步：
+#   subprocess.run(["curl","-sSLo","/tmp/i.sh","https://…"])   ← 先落盘
+#   subprocess.run(["bash","/tmp/i.sh"])                        ← 再执行
+# 两步分开写，任何"看一行"的判据都看不见；行里也不出现管道符。
+# 同族还有"命令写在文件里"（`powershell -File ./payload.ps1`、`bash ./x.sh`）
+# 与"命令交给别的进程代跑"（`ssh host 'rm -rf …'`、`docker exec …`、
+# `kubectl exec … -- shred …`、`nsenter …`）——命令既不在这行，也不在这个进程里。
+# 对照基线：MITRE ATT&CK T1105（把载荷拉进来）→ T1059（执行）的链式用法，
+# T1021 Remote Services、T1610/1611（容器执行与逃逸）。
+_DL_CLIENTS = {_assemble("cur", "l"), _assemble("wg", "et"), _assemble("iw", "r"),
+               _assemble("ir", "m"), "invoke-webrequest", "invoke-restmethod"}
+_DL_OUT_FLAGS = {"-o", "--output", "-outfile", "-out", "-destination", "-filename"}
+_DL_URLNAME_FLAG = _assemble("-", "O")
+_SCRIPT_RUNNERS = {"bash", "sh", "zsh", "dash", "ksh", "fish", "pwsh", "powershell",
+                   "python", "python3", "node", "perl", "ruby", "php", "cmd",
+                   "source", "."}
+_SCRIPT_EXTS = (".sh", ".bash", ".zsh", ".ps1", ".py", ".js", ".mjs", ".cjs",
+                ".bat", ".cmd", ".pl", ".rb", ".php", ".vbs", ".hta")
+_INLINE_FLAGS = {"-c", "-e", "-command", "/c", "/k", "-encodedcommand", "--eval",
+                 "eval", "-r", "-p"}
+_DELEGATE_BINS = {"ssh", "docker", "podman", "kubectl", "oc", "nsenter", "chroot",
+                  "systemd-run", "runuser", "machinectl", "lxc", "virsh"}
+_MAX_SCRIPT_READ = 200 * 1024
+# 只有脚本类文件才按"命令行"读；源码文件交给对应语言的 AST 分析器
+_SCRIPT_TEXT_EXTS = (".sh", ".bash", ".zsh", ".ksh", ".fish", ".ps1", ".bat",
+                     ".cmd", ".vbs", ".hta")
+
+
+def _looks_like_script_path(tok: str) -> bool:
+    t = _norm(tok)
+    return t.endswith(_SCRIPT_EXTS) or t.startswith("./") or t.startswith("../")
+
+
+def _download_paths(tokens):
+    """下载类 argv → 落盘路径；识别不出返回 []。"""
+    if not tokens:
+        return []
+    base = _basename(tokens[0])
+    if base == "urlretrieve":
+        # urlretrieve(url, filename) —— 第二个参数就是落盘路径
+        return [tokens[1]] if len(tokens) > 1 and isinstance(tokens[1], str) else []
+    if base not in _DL_CLIENTS:
+        return []
+    out = []
+    for i, t in enumerate(tokens[1:], start=1):
+        if not isinstance(t, str):
+            continue
+        n = _norm(t)
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+        if n in _DL_OUT_FLAGS and isinstance(nxt, str):
+            out.append(nxt)
+        elif n == _norm(_DL_URLNAME_FLAG):
+            urls = [u for u in tokens[1:] if isinstance(u, str) and _URLARG_RE.search(u)]
+            if urls:
+                out.append(urls[0].rstrip("/").split("/")[-1])
+        elif _neg_has_out_flag(n) and isinstance(nxt, str) and not nxt.startswith("-") \
+                and not _URLARG_RE.search(nxt):
+            # 组合短开关：`curl -sSLo /tmp/x.sh …` 里 o 与 L 粘在一起，
+            # 只认 "-o" 会把这一整个写法漏掉（§3bi stdbuf 的同类错）。
+            out.append(nxt)
+    return out
+
+
+def _neg_has_out_flag(norm_flag: str) -> bool:
+    """组合短开关里是否含"输出到文件"的那个字母。"""
+    if not norm_flag.startswith("-") or len(norm_flag) < 3:
+        return False
+    body = norm_flag[1:]
+    if body.isupper():
+        return "O" in body
+    return "o" in body
+
+
+def _paths_in_text(text: str):
+    """命令字符串里"下载到哪个文件"——如 `iwr <url> -OutFile C:/t/x.ps1`。"""
+    out = []
+    low = text or ""
+    pat = re.compile(r"(?:-o|--output|-OutFile|-Out|-Destination|-filename)\s+([^\s\"';&|]+)",
+                     re.I)
+    for m in pat.finditer(low):
+        out.append(m.group(1))
+    return out
+
+
+def _exec_script_paths(tokens):
+    """执行类 argv → 被执行的脚本文件路径；识别不出返回 []。"""
+    if not tokens:
+        return []
+    base = _basename(tokens[0])
+    out = []
+    if base in _SCRIPT_RUNNERS:
+        for t in tokens[1:]:
+            if not isinstance(t, str):
+                continue
+            n = _norm(t)
+            if n in _INLINE_FLAGS:
+                return []          # -c / -e 这类是内联代码，另行判定
+            if n.startswith("-") or n in {"/c", "/k"}:
+                continue
+            if _looks_like_script_path(t):
+                out.append(t)
+    elif _looks_like_script_path(tokens[0]):
+        out.append(tokens[0])      # 直接 ./tool 这种"就地执行"
+    if base in {"cmd"}:
+        for i, t in enumerate(tokens[1:], start=1):
+            if _norm(t) in {"/c", "/k"} and i + 1 < len(tokens):
+                cand = tokens[i + 1]
+                if _looks_like_script_path(cand):
+                    out.append(cand)
+    return out
+
+
+def _same_path(a: str, b: str) -> bool:
+    na, nb = _norm(a).lstrip("./"), _norm(b).lstrip("./")
+    return bool(na) and bool(nb) and (na == nb or na.split("/")[-1] == nb.split("/")[-1])
+
+
+def _delegate_command(tokens):
+    """把"交给别人代跑"还原成真正要跑的命令 argv；还原不出返回 None。
+
+    实现要点：不按"第几个参数是命令"猜位置（`ssh -p 22 host cmd`、`docker exec -i c cmd`、
+    `nsenter -t 1 -m -- cmd` 三种语法各不相同），而是找**第一个已知命令名**当切点。
+    """
+    if not tokens:
+        return None
+    base = _basename(tokens[0])
+    if base not in _DELEGATE_BINS:
+        return None
+    known = set()
+    for name in ("DELETE_BINS", "SHELL_WRAPPERS", "SYSTEM_UTILS", "RISKY_UTILS",
+                 "ZERO_WRITE_BINS", "PERM_BINS", "MOVE_BINS", "ACCOUNT_BINS",
+                 "TASK_BINS", "RECOVERY_BINS", "_PROXY_DL_BINS", "_PKG_RUNNERS"):
+        known |= set(globals().get(name) or set())
+    known |= set(INTERP_INLINE_FLAGS)
+    for i, t in enumerate(tokens[1:], start=1):
+        if not isinstance(t, str) or t.startswith("-"):
+            continue
+        if _basename(t) in known:
+            return tokens[i:]
+    return None
+
+
+def _delegate_verdict(tokens):
+    inner = _delegate_command(tokens)
+    if not inner:
+        return None
+    v = destructive_tokens(inner, 1)
+    if v:
+        return v[0], "经 %s 代跑：%s" % (_basename(tokens[0]), v[1])
+    return None
+
+
+def _script_file_verdict(path_str: str, base_dir):
+    """命令写在文件里：把文件读进来按命令行逐行判，判不出不猜。
+
+    只读**脚本类**文件（.sh/.ps1/.bat…）。源码文件（.py/.js）由各自语言的分析器
+    负责，按命令行去切 python 源码只会把文档示例切出假命中——自扫首轮就撞到了：
+    `evaluate.py` 里的用法说明被当成一条命令，报出 CRITICAL。
+    """
+    if not _norm(path_str).endswith(_SCRIPT_TEXT_EXTS):
+        return None
+    try:
+        from pathlib import Path as _P
+        p = _P(path_str)
+        if not p.is_absolute():
+            p = _P(base_dir) / p
+        p = p.resolve()
+        root = _P(base_dir).resolve()
+        if root not in p.parents:
+            return None            # 仓外文件不读：证据不在扫描范围内
+        if not p.is_file() or p.stat().st_size > _MAX_SCRIPT_READ:
+            return None
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        toks = line.split()
+        if not toks:
+            continue
+        v = destructive_tokens(toks, 1)
+        if v:
+            return v[0], "脚本文件 %s 内：%s" % (p.name, v[1])
+    return None
+
+
+class TwoStepExecVisitor(ast.NodeVisitor):
+    """在一个模块里对账：下载了哪个文件，之后又执行了哪个文件。"""
+
+    def __init__(self, base_dir):
+        self.base_dir = base_dir
+        self.consts, self.temps, self.lists = {}, set(), {}
+        self.aliases = {}
+        self.downloads = []
+        self.execs = []
+
+    def prepare(self, tree):
+        self.consts, self.temps, self.lists = collect_consts(tree)
+        self.aliases = collect_func_aliases(tree)
+
+    def visit_Call(self, node):
+        name = _dotted(node.func)
+        name = self.aliases.get(name, name)
+        try:
+            argv = static_argv(node, name, self.consts, self.temps, self.lists)
+        except Exception:
+            argv = None
+        if argv:
+            for p in _download_paths(argv):
+                self.downloads.append((p, node.lineno))
+            for p in _exec_script_paths(argv):
+                self.execs.append((p, node.lineno))
+        # urlretrieve(url, filename)：第二个参数才是落盘路径，static_argv 只取第一个
+        if name.endswith("urlretrieve") and len(node.args) >= 2:
+            p = _fold_str(node.args[1], self.consts)
+            if p:
+                self.downloads.append((p, node.lineno))
+        # 命令字符串里写着的落盘位置（`powershell -Command "iwr … -OutFile X"`）
+        for a in node.args:
+            if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                for p in _paths_in_text(a.value):
+                    self.downloads.append((p, node.lineno))
+            elif isinstance(a, (ast.List, ast.Tuple)):
+                for e in a.elts:
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str):
+                        for p in _paths_in_text(e.value):
+                            self.downloads.append((p, node.lineno))
+        self.generic_visit(node)
+
+
 def _inline_code_verdict(code: str):
     """看内联脚本的正文，而不是只看"有没有字符串"。"""
     if not code:
@@ -1023,6 +1256,11 @@ def destructive_tokens(tokens, depth: int = 0):
         nested = destructive_tokens(inner, depth + 1)
         if nested:
             return nested
+
+    # §3bl：命令交给别的进程代跑（ssh / docker exec / kubectl exec -- … / nsenter …）
+    delegate = _delegate_verdict(tokens)
+    if delegate:
+        return delegate
 
     # §3bj：破坏不止删除——清零/覆写、撤权、平移、删账户、删任务、删恢复、删库。
     verb = _destructive_verb_verdict(tokens)
@@ -1297,6 +1535,32 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
     secret_visitor = HardcodedSecretVisitor()
     secret_visitor.visit(tree)
     findings.extend(secret_visitor.findings)
+
+    # §3bl：两步链路——下载了哪个文件，之后又执行了哪个文件（含跨行）
+    base_dir = filepath.parent
+    two = TwoStepExecVisitor(str(base_dir))
+    two.prepare(tree)
+    two.visit(tree)
+    hit = None
+    for ex_path, line in two.execs:
+        for dl_path, _dl_line in two.downloads:
+            if _same_path(dl_path, ex_path):
+                hit = (ex_path, line)
+                break
+        if hit:
+            break
+    if hit:
+        findings.append(AstFinding(
+            severity="CRITICAL",
+            message="取回后落盘再执行：先下载 %s，随后执行同一路径（两步链路）" % hit[0],
+            line=hit[1], col=0))
+    else:
+        # 命令写在文件里：把文件内容读进来判，而不是只看文件名
+        for ex_path, line in two.execs:
+            v = _script_file_verdict(ex_path, base_dir)
+            if v:
+                findings.append(AstFinding(severity=v[0], message=v[1], line=line, col=0))
+                break
 
     return findings
 
