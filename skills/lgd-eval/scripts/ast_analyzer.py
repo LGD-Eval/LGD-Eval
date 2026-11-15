@@ -448,6 +448,93 @@ INLINE_DANGER = (
 )
 
 
+# ── §3bi 包装器剥离：真正的命令未必是 token[0] ────────────────────────
+# `sudo rm -rf /`、`env X=1 rm -rf /`、`timeout 5 rm -rf /`、`nice -n 19 rm …`、
+# `nohup rm …`、`xargs rm -rf`、`find / -exec rm -rf {} +`、`parallel rm -rf ::: /`：
+# 每多一层包装，判定就看不到真正的命令。GTFOBins 把 env/sudo 这类"能执行任意命令"的
+# 程序单独列为一类提权面，同理它们在静态判据里也不能当"无害前缀"跳过。
+WRAPPER_PREFIX = {"sudo", "doas", "env", "nohup", "nice", "ionice", "stdbuf",
+                  "timeout", "time", "chrt", "taskset", "watch", "busybox",
+                  "setsid", "runuser", "unbuffer", "xvfb-run", "chronic"}
+WRAPPER_ARG_TAKING = {  # 这些包装器的某些开关"带一个参数"
+    "timeout": {"-s", "-k", "--signal", "--kill-after"},
+    "nice": {"-n", "--adjustment"},
+    "chrt": {"-p"},
+    "taskset": {"-c", "--cpu-list"},
+    "stdbuf": {"-i", "-o", "-e"},
+    "sudo": {"-u", "-g", "-p", "-U", "-C", "-h", "-r", "-t", "-D"},
+}
+
+
+def _unwrap_wrapper(tokens):
+    """剥掉包装器，返回真正的命令 argv；剥不出来返回 None。"""
+    if not tokens:
+        return None
+    base = _basename(tokens[0])
+
+    if base == "xargs":
+        i = 1
+        while i < len(tokens) and _FLAG_RE.match(tokens[i].strip()):
+            i += 1
+            if i - 1 >= 1 and _norm(tokens[i - 1]) in {"-i", "-n", "-l", "-p", "-s", "-d"}:
+                i += 1  # 这些开关带一个值
+        return tokens[i:] or None
+
+    if base == "parallel":
+        for i, t in enumerate(tokens):
+            if t == ":::":
+                # `parallel rm -r -f ::: /`：命令在前，参数在后，要拼回去
+                return (tokens[1:i] + tokens[i + 1:]) or None
+        i = 1
+        while i < len(tokens) and _FLAG_RE.match(tokens[i].strip()):
+            i += 1
+        return tokens[i:] or None
+
+    if base == "find":
+        # `find / -exec rm -r -f {} +`：真正被删的是"搜出来的那些文件"，
+        # 所以搜索路径就是删除目标；丢掉 {} 之后就没了目标，必须补回来。
+        for i, t in enumerate(tokens):
+            if _norm(t) in {"-exec", "-execdir", "-ok", "-okdir"}:
+                search_paths = [x for x in tokens[1:i]
+                                if not _FLAG_RE.match(x.strip())
+                                and _norm(x) not in {"-name", "-type", "-path", "-iname"}]
+                rest = [x for x in tokens[i + 1:] if x not in ("{}", "+", ";", "\\;")]
+                if not rest:
+                    return None
+                if _basename(rest[0]) in DELETE_BINS or _basename(rest[0]).startswith("rm"):
+                    has_target = any(not _FLAG_RE.match(x.strip()) for x in rest[1:])
+                    if not has_target and search_paths:
+                        rest = rest + [search_paths[0]]
+                return rest
+        return None
+
+    if base in WRAPPER_PREFIX:
+        i = 1
+        opts = WRAPPER_ARG_TAKING.get(base, set())
+        while i < len(tokens):
+            t = tokens[i]
+            # 组合短开关（`stdbuf -o0`、`nice -n19`）也算开关：不能用 _FLAG_RE
+            # 卡字母，否则 -o0 会被当成"命令"，整条就此失明。
+            if t.strip().startswith("-") and len(t.strip()) > 1:
+                i += 2 if _norm(t) in opts and i + 1 < len(tokens) else 1
+                continue
+            # env 的 VAR=value、sudo 的 VAR=value 都要跳过
+            if "=" in t and not t.startswith("/") and base in {"env", "sudo", "doas"}:
+                i += 1
+                continue
+            # timeout 的时长、nice/taskset/chrt 的数值
+            if base in {"timeout"} and t.replace(".", "", 1).isdigit():
+                i += 1
+                continue
+            if base in {"nice", "chrt", "taskset", "stdbuf"} and t.replace(".", "", 1).isdigit():
+                i += 1
+                continue
+            break
+        return tokens[i:] or None
+
+    return None
+
+
 def _inline_code_verdict(code: str):
     """看内联脚本的正文，而不是只看"有没有字符串"。"""
     if not code:
@@ -680,6 +767,14 @@ def destructive_tokens(tokens, depth: int = 0):
 
     if ":(){" in joined or "(){ :|" in joined:
         return "CRITICAL", "fork bomb 形态"
+
+    # §3bi：命令前面套一层包装器（sudo / env / timeout / nice / nohup / xargs /
+    # find -exec …），真正的命令就不是 token[0] 了。不剥这层皮，判定看着"没命令"。
+    inner = _unwrap_wrapper(tokens)
+    if inner and inner != tokens and len(inner) >= 1:
+        nested = destructive_tokens(inner, depth + 1)
+        if nested:
+            return nested
 
     # §3bh：先按"参数形状"判，不看程序名。程序名白名单只当加速器，
     # 位置参数、未登记开关上的代码由这一步兜住。
