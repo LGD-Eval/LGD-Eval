@@ -1896,6 +1896,62 @@ REMOTE_EXEC_PATTERNS = (
 )
 
 
+def scan_windows_script(filepath: Path, result: ScanResult):
+    """Windows 装载脚本（.ps1/.bat/.cmd）：技能在 Windows 上最常用的执行入口。
+
+    为什么单列：默认扫描只认 .py/.sh/.js/.ts，等同内容的 .ps1/.bat/.cmd 一个都不看。
+    实测（audit2/probe_file_types.py）：`Invoke-WebRequest … ; powershell -ep bypass -f x.ps1`
+    与 `curl -o i.bat ; call i.bat` 两种样本，修复前 0 命中。
+
+    判级：
+      远程取码（curl/wget/iwr/Invoke-WebRequest/DownloadString/certutil -urlcache/bitsadmin）
+        + 执行迹象（iex/Invoke-Expression/call/start/-f/powershell/cmd /c）  → CRITICAL
+      只有远程取码                                                          → HIGH
+      编码指令（-EncodedCommand / -enc）                                     → HIGH
+      其余命中 REMOTE_EXEC_PATTERNS                                         → CRITICAL
+    """
+    try:
+        text = filepath.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    low = text.lower()
+
+    fetch_tokens = ("curl", "wget", "iwr", "invoke-webrequest", "downloadstring",
+                    "certutil -urlcache", "bitsadmin", "start-bitstransfer")
+    exec_tokens = ("invoke-expression", "iex", "call ", "start ", "powershell",
+                   "cmd /c", "-encodedcommand", " -f ", "& '")
+    has_fetch = any(t in low for t in fetch_tokens)
+    has_exec = any(t in low for t in exec_tokens)
+
+    for pat in REMOTE_EXEC_PATTERNS:
+        if re.search(pat, low):
+            result.findings.append(Finding(
+                severity="CRITICAL", category="supply-chain",
+                message="Windows 脚本在执行期从远程取代码并运行：%s" % filepath.name,
+                file=str(filepath), line=1
+            ))
+            return
+
+    if has_fetch and has_exec:
+        result.findings.append(Finding(
+            severity="CRITICAL", category="supply-chain",
+            message="Windows 脚本下载远程文件并随后执行（installation-time 常见形态）",
+            file=str(filepath), line=1
+        ))
+    elif has_fetch:
+        result.findings.append(Finding(
+            severity="HIGH", category="supply-chain",
+            message="Windows 脚本在执行期联网取文件",
+            file=str(filepath), line=1
+        ))
+    elif "-encodedcommand" in low or re.search(r"\s-enc\b", low):
+        result.findings.append(Finding(
+            severity="HIGH", category="obfuscation",
+            message="Windows 脚本使用编码指令执行（-EncodedCommand/-enc），内容不可直读",
+            file=str(filepath), line=1
+        ))
+
+
 def scan_gyp_file(filepath: Path, result: ScanResult):
     """构建文件（binding.gyp / *.gyp）里的命令展开 → 安装期执行。
 
@@ -2095,10 +2151,24 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
         scan_shell_file(sh_file, result)
         result.files_scanned += 1
 
+    # Windows 装载脚本：同一类执行面，换个后缀就在扫描范围外
+    for win_file in list(skill_path.rglob("*.ps1")) + list(skill_path.rglob("*.bat")) \
+            + list(skill_path.rglob("*.cmd")):
+        if should_exclude(win_file):
+            continue
+        scan_windows_script(win_file, result)
+        result.files_scanned += 1
+
     # Scan all JS/TS files
+    # 后缀覆盖：Node 的 ESM/CJS 入口是 .mjs/.cjs，现代包比 .js 还常见。
+    # 实测（audit2/probe_file_types.py）：同一段 child_process + exec 代码，
+    # 叫 evil.js 报两条 HIGH，叫 evil.mjs / evil.cjs 是 0 命中——按后缀漏掉整个执行面。
     js_facts = {}
     if scan_js_file:
-        for js_file in list(skill_path.rglob("*.js")) + list(skill_path.rglob("*.ts")):
+        js_files = []
+        for ext in ("*.js", "*.ts", "*.mjs", "*.cjs"):
+            js_files.extend(skill_path.rglob(ext))
+        for js_file in sorted(set(js_files)):
             if should_exclude(js_file):
                 continue
             try:
