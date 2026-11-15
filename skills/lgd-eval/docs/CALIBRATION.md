@@ -101,6 +101,21 @@ The five benign samples blocked at 90 score 75, 75, 75, 78, 80 — none of them 
 
 **中文** — 本轮语料 20 份（10 良 / 10 恶），名单如上。2026-11-15 实跑：门槛 40–75 均 0% 误杀 0% 漏放；80 误杀 40%；89/90 误杀 50%；96 误杀 60%。**在出厂默认 90 上，10 份干净样本里被拦下的 5 份分数是 75/75/75/78/80，安全维度全部满分、零安全发现**——它们是因为"写得薄"而被拦，不是因为危险。这就是建议 60 的全部论据，也是为什么只提不改。
 
+### 5.1 Re-runs required by the contract / 契约要求而复跑的那几次
+
+Per A-31, every change that can move a score requires re-running this table. Re-runs so far, each with the engine fingerprint recorded:
+
+| Engine fingerprint (sha256 head) | What changed | Result vs previous |
+|---|---|---|
+| `867dc96189abf2bb` | .ipynb / config-exec / nosuffix detection landed | identical cell by cell |
+| `9ccad7ebcbfcfd9b` | dynamic-call (getattr/`__dict__`) detection; `curl \| sh` raised MEDIUM→HIGH in `.sh`; exec carriers (`.hta/.vbs/.wsf/.service/.plist/.desktop`/shebang) added | identical cell by cell |
+
+So A-17's conclusion is **not** affected by the engine changes above: 40–75 stay at 0% false-block / 0% false-pass, 80→40%, 89/90→50%, 96→60%.
+
+**Disclosed gap / 已披露的缺口** — the 20-sample corpus contains **no** `.sh`, `.service`, `.ipynb` or `.hta` sample, so this table does not by itself measure the false-positive surface of the new carriers. A separate 4-benign / 4-malicious carrier corpus was run for that (`audit2/probe_carrier_corpus.py`): all four benign carriers score 100/A+ and are released at the default threshold, all four malicious ones are blocked (69/C and 49/D×3). The decisive distinction is **pipe into an interpreter**, not **download happened** — a download → checksum → execute script stays at 100.
+
+**中文** — 按 A-31，任何可能移动分数的改动都必须重跑本表。已复跑两次（引擎指纹 `867dc96189abf2bb`、`9ccad7ebcbfcfd9b`），结果与首次**逐格一致**，A-17 的结论不受这些引擎改动影响。同时如实披露：20 份语料里**没有** `.sh/.service/.ipynb/.hta` 样本，本表本身不度量新载体的误杀面；另跑了一组 4 良 4 恶载体语料（`audit2/probe_carrier_corpus.py`），良性载体 4 份全 100/A+ 且在默认门槛放行、恶意 4 份全被拦（69/C 与 49/D×3）。决定性的区分点是**是否管道进解释器**，不是**有没有下载过**——"下载 → 校验和 → 执行"保持 100 分。
+
 ---
 
 ## 6. Limits of this contract / 这份契约的边界
