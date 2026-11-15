@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 *.pyo.n.pytest_cache/
 node_modules/
+
+# scorecard.py 的生成物（跑一次就会写，不能进版本库）
+score/
+scores.md

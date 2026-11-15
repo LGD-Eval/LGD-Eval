@@ -2011,7 +2011,12 @@ if __name__ == "__main__":
         print("ℹ️ 单文件模式：已按标准技能目录包装评测（%s）" % os.path.basename(args.skill_path))
         print("   仅能评文本质量；结构/目录维度会因缺 LICENSE、README、scripts/ 扣分。完整评测请传目录。")
 
-    score, grade, dims, findings, warnings, veto_info = evaluate_skill(target, provenance=args.provenance)
+    # 具名结果。原先是 6 元位置解包——evaluate_skill 再加第 7 个返回项，
+    # CLI 就会 ValueErr，而 CLI 是零安装入口的第一条路。
+    _r = evaluate_skill_result(target, provenance=args.provenance)
+    score, grade, dims = _r["score"], _r["grade"], _r["dims"]
+    findings, warnings = _r["findings"], _r["warnings"]
+    veto_info = _r["safety_veto"]
 
     
     if args.ascii:
