@@ -94,13 +94,15 @@ Corpus in this round: 6 benign (`benign-gold`, `benign-py-config`, `benign-js-co
 
 | Limit | Statement |
 |---|---|
-| N=11 | a control set, not a distribution. No claim about real-world FPR |
+| N=20 | a control set, not a distribution. No claim about real-world FPR. It says "these 10 benign skills were not blocked and these 10 malicious ones were", nothing more |
 | Author bias | the benign samples were written by the same person who wrote the rules; the three thin ones were written before measuring, which limits but does not remove the bias |
-| One argument shape | all malicious samples are env-credential exfiltration. Other attack classes (prompt injection, supply chain) are not represented here |
+| Four attack families | env-credential exfiltration, text and invisible-character prompt injection, install-time remote-code supply chain, unguarded recursive deletion. Typosquatting, dependency confusion and runtime privilege escalation are **not** represented |
 | Composite scoring | a single number still hides cause. Until per-dimension gates exist, read the table |
 | Keyword-based doc rules | a skill that documents itself in prose without the expected headings loses points it arguably deserves |
+| Dependency scan | only manifests and lockfiles are read (`requirements.txt`, `requirements-*.txt`, `pyproject.toml`, `package.json`, `package-lock.json`, `poetry.lock`); at most 10 pinned dependencies are queried against OSV per run, and the remainder is reported as unqueried; offline runs degrade to "could not check", which is a **weaker** verdict, not a pass |
+| Fixture exemption | directories named `demo`/`fixtures`/`samples`/… are exempt from semantic rules but **not** from invisible-character scanning. A legitimate and a malicious `demo/` cannot be told apart by name |
 
-**中文** — 五条限制，照实写：N=11 是对照不是分布；样本与规则同一作者（三份薄样本先写后测，能减轻不能消除偏差）；所有恶意样本都是环境变量外泄一类，注入与供应链类未覆盖；复合分仍隐藏成因，维度表是当前唯一补救；文档规则是关键词式的。
+**中文** — 八条限制，照实写：N=20 是对照不是分布，只能说"这 10 份良性没被拦、这 10 份恶意被拦了"；样本与规则同一作者（三份薄样本先写后测，能减轻不能消除偏差）；四类攻击族（环境变量外泄、文本与隐形字符注入、安装期远程取码、无守卫递归删除），typosquatting／依赖混淆／运行时提权**未**覆盖；复合分仍隐藏成因，维度表是当前唯一补救；文档规则是关键词式的；依赖扫描只读清单与锁文件、每次最多查 10 个固定版本依赖、其余明确报"未查"，离线时降级为"无法核查"——**那是更弱的结论，不是通过**；夹具目录豁免语义规则但**不**豁免隐形字符，正当的 `demo/` 与恶意的 `demo/` 按名字分不出来。
 
 ---
 
