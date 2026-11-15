@@ -1902,6 +1902,82 @@ def _already_reported(result: ScanResult, filepath: str, category: str) -> bool:
                for f in result.findings)
 
 
+ARCHIVE_SUFFIXES = (".zip", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".7z", ".rar")
+BINARY_SUFFIXES = {".exe", ".dll", ".so", ".dylib", ".bin", ".pyc", ".node", ".wasm",
+                   ".class", ".jar"}
+
+
+def scan_carriers(skill_path: Path, result: ScanResult, should_exclude):
+    """未读载体披露：压缩包与二进制。
+
+    本引擎只读文本。压缩包里的 install 脚本、二进制里的载荷，一个字节都没看过。
+    实测（audit2/probe_carrier_coverage.py）：payload.zip / bundle.tgz 里藏
+    `os.system("curl … | sh")`、helper.exe 藏可执行载荷，修复前全部 0 命中，
+    **而且报告里一句不提**——用户会以为"扫过了，没问题"。
+
+    诚实原则：没读就说没读，不能静默通过。
+    """
+    arch, bina = [], []
+    for p in skill_path.rglob("*"):
+        if not p.is_file() or should_exclude(p):
+            continue
+        low = p.name.lower()
+        if low.endswith(ARCHIVE_SUFFIXES):
+            arch.append(p)
+        elif p.suffix.lower() in BINARY_SUFFIXES:
+            bina.append(p)
+
+    for p in arch:
+        result.findings.append(Finding(
+            severity="MEDIUM", category="coverage",
+            message="含压缩包但未拆包扫描：%s（载荷可能藏在里面，本引擎只读文本）"
+                    % p.relative_to(skill_path).as_posix(),
+            file=str(p), line=1
+        ))
+    for p in bina:
+        result.findings.append(Finding(
+            severity="MEDIUM", category="coverage",
+            message="含二进制/编译产物且未分析：%s（只做存在性披露）"
+                    % p.relative_to(skill_path).as_posix(),
+            file=str(p), line=1
+        ))
+
+
+def scan_case_variant_files(skill_path: Path, result: ScanResult, should_exclude):
+    """大小写变体后缀兜底（跨平台一致性）。
+
+    `rglob("*.py")` 是区分大小写的字符串匹配：Windows 上 `.PY` 侥幸能扫到
+    （文件系统不区分大小写），Linux 上同一份技能换个 `.PY` 就整块跳过。
+    判据必须与平台无关，所以按 suffix.lower() 再兜一遍。
+    """
+    CANON = {".py": "py", ".js": "js", ".ts": "js", ".mjs": "js", ".cjs": "js",
+             ".sh": "sh", ".ps1": "ps", ".bat": "ps", ".cmd": "ps"}
+    for p in skill_path.rglob("*"):
+        if not p.is_file() or should_exclude(p):
+            continue
+        raw = p.suffix
+        if not raw or raw.islower():
+            continue
+        kind = CANON.get(raw.lower())
+        if not kind:
+            continue
+        # Windows 的主循环其实已经扫过大写变体（文件系统不区分大小写），
+        # 这里只补"主循环漏掉"的情况，否则同一处会报两遍（实测踩过）
+        if any(f.file == str(p) for f in result.findings):
+            continue
+        if kind == "py":
+            scan_python_file(p, result)
+        elif kind == "js" and scan_js_file:
+            for sev, cat, msg, line in scan_js_file(p):
+                result.findings.append(Finding(
+                    severity=sev, category=cat, message=msg, file=str(p), line=line
+                ))
+        elif kind == "sh":
+            scan_shell_file(p, result)
+        elif kind == "ps":
+            scan_windows_script(p, result)
+
+
 def scan_config_secrets(filepath: Path, result: ScanResult):
     """配置文件里的硬编码密钥。
 
@@ -2289,6 +2365,12 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
             if _already_reported(result, str(cfg_file), "credential"):
                 continue        # 同一个文件被两条 glob 命中时不重复报
             scan_config_secrets(cfg_file, result)
+
+    # 大小写变体后缀：判据必须与平台无关（Linux 上 .PY 与 .py 是两回事）
+    scan_case_variant_files(skill_path, result, should_exclude)
+
+    # 未读载体披露：压缩包/二进制里的载荷一个字节都没看过，必须说出来
+    scan_carriers(skill_path, result, should_exclude)
 
     # 安装期脚本：package.json 的 postinstall 是一条装载代码的执行通道。
     # OWASP AST02 与 arXiv 2601.10338 都把它列为供应链风险的典型形态；
