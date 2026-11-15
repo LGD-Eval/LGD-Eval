@@ -2011,9 +2011,62 @@ def _already_reported(result: ScanResult, filepath: str, category: str) -> bool:
 ARCHIVE_SUFFIXES = (".zip", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".7z", ".rar")
 BINARY_SUFFIXES = {".exe", ".dll", ".so", ".dylib", ".bin", ".pyc", ".node", ".wasm",
                    ".class", ".jar"}
+DOC_SUFFIXES = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt",
+                ".png", ".jpg", ".jpeg", ".gif", ".md", ".csv", ".mp4", ".zip"}
+
+
+def scan_deceptive_names(skill_path: Path, result: ScanResult, should_exclude):
+    """伪装藏在名字里：三个形态都读内容读不出来。
+
+    A 双向控制符（U+202A–202E / U+2066–2069）：`invoice\\u202Efdp.exe` 在资源管理器与多数编辑器里
+      显示为 `invoiceexe.pdf`——审批弹窗给用户看的就是这个"名字"，点下去跑的是 exe。
+    B 零宽字符（U+200B–200D / U+2060 / U+FEFF）：`pay\\u200Bload.py` 与 `payload.py` 肉眼看不出差别，
+      按后缀分派时也会错位。
+    C 双扩展名：`report.pdf.exe`——Windows 默认隐藏已知扩展名，用户只看到 `report.pdf`。
+
+    实测（audit2/probe_name_coverage.py）：修复前 RLO 只在真被 .exe 落到"二进制披露"时才露面，
+    名字伪装本身一句不提；零宽名 0 命中。
+    """
+    BIDI = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A)) | {0x200F, 0x200E}
+    ZERO = set(range(0x200B, 0x200E)) | {0x2060, 0xFEFF, 0x00AD}
+
+    for p in skill_path.rglob("*"):
+        name = p.name
+        if not name or should_exclude(p):
+            continue
+
+        bad_bidi = [c for c in name if ord(c) in BIDI]
+        bad_zero = [c for c in name if ord(c) in ZERO]
+
+        if bad_bidi:
+            result.findings.append(Finding(
+                severity="HIGH", category="obfuscation",
+                message="文件名含双向控制符（U+%04X）：显示出来的名字与实际扩展名可能相反"
+                        % ord(bad_bidi[0]),
+                file=str(p), line=1
+            ))
+        elif bad_zero:
+            result.findings.append(Finding(
+                severity="MEDIUM", category="obfuscation",
+                message="文件名含零宽字符（U+%04X）：看起来与同名普通文件无法区分"
+                        % ord(bad_zero[0]),
+                file=str(p), line=1
+            ))
+
+        suffix = p.suffix.lower()
+        if suffix in BINARY_SUFFIXES:
+            stem_suffix = Path(name[:-len(p.suffix)]).suffix.lower()
+            if stem_suffix in DOC_SUFFIXES:
+                result.findings.append(Finding(
+                    severity="MEDIUM", category="obfuscation",
+                    message="双扩展名 %s：Windows 默认隐藏已知扩展名，用户会以为这是 %s"
+                            % (name, stem_suffix),
+                    file=str(p), line=1
+                ))
 
 
 def scan_carriers(skill_path: Path, result: ScanResult, should_exclude):
+
     """未读载体披露：压缩包与二进制。
 
     本引擎只读文本。压缩包里的 install 脚本、二进制里的载荷，一个字节都没看过。
@@ -2477,6 +2530,9 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
 
     # 未读载体披露：压缩包/二进制里的载荷一个字节都没看过，必须说出来
     scan_carriers(skill_path, result, should_exclude)
+
+    # 名字本身就是伪装：双向控制符/零宽字符/双扩展名，读内容永远读不出来
+    scan_deceptive_names(skill_path, result, should_exclude)
 
     # 被排除目录（demo/samples/tests/--exclude）：不计分，但里面有执行面就要披露
     scan_excluded_scope(skill_path, result, lambda p: True, ex_parts)
