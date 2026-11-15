@@ -704,10 +704,53 @@ SAFETY_CONTEXT_WORDS = (
 )
 
 
+def read_text_smart(filepath: Path) -> str:
+    """按 BOM 与真实编码解码，而不是一律当成 UTF-8。
+
+    为什么必须这样：引擎过去统一 `read_text(encoding="utf-8", errors="replace")`。
+    文件若是 UTF-16LE（Windows 记事本"另存为"的默认选项之一），读出来是一片替换字符，
+    于是**按内容匹配的规则全部失效**。
+
+    实测（audit2/probe_encoding_coverage.py）：
+      · UTF-16 的 .md（含零宽字符 + "Ignore all previous instructions"）→ 0 命中，
+        UTF-8 BOM 的同一份 → 5 命中。同一段文字，只因为编码不同就看不见。
+      · UTF-16 的 .py → Python 自己也拒绝执行（`source code string cannot contain null bytes`），
+        所以代码面是理论风险；**数据面（文档/配置）才是真漏洞**，因为模型照样能读到那些字。
+
+    顺序：BOM 嗅探 → UTF-8 严格 → GBK（中文 Windows 常见）→ 最后才退回替换模式。
+    """
+    try:
+        raw = filepath.read_bytes()
+    except OSError:
+        return ""
+
+    boms = (
+        (b"\xef\xbb\xbf", "utf-8-sig"),
+        (b"\xff\xfe\x00\x00", "utf-32-le"),
+        (b"\x00\x00\xfe\xff", "utf-32-be"),
+        (b"\xff\xfe", "utf-16-le"),
+        (b"\xfe\xff", "utf-16-be"),
+    )
+    for bom, enc in boms:
+        if raw.startswith(bom):
+            try:
+                return raw.decode(enc)
+            except UnicodeDecodeError:
+                break
+
+    for enc in ("utf-8", "gbk"):
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+
+    return raw.decode("utf-8", errors="replace")
+
+
 def scan_python_file(filepath: Path, result: ScanResult):
     """Scan a single Python file for dangerous patterns."""
     try:
-        content = filepath.read_text(encoding="utf-8", errors="replace")
+        content = read_text_smart(filepath)
     except Exception as e:
         result.findings.append(Finding(
             severity="LOW", category="file-read",
@@ -961,7 +1004,7 @@ def scan_python_file(filepath: Path, result: ScanResult):
 def scan_md_file(filepath: Path, result: ScanResult):
     """Scan a Markdown file for prompt injection patterns AND credential leaks."""
     try:
-        content = filepath.read_text(encoding="utf-8", errors="replace")
+        content = read_text_smart(filepath)
     except Exception:
         return
 
@@ -1246,7 +1289,7 @@ def _load_private_inventory(skill_path: Path):
     if not p.exists():
         return None
     try:
-        data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        data = json.loads(read_text_smart(p))
     except Exception:
         return {"error": "无法解析 private-packages.json"}
     if not isinstance(data, dict):
@@ -1461,7 +1504,7 @@ def scan_dependencies(skill_path: Path, result: ScanResult):
     unparsed = []        # pyproject 在没有 tomllib 时 / package.json 坏了
     for dep_file in dep_files:
         try:
-            content = dep_file.read_text(encoding="utf-8", errors="replace")
+            content = read_text_smart(dep_file)
         except Exception:
             continue
         if dep_file.name == "poetry.lock":
@@ -1631,7 +1674,7 @@ def scan_dependencies(skill_path: Path, result: ScanResult):
 def scan_shell_file(filepath: Path, result: ScanResult):
     """Scan a shell script for dangerous patterns."""
     try:
-        content = filepath.read_text(encoding="utf-8", errors="replace")
+        content = read_text_smart(filepath)
     except Exception:
         return
 
@@ -1656,7 +1699,7 @@ def scan_shell_file(filepath: Path, result: ScanResult):
 def parse_frontmatter(filepath: Path, result: ScanResult):
     """Parse YAML frontmatter from SKILL.md."""
     try:
-        content = filepath.read_text(encoding="utf-8", errors="replace")
+        content = read_text_smart(filepath)
     except Exception:
         return
 
@@ -2053,7 +2096,7 @@ def scan_config_secrets(filepath: Path, result: ScanResult):
     不做"出现 password 一词就报"的宽判据，否则每个模板都会中招。
     """
     try:
-        text = filepath.read_text(encoding="utf-8", errors="replace")
+        text = read_text_smart(filepath)
     except OSError:
         return
     if len(text) > 2_000_000:
@@ -2115,7 +2158,7 @@ def scan_windows_script(filepath: Path, result: ScanResult):
       其余命中 REMOTE_EXEC_PATTERNS                                         → CRITICAL
     """
     try:
-        text = filepath.read_text(encoding="utf-8", errors="replace")
+        text = read_text_smart(filepath)
     except OSError:
         return
     low = text.lower()
@@ -2170,7 +2213,7 @@ def scan_gyp_file(filepath: Path, result: ScanResult):
       其余命令展开                              → HIGH（安装期执行任意命令）
     """
     try:
-        text = filepath.read_text(encoding="utf-8", errors="replace")
+        text = read_text_smart(filepath)
     except OSError:
         return
     # gyp 命令展开：<!@(...) 执行并按行分割输出；<!... 直接内联输出
@@ -2202,7 +2245,7 @@ def scan_package_install_scripts(pkg_file: Path, result: ScanResult):
     本地脚本（node ./scripts/x.mjs）是正常构建动作，报了就是误伤。
     """
     try:
-        pkg = json.loads(pkg_file.read_text(encoding="utf-8", errors="replace"))
+        pkg = json.loads(read_text_smart(pkg_file))
     except (OSError, ValueError):
         return
     scripts = pkg.get("scripts") or {}
@@ -2260,7 +2303,7 @@ def has_path_guard(lines, line_no):
 def scan_invisible_file(filepath: Path, result: ScanResult):
     """对任意文本文件做不可见字符扫描（元数据、配置同样承载指令）。"""
     try:
-        text = filepath.read_text(encoding="utf-8", errors="replace")
+        text = read_text_smart(filepath)
     except OSError:
         return
     for cp, label, _ctx in invisible_payloads(text):
