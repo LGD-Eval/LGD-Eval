@@ -1896,6 +1896,45 @@ REMOTE_EXEC_PATTERNS = (
 )
 
 
+def scan_gyp_file(filepath: Path, result: ScanResult):
+    """构建文件（binding.gyp / *.gyp）里的命令展开 → 安装期执行。
+
+    为什么单列一条：`<!@(cmd)` 与 `<!xx` 是 gyp 的"命令展开"语法，node-gyp 生成阶段
+    会真的把 cmd 交给 shell 跑。npm 文档写得很清楚：包里有 binding.gyp 且没自定义
+    install/preinstall，npm 就把 install 默认设为 `node-gyp rebuild`
+    （https://docs.npmjs.com/cli/v11/commands/npm-rebuild/）。
+    所以这是"安装期执行代码"的一个成员，与 postinstall 同类，只是写在了另一个文件里。
+
+    判级：
+      命令里出现远程取码（curl/wget/iwr/http）→ CRITICAL（取远程代码并执行）
+      其余命令展开                              → HIGH（安装期执行任意命令）
+    """
+    try:
+        text = filepath.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    # gyp 命令展开：<!@(...) 执行并按行分割输出；<!... 直接内联输出
+    for m in re.finditer(r"<![@!]?\(([^)]+)\)|<!([^\s)>]+)", text):
+        cmd = (m.group(1) or m.group(2) or "").strip()
+        if not cmd:
+            continue
+        low = cmd.lower()
+        remote = ("curl" in low or "wget" in low or "iwr" in low
+                  or "invoke-webrequest" in low or "http://" in low or "https://" in low)
+        if remote:
+            result.findings.append(Finding(
+                severity="CRITICAL", category="supply-chain",
+                message="构建文件在生成阶段从远程取代码并执行（installation-time）：%s" % cmd[:80],
+                file=str(filepath), line=1
+            ))
+        else:
+            result.findings.append(Finding(
+                severity="HIGH", category="supply-chain",
+                message="构建文件在生成阶段执行 shell 命令（installation-time）：%s" % cmd[:80],
+                file=str(filepath), line=1
+            ))
+
+
 def scan_package_install_scripts(pkg_file: Path, result: ScanResult):
     """package.json 的安装钩子里出现远程取码执行 → CRITICAL。
 
@@ -1923,9 +1962,21 @@ def scan_package_install_scripts(pkg_file: Path, result: ScanResult):
                 ))
                 break
 
+    # 隐式安装钩子：有 binding.gyp 又没有自定义 install/preinstall 时，
+    # npm 会把 install 默认成 `node-gyp rebuild`。这不是缺陷，是必须如实说出来的事实——
+    # 扫描器不追编译期行为，报告里得让人知道"安装时会编译"，否则"没报=没问题"是假安心。
+    if (pkg_file.parent / "binding.gyp").is_file():
+        if not (scripts.get("install") or scripts.get("preinstall")):
+            result.findings.append(Finding(
+                severity="MEDIUM", category="supply-chain",
+                message=("安装期将隐式执行 node-gyp rebuild（npm 默认行为；本扫描器不追编译期行为，"
+                         "已另行扫描 .gyp 里的命令展开）"),
+                file=str(pkg_file), line=1
+            ))
 
-# 路径守卫的写法：删除前先校验"目标在工作目录内"。只认这些具体惯用法，
-# 不认"文件里出现过 raise"这类宽泛信号（那样恶意样本也能被放过）。
+
+# 路径守卫的写法：删除前先校验“目标在工作目录内”。只认这些具体惯用法，
+# 不认“文件里出现过 raise”这类宽泛信号（那样恶意样本也能被放过）。
 PATH_GUARD_MARKERS = (
     "is_relative_to",
     ".startswith(",
@@ -2099,6 +2150,17 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
         if should_exclude(pkg_file):
             continue
         scan_package_install_scripts(pkg_file, result)
+        result.files_scanned += 1
+
+    # 同一类的另一条通道：binding.gyp / *.gyp 里的 `<!@(cmd)` 会在生成阶段执行 shell。
+    # 实测（audit2/probe_install_bypass.py）：同样的 curl|sh，写在 postinstall 报 CRITICAL，
+    # 写在 binding.gyp 里 0 命中——"例子通过、类没通过"。
+    # npm 文档：有 binding.gyp 且未定义 install/preinstall 时，install 默认就是 node-gyp rebuild
+    # （docs.npmjs.com/cli/v11/commands/npm-rebuild/），所以这是安装期真会跑的一步。
+    for gyp_file in list(skill_path.rglob("*.gyp")):
+        if should_exclude(gyp_file):
+            continue
+        scan_gyp_file(gyp_file, result)
         result.files_scanned += 1
 
     # Scan dependencies for known vulnerabilities
