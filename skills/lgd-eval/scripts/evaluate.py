@@ -52,23 +52,46 @@ def _rule_ids_for(findings):
 CRIT_IDS = {"R-SEC-09", "R-SEC-10", "R-SEC-21", "R-SEC-22"}          # 已证实的凭证 / 环境变量外泄 / 隐形注入
 
 # 不可见字符区间：正则看不见它们，必须按码位扫（CSA 2026-03 的 Unicode Tags 注入）
+#
+# 2026-11-15 红队复测（灭类不灭例）：原先只有三段（Tags / 零宽 / 格式），
+# 同一风险类里另有 9 类能被静默承载的字符完全漏检。这里按"类"补齐，
+# 每段带 min_count：软连字符、盲文空白、谚文填充符这类正常排版偶尔出现一次
+# 不算攻击，≥2 次才报；Tags 块、变体选择符补充区、双向控制符这类强载体，1 个即报。
+# 刻意不收 U+FE00–U+FE0F（emoji 的合法变体选择符，收了等于给所有 emoji 文档报 CRITICAL）。
 INVISIBLE_RANGES = (
-    (0xE0000, 0xE007F, "Unicode Tags 块（隐形承载 ASCII 指令）"),
-    (0x200B, 0x200F, "零宽字符"),
-    (0x2060, 0x2064, "不可见格式字符"),
+    (0xE0000, 0xE007F, "Unicode Tags 块（隐形承载 ASCII 指令）", 1),
+    (0x200B, 0x200F, "零宽字符", 1),
+    (0x2060, 0x2064, "不可见格式字符", 1),
+    (0x061C, 0x061C, "阿拉伯字母标记（控制阅读方向）", 1),
+    (0x202A, 0x202E, "双向控制符（可反转显示顺序）", 1),
+    (0x2066, 0x2069, "双向隔离符", 1),
+    (0xFEFF, 0xFEFF, "零宽不换行空格（BOM 字符）", 1),
+    (0x1D173, 0x1D17A, "音乐符号格式控制符", 1),
+    (0xE0100, 0xE01EF, "变体选择符补充区（隐形承载数据）", 1),
+    (0x00AD, 0x00AD, "软连字符", 2),
+    (0x180E, 0x180E, "蒙古文元音分隔符", 2),
+    (0x2800, 0x2800, "盲文空白", 2),
+    (0x3164, 0x3164, "谚文填充符", 2),
+    (0xFFA0, 0xFFA0, "半角谚文填充符", 2),
 )
 
 
 def _invisible_hits(text):
-    """返回 [(码位, 区间名)]，每个区间只报一次，避免一部文档刷出几十条。"""
-    hits = {}
+    """返回 [(码位, 区间名)]，每个区间只报一次，避免一部文档刷出几十条。
+
+    阈值语义见 INVISIBLE_RANGES 的第四列：普通排版里偶发一次的字符不报。
+    """
+    counts = {}
+    first = {}
     for ch in text:
         cp = ord(ch)
-        for lo, hi, label in INVISIBLE_RANGES:
+        for lo, hi, label, min_n in INVISIBLE_RANGES:
             if lo <= cp <= hi:
-                hits.setdefault(label, cp)
+                counts[label] = counts.get(label, 0) + 1
+                first.setdefault(label, cp)
                 break
-    return [(cp, label) for label, cp in hits.items()]
+    return [(first[label], label) for label, n in counts.items()
+            if n >= next(r[3] for r in INVISIBLE_RANGES if r[2] == label)]
 
 # 评分与授权分离：评测只给结论，授权只能由人单独授予。
 # 此前按分数直接打印「L0 免审批（可直接运行）」，等于一个数字替人签了授权。
