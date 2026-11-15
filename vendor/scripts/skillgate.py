@@ -397,6 +397,8 @@ ACTIVE_RULE_TABLES = (
     "PROMPT_INJECTION_PATTERNS",
     "INSTALL_HOOKS",
     "REMOTE_EXEC_PATTERNS",
+    # §3as：配置里的"远程下载落盘"写法（certutil/bitsadmin/curl -o/Invoke-WebRequest -OutFile）
+    "REMOTE_DOWNLOAD_PATTERNS",
 )
 
 RULE_TABLES_DECLARED_OFF = {
@@ -790,11 +792,21 @@ def _binary_reason(filepath: Path, sniff: int = 65536):
             return what
     if b"\x00" in raw:
         return "含 NUL 字节"
-    try:
-        _decode_bytes_strict(raw)
-        return None
-    except UnicodeDecodeError:
-        return "按 UTF-8/UTF-16/GBK 均无法解码"
+    # 窗口是从大文件切出来的：窗口末尾可能正好切在一个多字节字符中间。
+    # 直接拿截断窗口做严格解码，会把**正常的大文本文件**判成二进制
+    # （实测：skillgate.py 长到 180 KB 后，第 65536 字节落在一个中文字符中间，
+    #   自扫立刻多出一条 HIGH「内容是二进制」——§3ap 修复自带的假阳性）。
+    # 所以只读窗口时，先容掉末尾几个字节再判；真二进制在任何切点都解不出来。
+    truncated = len(raw) >= sniff
+    tail_cuts = (0, 1, 2, 3, 4, 5, 6, 7, 8) if truncated else (0,)
+    for cut in tail_cuts:
+        probe = raw[:len(raw) - cut] if cut else raw
+        try:
+            _decode_bytes_strict(probe)
+            return None
+        except UnicodeDecodeError:
+            continue
+    return "按 UTF-8/UTF-16/GBK 均无法解码"
 
 
 def scan_binary_in_text(skill_path: Path, result: ScanResult, should_exclude):
@@ -2663,6 +2675,118 @@ def scan_package_install_scripts(pkg_file: Path, result: ScanResult):
             ))
 
 
+CONFIG_EXEC_NAMES = {
+    ".mcp.json", "mcp.json", "mcp_config.json", "plugin.json", "manifest.json",
+    "hooks.json", "settings.json", "config.json",
+}
+CONFIG_EXEC_KEYS = {
+    "command", "cmd", "script", "entry", "run", "exec", "shell", "args",
+    "postinstall", "preinstall", "prepare", "prepublish", "install",
+}
+# 这些键下面挂的东西天然是"要被执行的"（Claude hooks / MCP 服务器 / npm scripts）
+CONFIG_EXEC_CONTAINERS = {"hooks", "mcpservers", "scripts", "commands", "lifecycle"}
+SHELL_INTERP_RE = re.compile(
+    r"(?:^|[\s\"'`;&|(])(?:bash|dash|sh|zsh|fish|cmd(?:\.exe)?|powershell(?:\.exe)?|pwsh|"
+    r"python[0-9.]*|node|perl|ruby)\s+(?:-c\b|/c\b|-Command\b|-e\b|--eval\b|--exec\b)",
+    re.I)
+# 远程取二进制/脚本的另一套写法：不经过管道，直接落盘（certutil/bitsadmin/curl -o）
+REMOTE_DOWNLOAD_PATTERNS = (
+    r"certutil[^\n]*-(?:urlcache|decode)",
+    r"bitsadmin\s+/transfer",
+    r"(?:curl|wget)[^\n]*(?:\s-o\s|\s-O\s|--output)",
+    r"invoke-webrequest[^\n]*-outfile",
+    r"start-bitstransfer[^\n]*-destination",
+)
+
+
+def _iter_config_strings(node, trail=()):
+    """把 JSON 里所有字符串连同它的键路径摊平。"""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            for item in _iter_config_strings(v, trail + (str(k),)):
+                yield item
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            for item in _iter_config_strings(v, trail + ("[%d]" % i,)):
+                yield item
+    elif isinstance(node, str):
+        yield trail, node
+
+
+def _is_config_exec_carrier(path: Path) -> bool:
+    name = path.name.lower()
+    if name in CONFIG_EXEC_NAMES:
+        return True
+    # 点目录下的配置（.claude/.codex/.cursor/.gemini/…）同样是加载期入口
+    return path.parent.name.startswith(".")
+
+
+def scan_config_exec(skill_path: Path, result: ScanResult, should_exclude):
+    """配置文件里的执行入口：读的是配置，跑的是命令。
+
+    实测（audit2/probe_config_exec.py，修复前）：
+      · `.claude/settings.json` 的 PreToolUse hook 写着 `curl … | sh` + `iwr … | iex` → **100/A+，一条不报**
+      · `.mcp.json` 的 mcpServers 写着 `bash -c "curl … | sh"` 与 `certutil -urlcache` → **100/A+**
+      · `plugin.json` 带 `postinstall: curl … | sh` → **100/A+**
+    三者都是 .json：人按"配置"读，机器按"命令"跑。§3aa 只堵了 package.json，
+    于是"例子通过、类没通过"——同一条通道换个文件名就全绿。
+
+    分级（避免把正常 MCP/hook 全判红）：
+      CRITICAL：配置里声明了"从远程取代码并执行"（计分）
+      HIGH    ：配置里声明 shell 解释器 + `-c`/`/c`/`-Command` 形式（任意命令执行面，计分）
+      MEDIUM  ：只是声明了一个执行入口（不计分，仅披露——正常 hook 也有 command）
+    """
+    for path in skill_path.rglob("*.json"):
+        if not path.is_file() or should_exclude(path):
+            continue
+        if not _is_config_exec_carrier(path):
+            continue
+        if _already_reported(result, str(path), "config-exec"):
+            continue
+        try:
+            doc = json.loads(read_text_smart(path))
+        except (OSError, ValueError):
+            continue
+        for trail, s in _iter_config_strings(doc):
+            if not s.strip():
+                continue
+            low = s.lower()
+            key = trail[-1].lower() if trail else ""
+            in_container = any(t.lower() in CONFIG_EXEC_CONTAINERS for t in trail)
+            if not (key in CONFIG_EXEC_KEYS or in_container):
+                continue
+            remote = next((p for p in REMOTE_EXEC_PATTERNS if re.search(p, low)), None)
+            if remote:
+                result.findings.append(Finding(
+                    severity="CRITICAL", category="config-exec",
+                    message="配置里的执行入口从远程取代码并运行（%s）：%s"
+                            % ("/".join(trail[-2:]), s[:80]),
+                    file=str(path), line=1
+                ))
+                continue
+            if any(re.search(p, low) for p in REMOTE_DOWNLOAD_PATTERNS):
+                result.findings.append(Finding(
+                    severity="CRITICAL", category="config-exec",
+                    message="配置里的执行入口从远程下载文件到本地（certutil/bitsadmin/curl -o 类）：%s"
+                            % s[:80],
+                    file=str(path), line=1
+                ))
+                continue
+            if SHELL_INTERP_RE.search(s):
+                result.findings.append(Finding(
+                    severity="HIGH", category="config-exec",
+                    message="配置里声明了 shell 解释器直执行（任意命令执行面）：%s" % s[:80],
+                    file=str(path), line=1
+                ))
+                continue
+            if key in ("command", "cmd", "script", "entry", "run", "exec"):
+                result.findings.append(Finding(
+                    severity="MEDIUM", category="config-exec",
+                    message="配置声明了执行入口（加载/调用时会运行，未取远程代码）：%s" % s[:80],
+                    file=str(path), line=1, scoring=False
+                ))
+
+
 # 路径守卫的写法：删除前先校验“目标在工作目录内”。只认这些具体惯用法，
 # 不认“文件里出现过 raise”这类宽泛信号（那样恶意样本也能被放过）。
 PATH_GUARD_MARKERS = (
@@ -3147,6 +3271,10 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
             continue
         scan_package_install_scripts(pkg_file, result)
         result.files_scanned += 1
+
+    # 同一类通道换个文件名就全绿：hooks / MCP 服务器定义 / 插件清单同样是
+    # "读着是配置、跑起来是命令"（audit2/probe_config_exec.py，修复前均 100/A+）。
+    scan_config_exec(skill_path, result, should_exclude)
 
     # 同一类的另一条通道：binding.gyp / *.gyp 里的 `<!@(cmd)` 会在生成阶段执行 shell。
     # 实测（audit2/probe_install_bypass.py）：同样的 curl|sh，写在 postinstall 报 CRITICAL，
