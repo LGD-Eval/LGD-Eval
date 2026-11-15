@@ -698,6 +698,91 @@ def _destructive_verb_verdict(tokens):
     return None
 
 
+# ── §3bk 远程取回即执行：代码不是本地写的，是从网上下载来就直接跑 ──────────
+# 为什么单列一类：`curl … | sh` 只是"管道喂解释器"的一种写法，而真实攻击面还有
+#   `iwr https://… | iex`、`iex (New-Object Net.WebClient).DownloadString(…)`、
+#   `bash <(curl …)`、`certutil -urlcache -split -f` / `mshta http://…` /
+#   `regsvr32 /i:http…scrobj.dll` / `bitsadmin /transfer` 这类"拿系统自带程序代跑"
+#   （MITRE T1105 把工具拉进来 + T1218 代理执行），以及 `npx <pkg>`、`uvx <tool>`、
+#   `deno run <url>`、`pip install <url>` 这种"远程包/远程脚本直接执行"。
+# 判定要点：**取回**与**执行**同时出现才算；只下载存盘（curl -o / iwr -OutFile）不判，
+# 否则正常的下载类技能会被误杀。判据词一律拼接，避免本仓自扫被自己的文本表命中。
+_RF = _assemble("cur", "l|wget|iwr|irm|invoke-webrequest|invoke-restmethod")
+_SINK = _assemble("sh|bash|zsh|dash|ksh|fish|python[0-9.]*|perl|ruby|node|php|"
+                  "iex|invoke-expression|powershell|pwsh")
+_RF_PIPE_RE = re.compile(r"(?:" + _RF + r")\b[\s\S]{0,200}?\|\s*(?:sudo\s+)?"
+                         r"(?:" + _SINK + r")\b", re.I)
+_RF_PROCSUB_RE = re.compile(r"(?:<\s*\(|=\s*\(\s*\()\s*(?:" + _RF + r")\b", re.I)
+# PowerShell：iex / Invoke-Expression 与"下载"两个方向都要接住
+_DLWORD = _assemble("download", "string|download", "file")
+_PS_EXEC_RE = re.compile(
+    r"(?:" + _assemble("iex", r"|invoke-expression") + r")[\s\S]{0,160}?"
+    r"(?:" + _DLWORD + r"|" + _RF + r")", re.I)
+_PS_EXEC_RE2 = re.compile(
+    r"(?:" + _DLWORD + r")[\s\S]{0,160}?"
+    r"(?:" + _assemble("iex", r"|invoke-expression") + r")", re.I)
+# 代码里"先取后算"：fetch/urlopen/requests 再 eval/exec/Function
+_RF_EVAL_RE = re.compile(
+    r"(?:fetch\s*\(|urlopen\s*\(|req\w*\.get\s*\(|requests\.get\s*\()"
+    r"[\s\S]{0,200}?(?:\.then\s*\(\s*eval\s*\)|\beval\s*\(|\bexec\s*\(|new\s+Function\s*\()",
+    re.I)
+# 反向也成立：`exec(urlopen(…).read())`、`eval((await fetch(…)).text())`
+_RF_EVAL_RE2 = re.compile(
+    r"(?:\beval\s*\(|\bexec\s*\(|new\s+Function\s*\()"
+    r"[\s\S]{0,200}?(?:urlopen\s*\(|fetch\s*\(|requests\.get\s*\(|\bwget\b|\bcurl\b|https?://)",
+    re.I)
+_URLARG_RE = re.compile(r"(?:https?://|git\+https?://)", re.I)
+_PROXY_DL_BINS = {_assemble("cert", "util"), _assemble("bits", "admin"),
+                  _assemble("msh", "ta"), _assemble("regs", "vr32")}
+_PKG_RUNNERS = {"npx", "uvx", "bunx", "pnpx"}
+
+
+def _remote_exec_verdict(tokens):
+    """返回 (severity, reason) 或 None：代码来自网络并且被执行。"""
+    if not tokens:
+        return None
+    base = _basename(tokens[0])
+    tail = " ".join(t for t in tokens[1:] if isinstance(t, str)).lower()
+
+    # 1) 系统自带程序代跑（不需要 shell 字符串，本身就是下载+执行链）
+    if base in _PROXY_DL_BINS:
+        if base == _assemble("cert", "util") and "urlcache" in tail and _URLARG_RE.search(tail):
+            return "HIGH", "%s 直接从网络拉取文件落盘（urlcache）" % base
+        if base == _assemble("bits", "admin") and "/transfer" in tail and _URLARG_RE.search(tail):
+            return "HIGH", "%s 后台传输从网络拉取可执行件" % base
+        if base == _assemble("msh", "ta") and _URLARG_RE.search(tail):
+            return "HIGH", "%s 直接执行远程 HTA 脚本" % base
+        if base == _assemble("regs", "vr32") and ("scrobj" in tail or "/i:http" in tail):
+            return "HIGH", "%s 用 scrobj.dll 代理执行远程脚本" % base
+
+    # 2) 解释器/外壳的参数里带着"取回—执行"链
+    for tok in tokens[1:]:
+        if not isinstance(tok, str):
+            continue
+        if _RF_PIPE_RE.search(tok) or _RF_PROCSUB_RE.search(tok):
+            return "CRITICAL", "远程内容直接交给解释器执行（取回即执行）"
+        if _PS_EXEC_RE.search(tok) or _PS_EXEC_RE2.search(tok):
+            return "CRITICAL", "下载后立即执行（iex / Invoke-Expression + 网络取回）"
+        if _RF_EVAL_RE.search(tok) or _RF_EVAL_RE2.search(tok):
+            return "CRITICAL", "从网络取回内容后立即求值（fetch/urlopen + eval/exec）"
+
+    # 3) 远程包 / 远程脚本直接跑
+    if base in _PKG_RUNNERS:
+        args = [t for t in tokens[1:] if isinstance(t, str) and not t.strip().startswith("-")]
+        if args:
+            return "HIGH", "%s 拉取并执行远程包（%s）" % (base, args[0][:40])
+    if base in {"deno", "bun"} and "run" in [t.lower() for t in tokens[1:]] \
+            and _URLARG_RE.search(tail):
+        return "HIGH", "%s run 直接执行远程脚本" % base
+    if base in {"pip", "pip3", "uv"} and "install" in [t.lower() for t in tokens[1:]] \
+            and _URLARG_RE.search(tail):
+        return "HIGH", "%s 安装远程归档/仓库直接产物（未走索引）" % base
+    if base in {"npm", "pnpm", "yarn"} and _URLARG_RE.search(tail) \
+            and any(t.lower() in {"install", "i", "add"} for t in tokens[1:]):
+        return "HIGH", "%s 从 URL 直接安装包（未走索引）" % base
+    return None
+
+
 def _inline_code_verdict(code: str):
     """看内联脚本的正文，而不是只看"有没有字符串"。"""
     if not code:
@@ -943,6 +1028,11 @@ def destructive_tokens(tokens, depth: int = 0):
     verb = _destructive_verb_verdict(tokens)
     if verb:
         return verb
+
+    # §3bk：远程取回即执行（取回 + 执行同时出现才算，只下载不判）
+    remote = _remote_exec_verdict(tokens)
+    if remote:
+        return remote
 
     # §3bh：先按"参数形状"判，不看程序名。程序名白名单只当加速器，
     # 位置参数、未登记开关上的代码由这一步兜住。
