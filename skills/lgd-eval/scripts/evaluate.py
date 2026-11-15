@@ -102,6 +102,11 @@ AUTHORIZATION_STATUS = "NOT_GRANTED"
 ENGINE_NAME = "evaluate.py"
 ENGINE_VERSION = "1.1.0"
 
+# CI 默认门槛的唯一定义。此前 lgd_audit.py 自己在退出码里写了一份 90，
+# action.yml 里写了一份 90 —— 改一处不改另一处，两处就会各说各话。
+# 值必须与 action.yml 的 inputs.threshold.default 一致，由 tests/test_double_source.py 钉住。
+DEFAULT_THRESHOLD = 90
+
 # 评测来源必须可区分：维护者自评 / 自动化评测 / 无关联第三方复核。
 # 自评不得对外称第三方认证，这条是审计里的 P0。
 PROVENANCE_LABELS = {
