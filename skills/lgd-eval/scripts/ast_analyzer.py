@@ -149,6 +149,9 @@ class DangerousCallVisitor(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call):
         # Get the full function name (e.g. "os.system", "subprocess.run")
         func_name = self._get_func_name(node.func)
+        # §3bf：别名先翻译——`run = subprocess.run` 之后，判据必须还认得它
+        aliases = getattr(self, "aliases", None) or {}
+        func_name = aliases.get(func_name, func_name)
 
         if func_name in self.CALL_SEVERITY:
             sev_dyn, sev_lit, msg = self.CALL_SEVERITY[func_name]
@@ -339,33 +342,176 @@ def _const_str(expr):
     return expr.value if isinstance(expr, ast.Constant) and isinstance(expr.value, str) else None
 
 
-def static_argv(node, func_name: str):
+# ── §3bf 常量折叠：把"藏进变量"的字面量折回来 ────────────────────────────
+def _fold_str(expr, consts, depth: int = 0):
+    """把表达式折成一个字符串；折不出来返回 None（不猜）。"""
+    if expr is None or depth > 4:
+        return None
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+        return expr.value
+    if isinstance(expr, ast.Name):
+        return consts.get(expr.id) if consts else None
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+        left = _fold_str(expr.left, consts, depth + 1)
+        right = _fold_str(expr.right, consts, depth + 1)
+        return (left + right) if (left is not None and right is not None) else None
+    if isinstance(expr, ast.JoinedStr):
+        parts = []
+        for v in expr.values:
+            if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                parts.append(v.value)
+            elif isinstance(v, ast.FormattedValue):
+                inner = _fold_str(v.value, consts, depth + 1)
+                if inner is None:
+                    return None
+                parts.append(inner)
+            else:
+                return None
+        return "".join(parts)
+    if isinstance(expr, (ast.List, ast.Tuple)):
+        # 列表本身不折成字符串，交给 _fold_argv
+        return None
+    return None
+
+
+def _fold_argv(expr, consts):
+    """列表/元组逐项可折叠 → token 列表；有一项取不到就整体放弃。"""
+    if not isinstance(expr, (ast.List, ast.Tuple)):
+        return None
+    out = []
+    for elt in expr.elts:
+        v = _fold_str(elt, consts)
+        if v is None:
+            if isinstance(elt, ast.Constant) and not isinstance(elt.value, str):
+                continue
+            return None
+        out.append(v)
+    return out or None
+
+
+def _mentions_tempfile(expr) -> bool:
+    """表达式里是否出现 tempfile 的临时目录产物。"""
+    names = []
+    for sub in ast.walk(expr):
+        if isinstance(sub, ast.Call):
+            fn = sub.func
+            if isinstance(fn, ast.Attribute):
+                names.append(fn.attr)
+            elif isinstance(fn, ast.Name):
+                names.append(fn.id)
+        elif isinstance(sub, ast.Attribute):
+            names.append(sub.attr)
+    return any(n in {"mkdtemp", "mkstemp", "TemporaryDirectory", "tempfile", "gettempdir",
+                     "NamedTemporaryFile", "TemporaryFile"} for n in names)
+
+
+def _dotted(expr) -> str:
+    """把 Name/Attribute 链折成 "subprocess.run" 这样的点号名；折不出来返回空串。"""
+    if isinstance(expr, ast.Name):
+        return expr.id
+    if isinstance(expr, ast.Attribute):
+        parent = _dotted(expr.value)
+        return (parent + "." + expr.attr) if parent else expr.attr
+    return ""
+
+
+_ALIAS_MODULES = {"subprocess", "os", "shutil", "yaml", "pickle", "marshal", "runpy",
+                  "ctypes", "importlib", "pty", "shelve", "dill", "jsonpickle"}
+
+
+def collect_func_aliases(tree):
+    """§3bf：`run = subprocess.run` 之后 registry 认不出"run"。
+    同族还有 `from subprocess import run` / `P = subprocess.Popen`。
+    这里只收"别名 → 点号名"的映射，判定前先翻译一次。
+    """
+    aliases = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name):
+            dotted = _dotted(node.value)
+            if dotted and "." in dotted:
+                aliases[node.targets[0].id] = dotted
+        elif isinstance(node, ast.ImportFrom) and node.module in _ALIAS_MODULES:
+            # `from subprocess import Popen` 之后调用点写的是裸名 "Popen"，
+            # registry 里存的是 "subprocess.Popen"——必须翻译，否则整族失明。
+            for a in node.names:
+                aliases[a.asname or a.name] = "%s.%s" % (node.module, a.name)
+    return aliases
+
+
+def collect_consts(tree):
+    """收集可折叠的简单赋值，返回 (const_map, temp_names)。
+
+    同一名字在不同作用域被赋成不同值 → 判为不可知、丢掉。
+    宁可判不了，也不许因撞名把良性当破坏（或反过来）。
+    """
+    raw, temps = {}, set()
+    for node in ast.walk(tree):
+        targets, value = [], None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            targets, value = [node.targets[0]], node.value
+        elif isinstance(node, ast.AnnAssign) and getattr(node, "value", None) is not None:
+            targets, value = [node.target], node.value
+        if not targets or not isinstance(targets[0], ast.Name):
+            continue
+        name = targets[0].id
+        if value is not None and _mentions_tempfile(value):
+            temps.add(name)
+            continue
+        raw.setdefault(name, []).append(value)
+
+    consts = {}
+    lists = {}
+    for _ in range(4):  # 多轮：允许 B = A 的链式别名、以及列表里含变量名
+        for name, vals in raw.items():
+            if name in consts or name in lists:
+                continue
+            if all(isinstance(v, (ast.List, ast.Tuple)) for v in vals if v is not None):
+                folded = [_fold_argv(v, consts) for v in vals]
+                distinct = {tuple(f) for f in folded if f is not None}
+                if len(distinct) == 1 and all(f is not None for f in folded):
+                    lists[name] = list(distinct.pop())
+                continue
+            folded = [_fold_str(v, consts, 1) for v in vals]
+            distinct = {f for f in folded if f is not None}
+            if len(distinct) == 1 and all(f is not None for f in folded):
+                consts[name] = distinct.pop()
+    return consts, temps, lists
+
+
+def static_argv(node, func_name: str, consts=None, temps=None, lists=None):
     """取静态 argv：列表/元组全常量，或单个常量字符串（按空白切）。
 
-    取不齐（有变量、有 **kwargs、有拼接）就返回 None —— 宁可不判，不猜。
+    取不齐（有变量无法折叠、有 **kwargs）就返回 None —— 宁可不判，不猜。
     """
+    consts = consts or {}
+    lists = lists or {}
     if func_name.endswith("rmtree"):
-        tgt = _const_str(node.args[0]) if node.args else None
+        if not node.args:
+            return None
+        if isinstance(node.args[0], ast.Name) and temps and node.args[0].id in temps:
+            return ["<tempfile>"]
+        tgt = _fold_str(node.args[0], consts)
         return [tgt] if tgt else None
     if not node.args:
         return None
     first = node.args[0]
     if isinstance(first, (ast.List, ast.Tuple)):
-        vals = []
-        for elt in first.elts:
-            v = _const_str(elt)
-            if v is None:
-                # os.P_NOWAIT 这类常量整数在 spawn* 里允许出现
-                if isinstance(elt, ast.Constant) and not isinstance(elt.value, str):
-                    continue
-                return None
-            vals.append(v)
-        return vals or None
+        return _fold_argv(first, consts)
+    if isinstance(first, ast.Name):
+        if func_name.startswith("shutil.rmtree"):
+            pass
+        if lists.get(first.id):
+            return list(lists[first.id])
+        if consts.get(first.id) and func_name.startswith(("subprocess", "os.spawn")):
+            # CMD = "rm -rf /"; run(CMD) —— 折成字符串再切
+            return consts[first.id].split()
     if func_name.startswith("os.spawn"):
-        vals = [v for v in (_const_str(a) for a in node.args) if v is not None]
+        vals = [v for v in (_fold_str(a, consts) for a in node.args) if v is not None]
         return vals or None
-    if isinstance(first, ast.Constant) and isinstance(first.value, str):
-        return first.value.split()
+    if isinstance(first, (ast.Constant, ast.BinOp, ast.JoinedStr, ast.Name)):
+        s = _fold_str(first, consts)
+        return s.split() if s else None
     return None
 
 
@@ -457,16 +603,22 @@ def _mentions_tempfile(expr) -> bool:
 
 
 def destructive_command(node, func_name: str, visitor):
-    """§3be 入口：从调用节点里取出静态 argv / 静态目标，判"它要干什么"。"""
-    if func_name.endswith("shutil.rmtree") and node.args and _mentions_tempfile(node.args[0]):
-        # 目标本身是 tempfile 产物（mkdtemp / mkstemp / TemporaryDirectory）时，
-        # "递归删除"是正确的清理动作，不是破坏动作——降成 LOW 披露。
-        return "LOW", "递归删除临时目录（tempfile 产物）"
-    argv = static_argv(node, func_name)
+    """§3be/§3bf 入口：取出静态 argv / 静态目标（含变量折叠），判"它要干什么"。"""
+    consts = getattr(visitor, "consts", None) or {}
+    temps = getattr(visitor, "temps", None) or set()
+    lists = getattr(visitor, "lists", None) or {}
+    if func_name.endswith("shutil.rmtree") and node.args:
+        arg = node.args[0]
+        if _mentions_tempfile(arg) or (isinstance(arg, ast.Name) and arg.id in temps):
+            # 目标本身是 tempfile 产物：递归删除是正确的清理动作，不是破坏动作。
+            return "LOW", "递归删除临时目录（tempfile 产物）"
+    argv = static_argv(node, func_name, consts, temps, lists)
     if not argv:
         return None
     if func_name.endswith("shutil.rmtree"):
         target = argv[0]
+        if target == "<tempfile>":
+            return "LOW", "递归删除临时目录（tempfile 产物）"
         n = _norm(target)
         if n in SYSTEM_TARGETS or any(n.startswith(p) for p in DEVICE_PREFIX):
             return "CRITICAL", "递归删除系统路径 %s" % n
@@ -603,8 +755,16 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
 
     findings = []
 
+    # §3bf：先收常量表，再判——否则"把字面量藏进变量"就是一条免费后门
+    consts, temps, lists = collect_consts(tree)
+    aliases = collect_func_aliases(tree)
+
     # Dangerous calls
     call_visitor = DangerousCallVisitor()
+    call_visitor.consts = consts
+    call_visitor.temps = temps
+    call_visitor.lists = lists
+    call_visitor.aliases = aliases
     call_visitor.visit(tree)
     findings.extend(call_visitor.findings)
 
