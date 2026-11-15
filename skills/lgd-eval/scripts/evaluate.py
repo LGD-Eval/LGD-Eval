@@ -765,6 +765,38 @@ def evaluate_skill(skill_path, provenance="self"):
                 security_issues.append(msg)
                 score -= 15
 
+    # ---- 夹具目录：只豁免语义规则，不豁免隐形字符 ----
+    # 跳过 fixtures/_demo 是必要的（否则自带攻击样本的技能会被自己拖垮），
+    # 但它同时是一条规避通道——把载荷放进叫 demo 的目录就没人看。
+    # 实测：audit2/probe/_evasion-demo 的 Tags 载荷在补这条之前是无否决通过。
+    # 干净夹具里不会有不可见字符，所以这里报出来的一定是有人放进去的。
+    fixture_dirs = {"fixtures", "testdata", "__snapshots__",
+                    "_demo", "demo", "samples", "benchmarks", "corpus"}
+    for dirpath, dirnames, filenames in os.walk(skill_path):
+        parts = os.path.relpath(dirpath, skill_path).split(os.sep)
+        if not any(p in fixture_dirs for p in parts):
+            continue
+        for fn in sorted(filenames):
+            if os.path.splitext(fn)[1].lower() not in (
+                    ".md", ".markdown", ".txt", ".json", ".yaml", ".yml"):
+                continue
+            fx = os.path.join(dirpath, fn)
+            if os.path.basename(fx) == self_name:
+                continue
+            try:
+                with open(fx, 'r', encoding='utf-8') as f:
+                    body = f.read()
+            except (OSError, UnicodeDecodeError):
+                continue
+            rel_fx = os.path.relpath(fx, skill_path).replace(os.sep, "/")
+            for cp, label in _invisible_hits(body):
+                line_no = body[:body.find(chr(cp))].count("\n") + 1
+                msg = "%s:%d: 不可见字符承载指令（%s，U+%04X）" % (
+                    rel_fx, line_no, label, cp)
+                if msg not in security_issues:
+                    security_issues.append(msg)
+                    score -= 15
+
     for script_path in scan_targets:
         script_file = os.path.relpath(script_path, skill_path).replace(os.sep, "/")
         ext = os.path.splitext(script_path)[1].lower()
@@ -1049,17 +1081,25 @@ def evaluate_skill(skill_path, provenance="self"):
     print("  评测完成！")
     print("=" * 70)
     
-    veto_info = None
-    if raw_score != score:
-        veto_info = {
-            "applied": True,
-            "raw_score": raw_score,
-            "capped_to": score,
-            "cap": veto_cap,
-            "level": veto_level,
-            "reason": veto_reason,
-            "policy": "critical(凭证外泄/远程执行)→cap 49 · high(凭证暴露/命令执行)→cap 69；否决只封顶不替代五维明细",
-        }
+    # 否决状态必须说清两件不同的事：
+    #   triggered  = 命中了"必须否决"的规则（这是判定），
+    #   applied    = 封顶这一步真的把分数压下去了（这是算术）。
+    # 修复前只报 applied，于是"本来就低于封顶线、却命中了 CRITICAL 规则"的技能
+    # 报 applied=False —— 拿这个字段做门禁的消费者会把它放过去。
+    # 实测样本：audit2/probe/_evasion-demo（载荷藏在 demo/ 里）46 分、applied=False。
+    crit_rules = sorted(_rule_ids_for(findings) & CRIT_IDS)
+    veto_info = {
+        "applied": raw_score != score,
+        "triggered": bool(crit_rules) or raw_score != score,
+        "critical_rules": crit_rules,
+        "raw_score": raw_score,
+        "capped_to": score,
+        "cap": veto_cap,
+        "level": veto_level,
+        "reason": veto_reason,
+        "policy": "critical(凭证外泄/远程执行/隐形注入)→cap 49 · high(凭证暴露/命令执行)→cap 69；"
+                  "否决只封顶不替代五维明细。门禁请判 triggered 与分数，不要只判 applied",
+    }
 
     return score, grade, dims, findings, warnings, veto_info
 
@@ -1434,7 +1474,8 @@ def build_attestation(root, score, grade, dims, evidence, veto=None, provenance=
         "dims": payload["dims"],
         "findings": payload["findings"],
         "fingerprint": "sha256:" + fp,
-        "safety_veto": veto if veto else {"applied": False},
+        "safety_veto": veto if veto else {"applied": False, "triggered": False,
+                                          "critical_rules": []},
         "inputs": inputs,
         "reproduce": "python evaluate.py <同一路径> --evidence-json out.json  # 应得到完全相同的 fingerprint 与 tree_sha256",
     }
