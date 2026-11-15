@@ -2064,9 +2064,16 @@ def compute_trust_score(result: ScanResult) -> int:
             score -= 10
 
     # Zero dependencies bonus（此前被提前 return 短路，永不执行——已修复）
+    #
+    # §3aq：加分**不能抵消扣分**。原实现 `score += 2` 加在扣分之后、clamp 之前，
+    # 等于把 100 分的基线抬到 102：文档写"LOW −1"，按文档 12 条 LOW 应该 88（A，门槛 90 拦），
+    # 实际算成 90（A+，门槛 90 放行）——加分把 2 分退给了有问题的技能。
+    # 实测 audit2/probe_threshold_edge.py：LOW×8→94、×12→90（A+/放行）、×13→89（拦住）。
+    # 加分只对"本来满分"有意义（满分之上再加也是满分），所以它现在只确认满分，
+    # 不参与任何扣分的抵减。
     has_network = any(f.category == "network" for f in result.findings)
-    if not has_network:
-        score += 2
+    if not has_network and score >= 100:
+        score = 100  # 零依赖加分：满分就是满分，不越过 100，也不退还扣分
 
     # CRITICAL 注入/外泄封顶（Muse 复测 P0 窄修：注入命中必须硬降级，不只报发现）
     injection_critical = any(
