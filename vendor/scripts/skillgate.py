@@ -2758,6 +2758,104 @@ def scan_nosuffix_scripts(skill_path: Path, result: ScanResult, should_exclude):
         ))
 
 
+def _notebook_code_cells(doc):
+    """把 .ipynb 的 code 单元格摊平成 (序号, 源码)。"""
+    for idx, cell in enumerate(doc.get("cells") or [], 1):
+        if not isinstance(cell, dict) or cell.get("cell_type") != "code":
+            continue
+        src = cell.get("source")
+        if isinstance(src, list):
+            src = "".join(str(x) for x in src)
+        if isinstance(src, str) and src.strip():
+            yield idx, src
+
+
+def _ast_findings_from_source(src: str):
+    """对一段源码跑 AST 分析（与 .py 走同一套 visitor）。"""
+    import ast as _ast
+    try:
+        from ast_analyzer import DangerousCallVisitor, HardcodedSecretVisitor
+    except Exception:
+        return []
+    try:
+        tree = _ast.parse(src)
+    except (SyntaxError, ValueError, RecursionError):
+        return []
+    out = []
+    for v in (DangerousCallVisitor(), HardcodedSecretVisitor()):
+        v.visit(tree)
+        out.extend(getattr(v, "findings", []) or [])
+    return out
+
+
+def scan_notebooks(skill_path: Path, result: ScanResult, should_exclude):
+    """Jupyter 笔记本：后缀不在文本名单里，于是整本被跳过。
+
+    实测（audit2/probe_notebook.py，修复前）：
+      `!curl … | sh`、`os.system('rm -rf …')`、`!pip install --index-url http://evil…`、
+      `pickle.loads(...)` 四本笔记本 **全部 100/A+，一条不报**；
+      同一段 `os.system` 写进 .py 是 49/D。
+    笔记本比 .py 更能跑：`!` 前缀直接执行 shell，`%%bash` 整格都是 shell。
+    """
+    for path in skill_path.rglob("*.ipynb"):
+        if not path.is_file() or should_exclude(path):
+            continue
+        try:
+            doc = json.loads(read_text_smart(path))
+        except (OSError, ValueError):
+            continue
+        result.files_scanned += 1
+        for cell_no, src in _notebook_code_cells(doc):
+            lines = src.splitlines()
+            py_lines = []
+            for ln, line in enumerate(lines, 1):
+                s = line.strip()
+                if s.startswith("!"):
+                    cmd = s.lstrip("!").strip()
+                    low = cmd.lower()
+                    remote = next((p for p in REMOTE_EXEC_PATTERNS if re.search(p, low)), None)
+                    if remote:
+                        result.findings.append(Finding(
+                            severity="CRITICAL", category="notebook",
+                            message="笔记本单元格里的 shell 远程取码执行（第 %d 格）：%s"
+                                    % (cell_no, cmd[:70]),
+                            file=str(path), line=ln
+                        ))
+                        continue
+                    if any(re.search(p, low) for p in REMOTE_DOWNLOAD_PATTERNS):
+                        result.findings.append(Finding(
+                            severity="CRITICAL", category="notebook",
+                            message="笔记本单元格里从远程下载文件到本地（第 %d 格）：%s"
+                                    % (cell_no, cmd[:70]),
+                            file=str(path), line=ln
+                        ))
+                        continue
+                    # 换源安装 = 供应链入口（依赖混淆的经典写法）
+                    if re.search(r"pip[0-9]*\s+install[^\n]*-(?:-extra-)?-index-url", low) \
+                            or re.search(r"pip[0-9]*\s+install[^\n]*--index-url", low):
+                        if not re.search(r"--index-url\s+https://pypi\.org", low):
+                            result.findings.append(Finding(
+                                severity="HIGH", category="notebook",
+                                message="笔记本单元格从非官方源安装依赖（供应链入口）：%s" % cmd[:70],
+                                file=str(path), line=ln
+                            ))
+                    continue
+                # %magic / %%bash 等行不参与 Python 解析
+                if s.startswith("%") or s.startswith("?"):
+                    continue
+                py_lines.append(line)
+
+            code = "\n".join(py_lines)
+            if not code.strip():
+                continue
+            for af in _ast_findings_from_source(code):
+                result.findings.append(Finding(
+                    severity=af.severity, category="notebook",
+                    message="[笔记本第 %d 格] %s" % (cell_no, af.message),
+                    file=str(path), line=getattr(af, "line", 1) or 1
+                ))
+
+
 def _iter_config_strings(node, trail=()):
     """把 JSON 里所有字符串连同它的键路径摊平。"""
     if isinstance(node, dict):
@@ -3338,6 +3436,9 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
     # 没有后缀的构建/CI 脚本：分发挂在后缀上，于是 Dockerfile/Makefile/Jenkinsfile
     # 一个都走不进规则分支（audit2/probe_nosuffix.py，修复前五例全 100/A+）。
     scan_nosuffix_scripts(skill_path, result, should_exclude)
+
+    # Jupyter 笔记本：后缀不在文本名单里，整本被跳过，而 `!` 前缀直接跑 shell。
+    scan_notebooks(skill_path, result, should_exclude)
 
     # 同一类的另一条通道：binding.gyp / *.gyp 里的 `<!@(cmd)` 会在生成阶段执行 shell。
     # 实测（audit2/probe_install_bypass.py）：同样的 curl|sh，写在 postinstall 报 CRITICAL，
