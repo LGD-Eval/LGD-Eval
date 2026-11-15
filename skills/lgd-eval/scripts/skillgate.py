@@ -401,6 +401,8 @@ ACTIVE_RULE_TABLES = (
     "REMOTE_DOWNLOAD_PATTERNS",
     # §3az：管道/命令替换进解释器（解释器写谁不改变行为）
     "PIPE_TO_INTERP_PATTERNS",
+    # §3ba：Windows 侧执行槽位（iex/scriptblock/Add-Type/mshta/LOLBin…）
+    "WINDOWS_EXEC_SINKS",
 )
 
 RULE_TABLES_DECLARED_OFF = {
@@ -2327,6 +2329,27 @@ PIPE_TO_INTERP_PATTERNS = (
 )
 PIPE_TO_INTERP_RE = re.compile(PIPE_TO_INTERP_PATTERNS[0], re.IGNORECASE)
 
+# §3ba：Windows 侧的"执行槽位"。一类事，多种写法：
+# PowerShell 有 iex / [scriptblock]::Create / Add-Type -TypeDefinition，cmd 有管道进 cmd，
+# 系统还自带 mshta / rundll32 / regsvr32 / wmic 这些 LOLBin。只看其中一两个写法＝只灭例。
+WINDOWS_EXEC_SINKS = (
+    (r"\|\s*(?:iex|invoke-expression)\b", "CRITICAL", "管道把远程内容直接送进 iex"),
+    (r"\|[^\n]*\b(?:cmd|powershell|pwsh)\b", "CRITICAL", "管道进 cmd/powershell 执行"),
+    (r"start-process\s+[^\n]*\.(?:exe|cmd|bat|ps1|vbs)", "CRITICAL", "Start-Process 起可执行文件"),
+    (r"\b(?:powershell|pwsh)[^\n]*\s-f(?:ile)?\s+", "CRITICAL", "powershell -File 执行脚本文件"),
+    (r"\bcall\s+[^\n]*\.(?:bat|cmd)", "CRITICAL", "call 执行批处理文件"),
+    (r"(?<![&|])\&[^\n]*\.(?:ps1|cmd|bat|exe)", "CRITICAL", "& 调用可执行脚本"),
+    (r"\b(?:invoke-expression|\biex\b)", "CRITICAL", "Invoke-Expression/iex 执行字符串"),
+    (r"\[scriptblock\]::create", "HIGH", "[scriptblock]::Create 把字符串变成可执行块"),
+    (r"add-type\s+-typedefinition", "HIGH", "Add-Type -TypeDefinition 动态编译并加载代码"),
+    (r"mshta\s+(?:https?:|\\\\)", "CRITICAL", "mshta 加载远程/UNC 的 HTA（Windows 脚本宿主即刻执行）"),
+    (r"rundll32[^\n]*url\.dll", "CRITICAL", "rundll32 url.dll 间接执行"),
+    (r"regsvr32[^\n]*/i:(?:http|\\\\|https)", "CRITICAL", "regsvr32 /i: 远程脚本件执行（squiblydoo）"),
+    (r"wmic\s+process\s+call\s+create", "CRITICAL", "wmic process call create 起进程"),
+    (r"\$env:comspec", "HIGH", "$env:ComSpec 拼接执行 cmd"),
+    (r"start-process[^\n]*(?:\\\\)", "HIGH", "Start-Process 执行远程/UNC 路径"),
+)
+
 # 允许名单：只放**厂商自己控制的固定安装端点**。加进来要有理由，且必须窄。
 # 刻意不包含 github.com / raw.githubusercontent.com / gist —— 可变仓库里的脚本，
 # 今天干净不代表明天干净（§3ad 的"未读载体"同一条道理）。
@@ -2739,25 +2762,17 @@ def scan_windows_script(filepath: Path, result: ScanResult):
     实测（audit2/probe_file_types.py）：`Invoke-WebRequest … ; powershell -ep bypass -f x.ps1`
     与 `curl -o i.bat ; call i.bat` 两种样本，修复前 0 命中。
 
-    判级：
-      远程取码（curl/wget/iwr/Invoke-WebRequest/DownloadString/certutil -urlcache/bitsadmin）
-        + 执行迹象（iex/Invoke-Expression/call/start/-f/powershell/cmd /c）  → CRITICAL
-      只有远程取码                                                          → HIGH
-      编码指令（-EncodedCommand / -enc）                                     → HIGH
-      其余命中 REMOTE_EXEC_PATTERNS                                         → CRITICAL
+    §3ba 重写：原实现靠两组"关键词共现"（fetch_tokens × exec_tokens）判级，于是
+    `[scriptblock]::Create((iwr …).Content)`、`Add-Type -TypeDefinition (iwr …)`、
+    `$env:ComSpec /c`、`curl … | cmd` 都只落到"联网取文件" HIGH，而 `mshta <url>` 一条不报；
+    反过来 `iwr … -OutFile data.json` 这种纯下载被当成 HIGH 拦在默认门槛外（实测误杀）。
+    现在按**行为**判：先认执行槽位（sink），再看远程内容是否流进它；纯下载按落盘物是否可执行分档。
     """
     try:
         text = read_text_smart(filepath)
     except OSError:
         return
     low = text.lower()
-
-    fetch_tokens = ("curl", "wget", "iwr", "invoke-webrequest", "downloadstring",
-                    "certutil -urlcache", "bitsadmin", "start-bitstransfer")
-    exec_tokens = ("invoke-expression", "iex", "call ", "start ", "powershell",
-                   "cmd /c", "-encodedcommand", " -f ", "& '")
-    has_fetch = any(t in low for t in fetch_tokens)
-    has_exec = any(t in low for t in exec_tokens)
 
     for pat in REMOTE_EXEC_PATTERNS:
         if re.search(pat, low):
@@ -2768,19 +2783,49 @@ def scan_windows_script(filepath: Path, result: ScanResult):
             ))
             return
 
-    if has_fetch and has_exec:
+    hits = []
+    for pat, sev, why in WINDOWS_EXEC_SINKS:
+        m = re.search(pat, low, re.IGNORECASE)
+        if m:
+            hits.append((m.start(), sev, why))
+
+    fetch_at = [m.start() for m in re.finditer(
+        r"curl|wget|\biwr\b|invoke-webrequest|downloadstring|downloadfile|"
+        r"certutil[^\n]*-urlcache|bitsadmin|start-bitstransfer|net\.webclient", low)]
+    has_fetch = bool(fetch_at)
+
+    # 远程内容流进执行槽位，或槽位本身就在加载远程件（mshta <url>）→ CRITICAL
+    strong = [h for h in hits if h[1] == "CRITICAL"]
+    if strong and (has_fetch or any(
+            re.search(r"mshta\s+(?:https?:|\\\\)", low, re.I) for _ in (0,))):
+        nearest = min(strong)[2]
         result.findings.append(Finding(
             severity="CRITICAL", category="supply-chain",
-            message="Windows 脚本下载远程文件并随后执行（installation-time 常见形态）",
+            message="Windows 脚本把远程内容送进执行槽位：%s" % nearest,
             file=str(filepath), line=1
         ))
-    elif has_fetch:
+        return
+
+    for _, sev, why in sorted(hits):
         result.findings.append(Finding(
-            severity="HIGH", category="supply-chain",
-            message="Windows 脚本在执行期联网取文件",
+            severity=sev, category="supply-chain" if sev != "HIGH" else "obfuscation",
+            message=why, file=str(filepath), line=1
+        ))
+
+    if has_fetch:
+        # 纯下载：落盘物是不是可执行的，决定"拦"还是"说一声"
+        artifact_exec = bool(re.search(
+            r"\.(?:exe|msi|dll|ps1|bat|cmd|hta|vbs|js|scr|jar|sh|py)\b", low))
+        result.findings.append(Finding(
+            severity="HIGH" if artifact_exec else "MEDIUM",
+            category="supply-chain",
+            message=("Windows 脚本在执行期联网取可执行文件（落盘后可被调用）"
+                     if artifact_exec else
+                     "Windows 脚本在执行期联网取文件（只取数据，未取可执行件；仍应确认来源）"),
             file=str(filepath), line=1
         ))
-    elif "-encodedcommand" in low or re.search(r"\s-enc\b", low):
+
+    if "-encodedcommand" in low or re.search(r"\s-enc\b", low):
         result.findings.append(Finding(
             severity="HIGH", category="obfuscation",
             message="Windows 脚本使用编码指令执行（-EncodedCommand/-enc），内容不可直读",
