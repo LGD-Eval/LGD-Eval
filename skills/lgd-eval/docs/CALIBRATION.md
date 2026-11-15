@@ -86,7 +86,20 @@ python scripts/calibrate.py corpus.json
 }
 ```
 
-Corpus in this round: 6 benign (`benign-gold`, `benign-py-config`, `benign-js-config`, `benign-js-fetch`, `benign-js-multifile`, `benign-docs-only`) and 5 malicious (`js-env-exfil`, `js-literal-creds`, `js-env-only`, `py-env-creds`, `js-cross-file`).
+Corpus in this round: 10 benign and 10 malicious, 20 samples. Benign: `benign-gold`, `benign-py-config`, `benign-js-config`, `benign-js-fetch`, `benign-js-multifile`, `benign-docs-only`, `inj-text-ben`, `inj-unicode-ben`, `supply-postinstall-ben`, `priv-rm-ben`. Malicious: `js-env-exfil`, `js-literal-creds`, `js-env-only`, `py-env-creds`, `js-cross-file`, `inj-text-mal`, `inj-unicode-mal`, `supply-postinstall-mal`, `priv-rm-mal`, plus the sandbox twin of `js-env-exfil`.
+
+Measured on 2026-11-15 (fresh run, not a quoted snapshot):
+
+| Threshold | Benign blocked | Malicious passed | FPR | FNR |
+|---|---|---|---|---|
+| 40 / 49 / 50 / 60 / 70 / 75 | 0/10 | 0/10 | 0.0% | 0.0% |
+| 80 | 4/10 | 0/10 | 40.0% | 0.0% |
+| 89 / 90 | 5/10 | 0/10 | 50.0% | 0.0% |
+| 96 | 6/10 | 0/10 | 60.0% | 0.0% |
+
+The five benign samples blocked at 90 score 75, 75, 75, 78, 80 — none of them has a single security finding (`安全=25`). **At the shipped default of 90, half of the clean corpus fails CI for being thin, not for being dangerous.** That is the whole argument for 60, and it is also why the number is proposed rather than changed.
+
+**中文** — 本轮语料 20 份（10 良 / 10 恶），名单如上。2026-11-15 实跑：门槛 40–75 均 0% 误杀 0% 漏放；80 误杀 40%；89/90 误杀 50%；96 误杀 60%。**在出厂默认 90 上，10 份干净样本里被拦下的 5 份分数是 75/75/75/78/80，安全维度全部满分、零安全发现**——它们是因为"写得薄"而被拦，不是因为危险。这就是建议 60 的全部论据，也是为什么只提不改。
 
 ---
 
