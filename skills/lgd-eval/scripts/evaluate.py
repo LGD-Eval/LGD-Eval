@@ -738,7 +738,7 @@ def evaluate_skill(skill_path, provenance="self"):
                      ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd"):
                 scan_targets.append(os.path.join(dirpath, fn))
             # 文档也是攻击面：SKILL.md 是智能体运行时真正读进去的指令文本
-            elif e in (".md", ".markdown", ".txt"):
+            elif e in (".md", ".markdown", ".txt", ".json", ".yaml", ".yml"):
                 doc_targets.append(os.path.join(dirpath, fn))
 
     # ---- 不可见字符：正则看不见它们，等于没查 ----
