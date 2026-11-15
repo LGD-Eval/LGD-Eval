@@ -765,6 +765,64 @@ MAX_SCAN_BYTES = 8 * 1024 * 1024
 _TRUNCATED_FILES: list = []
 
 
+def _binary_reason(filepath: Path, sniff: int = 65536):
+    """文本后缀里装的其实是二进制？返回理由，否则 None。
+
+    为什么要专门查：扫描器是"按后缀决定怎么读"的。后缀写 .py/.md 就会被当文本读，
+    读得进去（不会抛异常），于是"没报错"被当成"没问题"。实测
+    （audit2/probe_binary_in_text.py）：
+      · .py 末尾加一个 NUL 字节 → ast.parse 失败 → 危险调用从 CRITICAL(49/D) 静默掉到 LOW(100/A+)
+      · 真 PE 二进制改名 .py → 100/A+，一句不提
+    判据只看"这条路还能不能审"，不看内容像什么：含 NUL / 已知二进制文件头 /
+    按 BOM 与常见编码都解不出来。
+    """
+    try:
+        raw = filepath.open("rb").read(sniff)
+    except OSError:
+        return None
+    if not raw:
+        return None
+    for magic, what in ((b"MZ", "PE/Windows 可执行文件头"),
+                        (b"\x7fELF", "ELF 可执行文件头"),
+                        (b"\xca\xfe\xba\xbe", "Mach-O/Java class 文件头"),
+                        (b"\xcf\xfa\xed\xfe", "Mach-O 文件头")):
+        if raw.startswith(magic):
+            return what
+    if b"\x00" in raw:
+        return "含 NUL 字节"
+    try:
+        _decode_bytes_strict(raw)
+        return None
+    except UnicodeDecodeError:
+        return "按 UTF-8/UTF-16/GBK 均无法解码"
+
+
+def scan_binary_in_text(skill_path: Path, result: ScanResult, should_exclude):
+    """声明为文本、内容是二进制：这条文件"读了，但审不了"。
+
+    定级 HIGH 而不是"披露不计分"：这不是"没扫到"，是**故意让文本通道失效**——
+    夹一个 NUL 字节就能把 CRITICAL 打成 LOW，改名就能把二进制藏成脚本。
+    计分，且计入封顶（HIGH → 最高 69/C）。
+    """
+    TEXT_SUFFIXES = {".py", ".js", ".ts", ".mjs", ".cjs", ".sh", ".ps1", ".bat", ".cmd",
+                     ".md", ".txt", ".json", ".yaml", ".yml", ".ini", ".cfg", ".conf",
+                     ".toml", ".env", ".properties"}
+    for p in skill_path.rglob("*"):
+        if not p.is_file() or p.suffix.lower() not in TEXT_SUFFIXES:
+            continue
+        if should_exclude(p):
+            continue
+        reason = _binary_reason(p)
+        if not reason:
+            continue
+        result.findings.append(Finding(
+            severity="HIGH", category="integrity",
+            message="文件声明为文本（%s）但内容是二进制（%s）：代码/正文结构无法解析，"
+                    "其中的危险调用可能因此不被报出" % (p.suffix.lower(), reason),
+            file=str(p.relative_to(skill_path)), line=1
+        ))
+
+
 def read_text_smart(filepath: Path) -> str:
     """按 BOM 与真实编码解码，而不是一律当成 UTF-8。
 
@@ -819,6 +877,30 @@ def _decode_bytes(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def _decode_bytes_strict(raw: bytes) -> str:
+    """同 _decode_bytes，但解不出来就抛，不兜底成替换字符。
+
+    兜底版本是给"要尽量读出来"的场景用的；判断"这是不是文本"必须用这个，
+    否则一切二进制都会被"解码成功"。
+    """
+    boms = (
+        (b"\xef\xbb\xbf", "utf-8-sig"),
+        (b"\xff\xfe\x00\x00", "utf-32-le"),
+        (b"\x00\x00\xfe\xff", "utf-32-be"),
+        (b"\xff\xfe", "utf-16-le"),
+        (b"\xfe\xff", "utf-16-be"),
+    )
+    for bom, enc in boms:
+        if raw.startswith(bom):
+            return raw.decode(enc)  # BOM 说了算：解不出就该抛
+    for enc in ("utf-8", "gbk"):
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    raise UnicodeDecodeError("utf-8", raw[:1] or b"\x00", 0, 1, "not decodable as text")
+
+
 
 def scan_python_file(filepath: Path, result: ScanResult):
     """Scan a single Python file for dangerous patterns."""
@@ -832,6 +914,27 @@ def scan_python_file(filepath: Path, result: ScanResult):
         return
 
     lines = content.splitlines()
+
+    # === 第零步：结构能不能解析 ===
+    # ast_analyzer.analyze_python_file 自己吞掉异常并返回 []，所以"AST 没报"
+    # 和"AST 跑不了"在调用方看起来一模一样。这里自己先解析一次，把状态说出来。
+    import ast as _ast
+    try:
+        _ast.parse(content, filename=str(filepath))
+    except SyntaxError as e:
+        if not _binary_reason(filepath):
+            result.findings.append(Finding(
+                severity="LOW", category="integrity",
+                message="AST 解析失败（第 %s 行：%s），该文件仅按正则扫描，代码结构未经分析"
+                        % (e.lineno, (e.msg or "")[:60]),
+                file=str(filepath), line=e.lineno or 1
+            ))
+    except (ValueError, RecursionError) as e:
+        result.findings.append(Finding(
+            severity="LOW", category="integrity",
+            message="AST 解析失败（%s），该文件仅按正则扫描" % str(e)[:60],
+            file=str(filepath), line=1
+        ))
 
     # === 第一步：AST 分析（更准，误报低） ===
     ast_lines = set()  # 记录 AST 已经报过的行，正则就不要重复报了
@@ -859,8 +962,20 @@ def scan_python_file(filepath: Path, result: ScanResult):
                 line=af.line
             ))
             ast_lines.add(af.line)  # 记录这一行已经报过了
-    except Exception:
-        pass  # AST 分析失败不影响正则扫描
+    except Exception as e:
+        # 原来这里是 `pass`：AST 挂了就静默退回正则。
+        # 实测（audit2/probe_binary_in_text.py）：同一个 .py，只是夹了一个 NUL 字节，
+        # ast.parse 失败 → 危险调用从 CRITICAL(49/D) 掉到 LOW(100/A+)。
+        # "解析器读不了"必须自己说出来，否则它就是一条免检通道。
+        if _binary_reason(filepath):
+            pass  # 由 scan_binary_in_text 统一报，避免重复
+        else:
+            result.findings.append(Finding(
+                severity="LOW", category="integrity",
+                message="AST 解析失败（%s），该文件仅按正则扫描，代码结构未经分析"
+                        % str(e).split("\n")[0][:80],
+                file=str(filepath), line=1
+            ))
 
     # v3.1.0: 整文件级字符串/注释剥离结果（跨行三引号 docstring 也算字符串）
     code_lines = strip_strings_to_code(content)
@@ -3013,6 +3128,9 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
     # 与主表不是同一份，`.git`/`__pycache__`/`node_modules`/`_backup` 等五个目录
     # 于是既不扫也不披露（audit2/probe_exclude_class.py）。
     scan_excluded_scope(skill_path, result, DEFAULT_EXCLUDES, ex_parts)
+
+    # 文本后缀里装的其实是二进制：读了，但审不了（NUL / PE 头 / 解不出来）
+    scan_binary_in_text(skill_path, result, should_exclude)
 
     # 安装期脚本：package.json 的 postinstall 是一条装载代码的执行通道。
     # OWASP AST02 与 arXiv 2601.10338 都把它列为供应链风险的典型形态；
