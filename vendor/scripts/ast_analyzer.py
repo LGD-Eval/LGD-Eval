@@ -91,6 +91,92 @@ class DangerousCallVisitor(ast.NodeVisitor):
         return False
 
 
+class DynamicCallVisitor(ast.NodeVisitor):
+    """名字拆开还算不算危险调用（§3av）。
+
+    实测（audit2/probe_dynamic_call.py，修复前）：
+      `getattr(os, "sys" + "tem")("id")`                  → 100/A+，一条不报
+      `subprocess.__dict__["run"]("id", shell=True)`      → 100/A+（连 shell=True 都没看见）
+      `__import__("o" + "s").system("id")`                → 只有 MEDIUM 96/A
+    对照组：同一件事写成 `os.system("id")` 是 CRITICAL 49/D。
+
+    规则若只认字面 `os.system(`，那么"例"过了、"类"没过——被拦的是写法，不是行为。
+    这里按**取到的名字**判，不按写法判：名字是常量折叠出来的就直接算数。
+    """
+
+    # 取到这些名字就等于拿到执行面
+    DANGEROUS_ATTRS = {
+        "system", "popen", "spawn", "spawnl", "spawnv", "execv", "execve", "execl", "execvp",
+        "run", "call", "Popen", "check_output", "check_call",
+        "eval", "exec", "compile", "__import__",
+    }
+    IMPORT_MODULES = {"os", "subprocess", "shutil", "ctypes", "socket", "pickle", "importlib"}
+
+    def __init__(self):
+        self.findings: List[AstFinding] = []
+
+    @staticmethod
+    def _const_str(node):
+        """把常量、常量加法、纯常量 f-string 折叠成一个字符串；折不出来返回 None。"""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = DynamicCallVisitor._const_str(node.left)
+            right = DynamicCallVisitor._const_str(node.right)
+            if left is not None and right is not None:
+                return left + right
+        if isinstance(node, ast.JoinedStr):
+            parts = []
+            for v in node.values:
+                if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                    parts.append(v.value)
+                else:
+                    return None
+            return "".join(parts)
+        return None
+
+    def visit_Call(self, node: ast.Call):
+        # ① getattr(obj, "危险名") 形式：名字是折叠出来的常量
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "getattr" and len(node.args) >= 2:
+            name = self._const_str(node.args[1])
+            if name and name in self.DANGEROUS_ATTRS:
+                self.findings.append(AstFinding(
+                    severity="HIGH",
+                    message="通过 getattr 动态取用危险函数 %r（名字由常量拼出，绕开了字面规则）"
+                            % name,
+                    line=node.lineno, col=node.col_offset
+                ))
+
+        # ② d.__dict__["危险名"] 或 globals()["危险名"] 形式
+        if isinstance(func, ast.Subscript):
+            key = self._const_str(func.slice)
+            if key and key in self.DANGEROUS_ATTRS:
+                obj = func.value
+                is_dictish = (isinstance(obj, ast.Attribute) and obj.attr == "__dict__") \
+                    or (isinstance(obj, ast.Call) and isinstance(obj.func, ast.Name)
+                        and obj.func.id in ("globals", "locals", "vars"))
+                if is_dictish:
+                    self.findings.append(AstFinding(
+                        severity="HIGH",
+                        message="通过 __dict__/globals 下标取用危险函数 %r（绕开了属性访问字面规则）"
+                                % key,
+                        line=node.lineno, col=node.col_offset
+                    ))
+
+        # ③ __import__("o" + "s") 这种拼出来的模块名，落到危险模块要升级
+        if isinstance(func, ast.Name) and func.id == "__import__" and node.args:
+            mod = self._const_str(node.args[0])
+            if mod and mod.split(".")[0] in self.IMPORT_MODULES:
+                self.findings.append(AstFinding(
+                    severity="HIGH",
+                    message="__import__ 动态导入危险模块 %r（模块名由常量拼出）" % mod,
+                    line=node.lineno, col=node.col_offset
+                ))
+
+        self.generic_visit(node)
+
+
 class HardcodedSecretVisitor(ast.NodeVisitor):
     """Find hardcoded secrets in assignments."""
 
@@ -134,6 +220,11 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
     call_visitor = DangerousCallVisitor()
     call_visitor.visit(tree)
     findings.extend(call_visitor.findings)
+
+    # 名字被拆开/动态取用的危险调用（§3av）
+    dyn_visitor = DynamicCallVisitor()
+    dyn_visitor.visit(tree)
+    findings.extend(dyn_visitor.findings)
 
     # Hardcoded secrets
     secret_visitor = HardcodedSecretVisitor()
