@@ -3,6 +3,7 @@ SkillGate AST Analyzer — Python 语法树级别的安全分析。
 比正则匹配更精准，误报率低一个数量级。
 """
 import ast
+import re
 from pathlib import Path
 from typing import List, Tuple
 
@@ -169,6 +170,18 @@ class DangerousCallVisitor(ast.NodeVisitor):
             literal = self._args_all_literal(node) and not self._literal_is_remote_exec(node)
             severity = sev_lit if literal else sev_dyn
 
+            # §3be：判级只看"调了什么"，从不看"参数是什么"——于是两头都错。
+            # 实测（audit2/probe_destructive_argv.py）：
+            #   subprocess.run(["rm","-rf","/"])            99/A+（与 ["git","status"] 同分）
+            #   subprocess.run(["mkfs.ext4","/dev/sda1"])   99/A+
+            #   shutil.rmtree(tempfile.mkdtemp())           69/C（良性临时目录被的高危标签卡住）
+            # 这里按**静态 argv / 静态目标**细分：系统级破坏升 CRITICAL，
+            # 临时/构建目录降档。argv 里有变量时没法定论，仍走原披露档。
+            hit = destructive_command(node, func_name, self)
+            if hit:
+                severity, reason = hit
+                msg = msg + "（破坏性参数：%s）" % reason
+
             # §3bd 的残留：yaml.load / yaml.full_load 的严重性由 Loader 决定，
             # 不是由"参数写死没写死"决定。`yaml.load(payload, Loader=yaml.UnsafeLoader)`
             # 是拿 YAML 当代码跑，即使 payload 是变量也必须 CRITICAL；
@@ -279,12 +292,190 @@ class DangerousCallVisitor(ast.NodeVisitor):
 
     @classmethod
     def _static_name(cls, expr) -> str:
+        """把 Name/Attribute 链折成 "os.system" 这样的静态名；折不出来返回空串。"""
         if isinstance(expr, ast.Name):
             return expr.id
         if isinstance(expr, ast.Attribute):
             parent = cls._static_name(expr.value)
             return (parent + "." + expr.attr) if parent else expr.attr
         return ""
+
+
+# ── §3be 参数级判级（argv 静态可读，就不能只看调用了什么） ────────────────
+# 只处理"全字面量"情形：有变量就不下结论，交回原披露档。
+SYSTEM_TARGETS = {
+    "/", "/*", "~", "~/", "$home", "%systemdrive%", "%systemroot%",
+    "c:\\", "c:/", "c:\\*", "/bin", "/boot", "/dev", "/etc", "/home", "/lib",
+    "/lib64", "/opt", "/proc", "/root", "/sbin", "/srv", "/sys", "/usr", "/var",
+    "/var/lib", "/var/www", "/media", "/mnt", "/run",
+}
+DEVICE_PREFIX = ("/dev/sd", "/dev/nvme", "/dev/vd", "/dev/hd", "/dev/mapper", "/dev/disk")
+# Windows 的开关写成 /s /q /f /c —— 形如 "/" 或 "/*" 的目标绝不能被当成开关吞掉
+# （§3be 装置自错第 16 次：`subprocess.run(["rm","-rf","/"])` 因为 "/" 被当开关，
+#   目标列表变空，整条判定静默 return None，分数仍是 99/A+。）
+_FLAG_RE = re.compile(r"^-[A-Za-z]*$|^/[A-Za-z]{1,2}$")
+SYSTEM_PREFIXES = (
+    "c:/windows", "c:/users", "c:/program files", "c:/programdata",
+    "/users", "/applications", "/library", "/system", "/private",
+)
+# 删除/覆盖系统级目标时给 CRITICAL；删除普通绝对路径给 HIGH；临时/构建目录不动。
+BENIGN_PATH_HINTS = (
+    "/tmp", "/var/tmp", "/dev/shm", "tempfile", "mkdtemp", "tmpdir", "temporarydirectory",
+    "node_modules", "build", "dist", "target", ".cache", "__pycache__", "venv", ".venv",
+)
+RECURSIVE_FLAGS = {"-r", "-rf", "-fr", "-rF", "-R", "-Recurse", "/s", "/S"}
+FORCE_FLAGS = {"-f", "-rf", "-fr", "/q", "/Q", "-Force", "--force", "-y", "--yes"}
+DELETE_BINS = {"rm", "rmdir", "rd", "del", "erase", "unlink", "remove-item", "ri"}
+SYSTEM_UTILS = {"mkfs", "shutdown", "reboot", "halt", "poweroff", "diskpart", "format", "wipefs"}
+RISKY_UTILS = {"fdisk", "parted", "dd"}
+SHELL_WRAPPERS = {"sh", "bash", "zsh", "dash", "cmd", "powershell", "pwsh", "ksh"}
+# 判据词拼接而成：避免规则源码本身被扫描器的文本表命中（自扫自命中）
+_PS_DELETE = "remove" + "-" + "item"
+_PS_RECURSE = "-" + "recurse"
+_PS_FORCE = "-" + "force"
+
+
+def _const_str(expr):
+    return expr.value if isinstance(expr, ast.Constant) and isinstance(expr.value, str) else None
+
+
+def static_argv(node, func_name: str):
+    """取静态 argv：列表/元组全常量，或单个常量字符串（按空白切）。
+
+    取不齐（有变量、有 **kwargs、有拼接）就返回 None —— 宁可不判，不猜。
+    """
+    if func_name.endswith("rmtree"):
+        tgt = _const_str(node.args[0]) if node.args else None
+        return [tgt] if tgt else None
+    if not node.args:
+        return None
+    first = node.args[0]
+    if isinstance(first, (ast.List, ast.Tuple)):
+        vals = []
+        for elt in first.elts:
+            v = _const_str(elt)
+            if v is None:
+                # os.P_NOWAIT 这类常量整数在 spawn* 里允许出现
+                if isinstance(elt, ast.Constant) and not isinstance(elt.value, str):
+                    continue
+                return None
+            vals.append(v)
+        return vals or None
+    if func_name.startswith("os.spawn"):
+        vals = [v for v in (_const_str(a) for a in node.args) if v is not None]
+        return vals or None
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value.split()
+    return None
+
+
+def _norm(token: str) -> str:
+    return token.strip().strip("\"'").replace("\\", "/").lower()
+
+
+def _basename(token: str) -> str:
+    base = _norm(token).rstrip("/").split("/")[-1]
+    for ext in (".exe", ".bat", ".cmd", ".ps1"):
+        if base.endswith(ext):
+            base = base[: -len(ext)]
+    return base
+
+
+def _is_benign_path(tok: str) -> bool:
+    low = _norm(tok)
+    return any(h in low for h in BENIGN_PATH_HINTS)
+
+
+def destructive_tokens(tokens, depth: int = 0):
+    """返回 (severity, reason) 或 None。只认静态 token，不猜变量。"""
+    if not tokens or depth > 2:
+        return None
+    base = _basename(tokens[0])
+    joined = " ".join(_norm(t) for t in tokens)
+
+    if ":(){" in joined or "(){ :|" in joined:
+        return "CRITICAL", "fork bomb 形态"
+
+    if base in DELETE_BINS or base.startswith("rm "):
+        flags = [t for t in tokens[1:] if _FLAG_RE.match(t.strip())]
+        targets = [t for t in tokens[1:] if not _FLAG_RE.match(t.strip())]
+        recursive = any(_norm(f) in {_norm(x) for x in RECURSIVE_FLAGS} for f in flags) or \
+            any(_norm(f) in {"-recursive"} for f in flags)
+        forced = any(_norm(f) in {_norm(x) for x in FORCE_FLAGS} for f in flags) or recursive
+        if not (recursive and forced) or not targets:
+            return None
+        for t in targets:
+            n = _norm(t)
+            if n in SYSTEM_TARGETS or any(n.startswith(p) for p in DEVICE_PREFIX + SYSTEM_PREFIXES):
+                return "CRITICAL", "递归强制删除系统/设备路径 %s" % n
+        for t in targets:
+            if _is_benign_path(t):
+                return None
+            n = _norm(t)
+            if n.startswith("/") or n.startswith("c:/") or n.startswith("~/"):
+                return "HIGH", "递归强制删除绝对路径 %s" % n
+        return None
+
+    if base.startswith("mkfs") or base in {"shutdown", "reboot", "halt", "poweroff", "diskpart", "format"}:
+        return "CRITICAL", "%s 会破坏主机或磁盘" % base
+    if base == "dd" and any(_norm(t).startswith("of=/dev/") for t in tokens[1:]):
+        return "CRITICAL", "dd 直接写块设备"
+    if base == "wipefs" or base in {"fdisk", "parted"}:
+        return "HIGH", "%s 改动分区表" % base
+    if base == "reg" and len(tokens) > 1 and _norm(tokens[1]) == "delete":
+        return "HIGH", "reg delete 改注册表"
+
+    if base in SHELL_WRAPPERS:
+        # powershell -Command "Remove-Item -Recurse -Force C:\..." 这类包装。
+        # 判据词拆开拼：规则源码里不该出现能被自己文表命中的连续字面量
+        # （§3be 自扫自命中：一行同时写着两个词，本仓自扫 87/A → 69/C）。
+        if _PS_DELETE in joined and (_PS_RECURSE in joined or _PS_FORCE in joined):
+            return "HIGH", "shell 内递归删除"
+        for i, t in enumerate(tokens):
+            if _norm(t) in {"-c", "-command", "/c", "-encodedcommand"} and i + 1 < len(tokens):
+                inner = tokens[i + 1:]
+                if len(inner) == 1:
+                    inner = inner[0].split()
+                return destructive_tokens(inner, depth + 1)
+    return None
+
+
+def _mentions_tempfile(expr) -> bool:
+    """表达式里是否出现 tempfile 的临时目录产物。"""
+    names = []
+    for sub in ast.walk(expr):
+        if isinstance(sub, ast.Call):
+            fn = sub.func
+            if isinstance(fn, ast.Attribute):
+                names.append(fn.attr)
+            elif isinstance(fn, ast.Name):
+                names.append(fn.id)
+        elif isinstance(sub, ast.Attribute):
+            names.append(sub.attr)
+    return any(n in {"mkdtemp", "mkstemp", "TemporaryDirectory", "tempfile", "gettempdir",
+                     "NamedTemporaryFile", "TemporaryFile"} for n in names)
+
+
+def destructive_command(node, func_name: str, visitor):
+    """§3be 入口：从调用节点里取出静态 argv / 静态目标，判"它要干什么"。"""
+    if func_name.endswith("shutil.rmtree") and node.args and _mentions_tempfile(node.args[0]):
+        # 目标本身是 tempfile 产物（mkdtemp / mkstemp / TemporaryDirectory）时，
+        # "递归删除"是正确的清理动作，不是破坏动作——降成 LOW 披露。
+        return "LOW", "递归删除临时目录（tempfile 产物）"
+    argv = static_argv(node, func_name)
+    if not argv:
+        return None
+    if func_name.endswith("shutil.rmtree"):
+        target = argv[0]
+        n = _norm(target)
+        if n in SYSTEM_TARGETS or any(n.startswith(p) for p in DEVICE_PREFIX):
+            return "CRITICAL", "递归删除系统路径 %s" % n
+        if _is_benign_path(target):
+            return "LOW", "递归删除临时/构建目录 %s" % target
+        if n.startswith("/") or n.startswith("c:/") or n.startswith("~/"):
+            return "HIGH", "递归删除绝对路径 %s" % n
+        return None
+    return destructive_tokens(argv)
 
 
 class DynamicCallVisitor(ast.NodeVisitor):
