@@ -485,6 +485,10 @@ class ScanResult:
     rule_version: str = "v3.1.3"  # 规则版本号（有籍）；报告头与 JSON 都从这里取
     engine: str = "skillgate.py"  # 引擎身份：本仓有两个引擎都打印 Trust Score，必须可区分
     excluded: list = field(default_factory=list)  # 显式排除的路径（供审计复现）
+    # §3bb：被行内豁免压掉的命中。豁免本身可以用，但**不能无痕**——
+    # 实测（audit2/probe_waiver.py）：恶意行尾加 `# skillgate: ignore`，
+    # CRITICAL 从 49/D 变成 100/A+，终端与 JSON 里一个字都不提。那是自助后门。
+    waivers: list = field(default_factory=list)
 
     @property
     def critical_count(self): return len([f for f in self.findings
@@ -501,6 +505,92 @@ class ScanResult:
 
 
 # ── Scanners ──────────────────────────────────────────────────────────────
+
+# §3bb：审计方可以关掉"被审对象的自助豁免"。默认开（正常仓库靠它压噪声），
+# `--no-waivers` 关（复核、发布门禁用这个口径：被审对象说什么都不算豁免）。
+WAIVERS_ENABLED = True
+_SEV_RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
+
+
+def note_waiver(result, filepath, line, severity, message):
+    """记录一次豁免：既不假装没发生，也不改变分数。
+
+    按 (文件, 行) 去重：is_suppressed 会被十几张规则表各调一次，同一行会被问
+    十几遍——第一版没去重，自扫一次报出 12,290 条"豁免"（真实声明只有 40 来处）。
+    重复计数本身就是一种失真：它让"有 1 处豁免被人工复核"看起来像"12,290 条待办"。
+    """
+    try:
+        key = (str(filepath), line)
+        for w in result.waivers:
+            if (w["file"], w["line"]) == key:
+                if _SEV_RANK.get(severity, 0) > _SEV_RANK.get(w.get("severity", "LOW"), 0):
+                    w["severity"] = severity
+                    w["message"] = message[:120]
+                return
+        result.waivers.append({
+            "file": str(filepath), "line": line,
+            "severity": severity, "message": message[:120],
+        })
+    except AttributeError:
+        pass
+
+
+def annotate_waiver_severities(result):
+    """给每条豁免补上"它其实压掉了多严重的东西"。
+
+    为什么不靠调用点传级别：is_suppressed 有十几处调用，有的在规则循环里
+    （severity/msg 在作用域里），有的在"跳过注释行"这类判断里（没有）。
+    与其改十几处、漏一处就静默失真，不如事后按同一批规则表重算这一行的最高级别。
+    """
+    order = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
+    kept = []
+    for w in result.waivers:
+        try:
+            lines = read_text_smart(Path(w["file"])).splitlines()
+        except Exception:
+            w["max_severity"] = w.get("severity", "LOW")
+            kept.append(w)
+            continue
+        if not (0 < w["line"] <= len(lines)):
+            w["max_severity"] = w.get("severity", "LOW")
+            kept.append(w)
+            continue
+        text = lines[w["line"] - 1]
+        best = None
+        tables = (DANGEROUS_CODE_PATTERNS, NETWORK_PATTERNS, CREDENTIAL_PATTERNS,
+                  FILESYSTEM_PATTERNS, EXCESSIVE_AGENCY_PATTERNS, HONESTY_PATTERNS,
+                  AUTH_PATTERNS, PROMPT_INJECTION_PATTERNS, INSTALL_HOOKS)
+        for table in tables:
+            for row in table:
+                if len(row) < 2:
+                    continue
+                pat, sev = row[0], row[1]
+                try:
+                    if _search_any(pat, text) and order.get(sev, 0) > order.get(best or "INFO", 0):
+                        best = sev
+                except Exception:
+                    continue
+        for pat, sev, _why in WINDOWS_EXEC_SINKS:
+            try:
+                if re.search(pat, text, re.IGNORECASE) and order.get(sev, 0) > order.get(best or "INFO", 0):
+                    best = sev
+            except Exception:
+                continue
+        # 只留"确实压掉了一条命中"的行。
+        # is_suppressed 是在匹配**之前**被问的（每一行 × 每张规则表各问一次），
+        # 所以窗口里大量行根本没有命中；把它们也算成"豁免"是虚报。
+        recorded = w.get("severity", "INFO")
+        if best is None and recorded == "INFO":
+            continue
+        # 规则重算与调用点记录的级别取高：AST 侧报的是 CRITICAL，
+        # 正则表给同一行 `os.system(` 只到 HIGH——披露要用高的那个，
+        # 否则"被豁免的其实是 CRITICAL"会被自己的台账写轻。
+        if best is not None and order.get(best, 0) < order.get(recorded, 0):
+            best = recorded
+        w["max_severity"] = best or recorded
+        kept.append(w)
+    result.waivers = kept
+
 
 # 字符串字面量（含规则定义字符串、文档示例、占位符）——剥离避免自证陷阱误报
 _STRING_RE = re.compile(r"('[^'\\]*(?:\\.[^'\\]*)*'|\"[^\"\\]*(?:\\.[^\"\\]*)*\")")
@@ -959,10 +1049,13 @@ def scan_python_file(filepath: Path, result: ScanResult):
         ast_findings = analyze_python_file(filepath)
         for af in ast_findings:
             # 行级抑制约定：与 Bandit # nosec / SonarQube NOSONAR 一致，
-            # 标注必须与命中行同行
-            if af.line and af.line - 1 < len(lines):
+            # 标注必须与命中行同行。
+            # §3bb：这处原先自己写死"含 ignore 就 continue"，既不受 --no-waivers 约束，
+            # 也不进豁免台账——AST 报了 CRITICAL，用户加一句注释，报告里连痕迹都没有。
+            if WAIVERS_ENABLED and af.line and af.line - 1 < len(lines):
                 cur = lines[af.line - 1]
                 if "skillgate: ignore" in cur or "lgd: ignore" in cur:
+                    note_waiver(result, filepath, af.line, af.severity, af.message)
                     continue
             sev, msg = af.severity, af.message
             # 递归删除：写了路径守卫就是"可以接受的删除"，不写才是风险。
@@ -1013,16 +1106,24 @@ def scan_python_file(filepath: Path, result: ScanResult):
         return (single_quotes % 2 == 1) or (double_quotes % 2 == 1)
 
     # Helper: check if line has skillgate: ignore suppression
-    def is_suppressed(line_idx: int) -> bool:
-        """Check if the current line or previous line has # skillgate: ignore"""
-        # Check current line
-        if 0 < line_idx <= len(lines):
-            if "skillgate: ignore" in lines[line_idx - 1]:
-                return True
-        # Check previous line
-        if line_idx > 1:
-            if "skillgate: ignore" in lines[line_idx - 2]:
-                return True
+    def is_suppressed(line_idx: int, sev: str = "INFO", msg: str = "") -> bool:
+        """当前行或上一行含 `skillgate: ignore` 即视为已豁免。
+
+        §3bb：从"静默跳过"改为"跳过但记入 result.waivers"。豁免仍然生效
+        （正常仓库要压噪声；本仓规则表自己也带这批注释），但报告必须能说出
+        "有几处被豁免、其中 CRITICAL/HIGH 各几处"——否则它就是一个
+        被审对象自己能签的自助后门。`--no-waivers` 可整体关掉。
+        """
+        if not WAIVERS_ENABLED:
+            return False
+        cur = lines[line_idx - 1] if 0 < line_idx <= len(lines) else ""
+        prev = lines[line_idx - 2] if line_idx > 1 else ""
+        if "skillgate: ignore" in cur or "lgd: ignore" in cur:
+            note_waiver(result, filepath, line_idx, sev, msg or "行内豁免")
+            return True
+        if "skillgate: ignore" in prev or "lgd: ignore" in prev:
+            note_waiver(result, filepath, line_idx, sev, msg or "上一行豁免")
+            return True
         return False
 
     # 1. Dangerous code patterns（code_lines 为整文件级字符串/注释剥离结果；
@@ -1242,16 +1343,23 @@ def scan_md_file(filepath: Path, result: ScanResult):
             file=str(filepath), line=unclosed_fence_at
         ))
 
-    def is_suppressed(line_idx: int) -> bool:
+    def is_suppressed(line_idx: int, sev: str = "INFO", msg: str = "") -> bool:
         """与 Python 侧同一约定：当前行或上一行含 skillgate: ignore 即视为
         已声明的抑制（Bandit # nosec / NOSONAR 的同类做法）。
 
         md 侧原先没有这段，导致文档里的 `<!-- skillgate: ignore -->` 完全无效——
         抑制约定只对 .py 生效，对 .md 是装饰。这是一致性缺陷，补上。
+        §3bb 起两侧都记入 result.waivers（不可无痕），`--no-waivers` 可关。
         """
-        if 0 < line_idx <= len(lines) and "skillgate: ignore" in lines[line_idx - 1]:
+        if not WAIVERS_ENABLED:
+            return False
+        cur = lines[line_idx - 1] if 0 < line_idx <= len(lines) else ""
+        prev = lines[line_idx - 2] if line_idx > 1 else ""
+        if "skillgate: ignore" in cur or "lgd: ignore" in cur:
+            note_waiver(result, filepath, line_idx, sev, msg or "行内豁免")
             return True
-        if line_idx > 1 and "skillgate: ignore" in lines[line_idx - 2]:
+        if "skillgate: ignore" in prev or "lgd: ignore" in prev:
+            note_waiver(result, filepath, line_idx, sev, msg or "上一行豁免")
             return True
         return False
 
@@ -3835,6 +3943,10 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
         if f.category in NON_SCORING_CATEGORIES:
             f.scoring = False
 
+    # §3bb：把每条豁免"实际压掉了多严重的东西"补上，再计分。
+    # 豁免本身不改分数（正常仓库要压噪声），但必须可被审计方看见。
+    annotate_waiver_severities(result)
+
     # Compute score
     # 截断不按条扣分（它只是"我没读全"），但**封顶 A，不给 A+**：
     # 最高档只留给"我确实读完了"的扫描。否则 12 MB 文件里 4 MB 没读，却照样 A+，
@@ -3871,6 +3983,17 @@ def print_terminal_report(result: ScanResult, fail_under: int = None):
     print(f"  扫描文件数: {result.files_scanned}")
     if result.excluded:
         print(f"  显式排除: {', '.join(result.excluded)}")
+    # §3bb：豁免必须说出来。不说＝被审对象可以自己把高危项签掉。
+    if result.waivers:
+        counts = {}
+        for w in result.waivers:
+            sev = w.get("max_severity", w.get("severity", "LOW"))
+            counts[sev] = counts.get(sev, 0) + 1
+        order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+        parts = ["%s %d" % (s, counts[s]) for s in sorted(counts, key=lambda x: order.get(x, 9))]
+        print(f"  行内豁免: {len(result.waivers)} 处（{', '.join(parts)}）—— 需人工复核")
+        if not WAIVERS_ENABLED:
+            print("  （本轮 --no-waivers：豁免未生效，上述命中已按原级别计入）")
     print(f"{'='*60}")
     print(f"  Trust Score: {result.trust_score}/100  ({result.grade})")
     print(f"{'='*60}")
@@ -4126,6 +4249,9 @@ def main():
                              action="extend",
                              help="显式排除的路径（相对 skill_dir），如 _demo；可重复指定，"
                                   "排除项会记入结果，用于复现")
+    scan_parser.add_argument("--no-waivers", action="store_true",
+                             help="不采纳被审对象的行内豁免（`skillgate: ignore`）："
+                                  "复核与发布门禁用这个口径，被审对象说什么都不算豁免")
 
     # Quickstart subcommand
     quickstart_parser = sub.add_parser("quickstart", help="快速演示 SkillGate 怎么用")
@@ -4192,6 +4318,11 @@ def main():
                 sys.exit(1)
             else:
                 sys.exit(0)
+
+        if args.no_waivers:
+            # §3bb：复核/发布口径——被审对象的行内豁免一律不采纳
+            global WAIVERS_ENABLED  # noqa: PLW0603 - 单进程 CLI 一次性开关
+            WAIVERS_ENABLED = False
 
         result = scan_skill(args.skill_dir, args.exclude)
 

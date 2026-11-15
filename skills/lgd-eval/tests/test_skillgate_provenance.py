@@ -24,7 +24,7 @@ SRC = ROOT / "skills" / "lgd-eval" / "scripts" / "skillgate.py"
 VENDOR = ROOT / "vendor" / "scripts" / "skillgate.py"
 
 # 与 lgd-gate 仓正典同源，改动必须三处一起同步并更新此值
-PINNED_SHA256 = "ee46f0479da33d2a914c3967613a99cbb6d674e3b2ad7537fe9ad003bab13635"
+PINNED_SHA256 = "3cdaa024c0e1608ab9612587f8e590fcbd0f16ed56a5002548729b53a8e904f0"
 
 
 def _sha(p: Path) -> str:
