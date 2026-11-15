@@ -2,12 +2,20 @@
 
 记录评测引擎的实测基线，全部可复跑。静态规则判定，无模型采样。
 
+> **口径与日期纪律**：下表的数字必须与「当日实跑、当前引擎」一致。改规则就会改分数，
+> 改完不重跑就写结论，等于把过期数字当承诺发布。每次更新请连命令与日期一起写。
+
 ## 1. 对上架技能包的实测（评测器作为门禁使用）
 
-| 被测对象 | 五维 | 安全扫描 | 结论 |
+| 被测对象 | 五维 / 安全扫描 | 结论 | 复跑 |
 |---|---|---|---|
-| LGD 门禁法（lgd-gate-methodology） | 100 / 100，A+ | 0 findings，100 / A+ | exit 0，可上架 |
-| LGD 评测引擎（lgd-eval-engine，本包） | 100 / 100，A+ | 0 findings，100 / A+ | exit 0，可上架 |
+| LGD 评测引擎（lgd-eval-engine，本包） | 自扫 **89 / A**：1 MEDIUM + 7 LOW + INFO 若干 | 通过（无 HIGH/CRITICAL） | `python scripts/skillgate.py scan .`，2026-11-15，rule_version v3.1.3，扫描 27 文件 |
+| LGD 门禁法（lgd-gate-methodology） | 未于本次复测（NOT RE-RUN） | 待复测，不沿用旧结论 | 需在被测目录实跑后回填 |
+
+本包那条 MEDIUM 是 `scripts/sandbox.py:96` 的 `{k: v for k, v in os.environ.items() if k not in PROXY_VARS}`
+——沙箱为子进程重建环境变量而遍历 `os.environ`，是**真阳性但属设计意图**。7 条 LOW 为
+`urlopen`、`tempfile.mkdtemp`、`socket`、开发依赖未钉版本这类通用形态。分数因此是 89 而非 100：
+**这条记录以前写着「0 findings，100/A+」，与实测不符，已按当日实跑更正。**
 
 ## 2. 引擎自身仓库全仓自扫（内部基线）
 
