@@ -43,6 +43,10 @@ except ImportError:
 
 # ── Check patterns ──────────────────────────────────────────────────────────
 
+# §3bc：同一构造在 AST 与文本表里各登记一次，就是"扣两次分"。
+# 这些构造由 AST 独占（它有参数上下文），文本表命中同文件同一行时让位。
+AST_OWNED_CONSTRUCTS = ("shutil.rmtree",)
+
 # 1. Dangerous code execution
 DANGEROUS_CODE_PATTERNS = [
     (r"\beval\s*\(", "MEDIUM", "eval() 动态代码执行（工具常用，需人工判断）"),  # skillgate: ignore
@@ -559,18 +563,28 @@ def annotate_waiver_severities(result):
         best = None
         tables = (DANGEROUS_CODE_PATTERNS, NETWORK_PATTERNS, CREDENTIAL_PATTERNS,
                   FILESYSTEM_PATTERNS, EXCESSIVE_AGENCY_PATTERNS, HONESTY_PATTERNS,
-                  AUTH_PATTERNS, PROMPT_INJECTION_PATTERNS, INSTALL_HOOKS)
+                  AUTH_PATTERNS, PROMPT_INJECTION_PATTERNS)
         for table in tables:
             for row in table:
-                if len(row) < 2:
+                # 只接受 (pattern, severity, …) 形状。第一版把 INSTALL_HOOKS 也塞进来，
+                # 它是 ("preinstall", "install", …) 这样的字符串元组，逐字符被当成
+                # "规则 + 级别"，等于把 'p' 当正则、'r' 当级别——静默的垃圾输入。
+                if not isinstance(row, (tuple, list)) or len(row) < 3:
                     continue
                 pat, sev = row[0], row[1]
+                if sev not in _SEV_RANK:
+                    continue
                 try:
                     if _search_any(pat, text) and order.get(sev, 0) > order.get(best or "INFO", 0):
                         best = sev
                 except Exception:
                     continue
-        for pat, sev, _why in WINDOWS_EXEC_SINKS:
+        for row in WINDOWS_EXEC_SINKS:
+            if not isinstance(row, (tuple, list)) or len(row) < 2:
+                continue
+            pat, sev = row[0], row[1]
+            if sev not in _SEV_RANK:
+                continue
             try:
                 if re.search(pat, text, re.IGNORECASE) and order.get(sev, 0) > order.get(best or "INFO", 0):
                     best = sev
@@ -654,6 +668,23 @@ def _strip_comment(line: str) -> str:
                 out.append(ch)
                 i += 1
     return "".join(out)
+
+
+def _literal_is_remote_exec(line: str, open_paren_idx: int) -> bool:
+    """固定参数里的命令文本本身含"下载并交给解释器/编码执行"的痕迹。
+
+    这种"固定"没有意义——命令本身就是远程执行。
+    与 ast_analyzer.DangerousCallVisitor.REMOTE_EXEC_MARKERS 同一份判据，
+    两边必须一起改（tests/test_single_severity.py 会盯住）。
+    """
+    try:
+        from ast_analyzer import DangerousCallVisitor as _DCV
+        markers = _DCV.REMOTE_EXEC_MARKERS
+    except Exception:
+        markers = ("| sh", "| bash", "| python", "| node", "iwr ", "Invoke-Expression")
+    tail = line[open_paren_idx:]
+    low = tail.lower()
+    return any(m.lower() in low for m in markers)
 
 
 def _call_args_are_literal(line: str, open_paren_idx: int) -> bool:
@@ -772,6 +803,60 @@ FIXED_DOWNGRADE = {
         ("LOW", "固定命令 subprocess shell=True，无注入面，建议人工确认"),
     r"\bpost\s*\([^)]*https?://": ("LOW", "对外请求，URL 固定，需确认接口用途"),
 }
+
+# §3bc：上面两张表原先和 ast_analyzer 各写一份级别，两份从不兑账——
+# 14 个用例里 9 个判不同级，而 .py 文件的实际级别由 AST 决定（正则随后被跳过）。
+# 现在级别只有一个来源：ast_analyzer.DangerousCallVisitor.CALL_SEVERITY。
+# 这里在导入时把文本表的级别改写成同一来源，并同步生成固定参数降级项。
+_CALL_NAME_BY_PATTERN = {
+    r"\beval\s*\(": "eval",
+    r"\bexec\s*\(": "exec",
+    r"\bcompile\s*\(": "compile",
+    r"(?<!\.)\bcompile\s*\(": "compile",
+    r"\b__import__\s*\(": "__import__",
+    r"\bbuiltins\.__import__\s*\(": "builtins.__import__",
+    r"\bos\.system\s*\(": "os.system",
+    r"\bos\.popen\s*\(": "os.popen",
+    r"\bpickle\.load(s)?\s*\(": "pickle.load",
+    r"\bshutil\.rmtree\s*\(": "shutil.rmtree",
+    r"\bsubprocess\.(run|call|Popen|check_output)\s*\([^)]*shell\s*=\s*True": "subprocess.run",
+}
+
+
+def _align_severities_with_ast():
+    """把文本表的级别对齐到 AST 那张唯一来源表（§3bc）。导入期执行，幂等。"""
+    try:
+        from ast_analyzer import DangerousCallVisitor as _DCV
+    except Exception:
+        return  # 引擎不在同目录时保持原表，但不静默声称已经对齐
+    table = _DCV.CALL_SEVERITY
+    for idx, row in enumerate(DANGEROUS_CODE_PATTERNS):
+        pat, sev, msg = row[0], row[1], row[2]
+        name = _CALL_NAME_BY_PATTERN.get(pat)
+        if name and name in table:
+            sev_dyn, sev_lit, ast_msg = table[name]
+            DANGEROUS_CODE_PATTERNS[idx] = (pat, sev_dyn, ast_msg)
+            if sev_lit != sev_dyn:
+                FIXED_DOWNGRADE[pat] = (sev_lit, ast_msg + "（固定参数）")
+            else:
+                FIXED_DOWNGRADE.pop(pat, None)
+    for idx, row in enumerate(FILESYSTEM_PATTERNS):
+        pat, sev, msg = row[0], row[1], row[2]
+        name = _CALL_NAME_BY_PATTERN.get(pat)
+        if name and name in table:
+            FILESYSTEM_PATTERNS[idx] = (pat, table[name][0], table[name][2])
+
+    # subprocess 的 shell=True 是"字符串交给 shell"，AST 侧升到 CRITICAL；
+    # 文本表这一行必须同样升，否则又是"表里 HIGH、实跑 CRITICAL"。
+    _subp_shell = r"\bsubprocess\.(run|call|Popen|check_output)\s*\([^)]*shell\s*=\s*True"
+    for idx, row in enumerate(DANGEROUS_CODE_PATTERNS):
+        if row[0] == _subp_shell:
+            DANGEROUS_CODE_PATTERNS[idx] = (row[0], "CRITICAL", "subprocess shell=True（字符串交给 shell）")
+            FIXED_DOWNGRADE.pop(row[0], None)
+
+
+_align_severities_with_ast()
+
 
 # md 示例/讨论语境标记词：行内含这些词时，注入模式命中最可能是
 # "讨论/演示如何检测注入"而非"实际注入指令"
@@ -1146,7 +1231,9 @@ def scan_python_file(filepath: Path, result: ScanResult):
                     if m.start() >= len(code_line) or code_line[m.start()] == " ":
                         continue
                     open_pos = base_line.find("(", m.start())
-                    if open_pos != -1 and _call_args_are_literal(base_line, open_pos):
+                    # 写死的命令若本身已是"下载管道进解释器"，不降级（与 AST 侧同一条判据）
+                    if open_pos != -1 and _call_args_are_literal(base_line, open_pos) \
+                            and not _literal_is_remote_exec(base_line, open_pos):
                         sev, msg_out = downgrade
                     else:
                         sev, msg_out = severity, msg
@@ -1225,6 +1312,14 @@ def scan_python_file(filepath: Path, result: ScanResult):
             if is_comment_line(line):
                 continue
             if is_suppressed(i):
+                continue
+            # §3bc 去重：shutil.rmtree 同时登记在 AST（structural）与本表（文本），
+            # 实测同一行被扣两次（HIGH 69/C 里还叠一条 MEDIUM）。
+            # 对 .py 而言 AST 有参数上下文、判得更准，本表在这条上让位。
+            # 注意：pattern 是正则文本，点号已转义成 `\.`——比对前必须把反斜杠去掉，
+            # 否则 "shutil.rmtree" 永远匹配不到 "shutil\.rmtree"（装置自错第 13 次）。
+            _p_norm = pattern.replace("\\", "")
+            if any(k in _p_norm for k in AST_OWNED_CONSTRUCTS) and i in ast_lines:
                 continue
             if re.search(pattern, code_lines[i - 1]):
                 result.findings.append(Finding(
