@@ -16,7 +16,7 @@ AI Agent 技能评测引擎。给任意技能目录打一个 0–100 的 Trust S
 # 方式 A（今天就能用）：从 Release 下 tgz，解包后运行 —— 这条路线已实测通过
 #   https://github.com/LGD-Eval/lgd-gate/releases/download/v1.0.0/lgd-eval-1.0.0.tgz
 # 方式 B（尚未发布）：npx lgd-eval —— 该包还没有发布到 npm registry，
-#   `GET https://registry.npmjs.org/lgd-eval` 现在返回 404，所以这条命令暂时会失败。
+#   现在请求 registry 的 `lgd-eval` 包元数据，返回 404，所以这条命令暂时会失败。
 npx lgd-eval ./my-skill
 ```
 
