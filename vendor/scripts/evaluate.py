@@ -49,7 +49,26 @@ def _rule_ids_for(findings):
     return ids
 
 
-CRIT_IDS = {"R-SEC-09", "R-SEC-10", "R-SEC-21"}          # 已证实的凭证 / 环境变量外泄
+CRIT_IDS = {"R-SEC-09", "R-SEC-10", "R-SEC-21", "R-SEC-22"}          # 已证实的凭证 / 环境变量外泄 / 隐形注入
+
+# 不可见字符区间：正则看不见它们，必须按码位扫（CSA 2026-03 的 Unicode Tags 注入）
+INVISIBLE_RANGES = (
+    (0xE0000, 0xE007F, "Unicode Tags 块（隐形承载 ASCII 指令）"),
+    (0x200B, 0x200F, "零宽字符"),
+    (0x2060, 0x2064, "不可见格式字符"),
+)
+
+
+def _invisible_hits(text):
+    """返回 [(码位, 区间名)]，每个区间只报一次，避免一部文档刷出几十条。"""
+    hits = {}
+    for ch in text:
+        cp = ord(ch)
+        for lo, hi, label in INVISIBLE_RANGES:
+            if lo <= cp <= hi:
+                hits.setdefault(label, cp)
+                break
+    return [(cp, label) for label, cp in hits.items()]
 
 # 评分与授权分离：评测只给结论，授权只能由人单独授予。
 # 此前按分数直接打印「L0 免审批（可直接运行）」，等于一个数字替人签了授权。
@@ -702,6 +721,7 @@ def evaluate_skill(skill_path, provenance="self"):
     # 但 tests/fixtures 这类"检测夹具"是评测输入而非被测技能本体，排除，
     # 否则任何自带回归用例的技能都会被自己的用例拖垮分数。
     scan_targets = []
+    doc_targets = []
     skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv",
                  ".idea", ".vscode", "dist", "build", "site-packages",
                  "fixtures", "testdata", "__snapshots__",
@@ -717,6 +737,33 @@ def evaluate_skill(skill_path, provenance="self"):
             if e in (".py", ".js", ".ts", ".mjs", ".cjs",
                      ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd"):
                 scan_targets.append(os.path.join(dirpath, fn))
+            # 文档也是攻击面：SKILL.md 是智能体运行时真正读进去的指令文本
+            elif e in (".md", ".markdown", ".txt"):
+                doc_targets.append(os.path.join(dirpath, fn))
+
+    # ---- 不可见字符：正则看不见它们，等于没查 ----
+    # CSA 2026-03 报告的形态：U+E0000–E007F 逐字对应 ASCII，屏幕上完全不显示，
+    # 模型照读。修复前两引擎对这类载荷一律 100/A+ 放行。
+    for doc_path in doc_targets:
+        doc_file = os.path.relpath(doc_path, skill_path).replace(os.sep, "/")
+        if os.path.basename(doc_path) == self_name:
+            continue
+        try:
+            with open(doc_path, 'r', encoding='utf-8') as f:
+                doc = f.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for cp, label in _invisible_hits(doc):
+            line_no = doc[:doc.find(chr(cp))].count("\n") + 1
+            lines_of_doc = doc.splitlines()
+            hit = lines_of_doc[line_no - 1] if line_no - 1 < len(lines_of_doc) else ""
+            if "skillgate: ignore" in hit:
+                continue
+            msg = "%s:%d: 不可见字符承载指令（%s，U+%04X）" % (
+                doc_file, line_no, label, cp)
+            if msg not in security_issues:
+                security_issues.append(msg)
+                score -= 15
 
     for script_path in scan_targets:
         script_file = os.path.relpath(script_path, skill_path).replace(os.sep, "/")
@@ -1204,6 +1251,10 @@ EVIDENCE_RULES = [
     ("命令注入风险", "R-SEC-03", "安全检查", "scripts/",
      "改用参数列表形式调用（shell=False），或对进入 shell 的变量做白名单校验",
      "重跑规则 R-SEC-03：不再出现 shell=True 即通过"),
+    ("不可见字符承载指令", "R-SEC-22", "安全检查", "SKILL.md",
+     "删除文档内全部不可见字符（U+E0000–E007F Tags 块、零宽字符、不可见格式字符）；"
+     "正常文案不需要它们，出现即视为隐藏指令通道",
+     "重跑规则 R-SEC-22：文档内不可见格式字符归零即通过"),
     ("动态执行", "R-SEC-04", "安全检查", "scripts/",
      "用显式分支替代 eval/exec；确需动态执行时限定受控白名单并留审计日志",
      "重跑规则 R-SEC-04：eval/exec 不再接受外部输入即通过"),
