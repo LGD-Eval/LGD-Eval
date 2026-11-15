@@ -1075,13 +1075,30 @@ def scan_md_file(filepath: Path, result: ScanResult):
     # 代码块行（``` ... ```）跳过：示例载荷非指令本身
     in_code_block = False
     code_lines = set()
+    fence_start = 0
     for i, line in enumerate(lines, 1):
         if line.strip().startswith("```"):
             in_code_block = not in_code_block
             code_lines.add(i)
+            if in_code_block:
+                fence_start = i
             continue
         if in_code_block:
             code_lines.add(i)
+
+    # 未闭合的围栏：一条 ``` 就能把后面整篇文档变成"代码块"。
+    # 实测（audit2/probe_unclosed_fence.py）：````text` 开了不关，越狱句写在后面，
+    # 分数 100/A+ —— 因为注入全落进"代码块示例、不计分"通道。
+    # 口径：示例豁免的前提是"这是个完整的示例块"。围栏没闭合，其后内容不算示例。
+    unclosed_fence_at = fence_start if in_code_block else 0
+    if unclosed_fence_at:
+        code_lines -= {n for n in code_lines if n >= unclosed_fence_at}
+        result.findings.append(Finding(
+            severity="MEDIUM", category="coverage",
+            message="未闭合的代码围栏（第 %d 行起）：其后内容不视为示例，已按正文扫描"
+                    % unclosed_fence_at,
+            file=str(filepath), line=unclosed_fence_at
+        ))
 
     def is_suppressed(line_idx: int) -> bool:
         """与 Python 侧同一约定：当前行或上一行含 skillgate: ignore 即视为
