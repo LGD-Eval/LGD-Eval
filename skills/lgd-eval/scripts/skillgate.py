@@ -1770,22 +1770,25 @@ def grade_from_score(score: int) -> str:
     return "F"
 
 
+# 徽章颜色：唯一来源是**等级**，不另立一套分数分档。
+# 旧实现是 5 档（90/75/60/40），等级是 6 档（90/80/70/60/40）——
+# 于是 70–79 分等级说 B、徽章给 A 的颜色，79 和 80 印出来一模一样。
+COLOR_FOR_GRADE = {
+    "A+": "brightgreen",
+    "A": "green",
+    "B": "yellow",
+    "C": "orange",
+    "D": "red",
+    "F": "lightgrey",
+}
+
+
 def generate_badge(result: ScanResult) -> str:
     """Generate a shields.io-style SVG badge for Trust Score."""
     score = result.trust_score
     grade = result.grade
 
-    # Color based on score
-    if score >= 90:
-        color = "brightgreen"
-    elif score >= 75:
-        color = "green"
-    elif score >= 60:
-        color = "yellow"
-    elif score >= 40:
-        color = "orange"
-    else:
-        color = "red"
+    color = COLOR_FOR_GRADE.get(grade, "lightgrey")
 
     label = "trust score"
     value = f"{score}/100 {grade}"
