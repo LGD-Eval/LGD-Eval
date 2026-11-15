@@ -947,12 +947,12 @@ def evaluate_skill(skill_path, provenance="self"):
                 # skillgate 早就对这类行做了豁免（is_rule_literal_line），evaluate 没做，
                 # 于是同一个仓库 skillgate 报 93 A+、evaluate 报 0 F —— 一件东西两个答案。
                 if rid in _LITERAL_RULES and _is_rule_literal_line(hit_line, prev_line):
-                    _exempted.append("%s:%d（规则定义行）" % (script_file, line_no))
+                    _exempted.append("%s:%d [%s]（规则定义行）" % (script_file, line_no, rid))
                     continue
                 # 夹具样本：tests/fixtures 里的"恶意样例"是检测对象，不是产品缺陷。
                 # 豁免必须可见——统计条数与文件，报告里单独印，不许静默放行。
                 if rid in _LITERAL_RULES and _is_fixture_path(script_file):
-                    _exempted.append("%s:%d（夹具样本）" % (script_file, line_no))
+                    _exempted.append("%s:%d [%s]（夹具样本）" % (script_file, line_no, rid))
                     continue
                 msg = "%s:%d: %s" % (script_file, line_no, rule_name)
                 if msg not in security_issues:
@@ -980,10 +980,10 @@ def evaluate_skill(skill_path, provenance="self"):
             # AST 层是正则层的补充，不是例外通道：它抓到的如果是"规则定义行"
             # 或"夹具样本"，与正则层同样豁免，否则同一个病会从另一个门再进来。
             if _is_rule_literal_line(hit_line, prev_line):
-                _exempted.append("%s:%d（规则定义行·AST）" % (script_file, line_no))
+                _exempted.append("%s:%d [AST]（规则定义行·AST）" % (script_file, line_no))
                 continue
             if _is_fixture_path(script_file):
-                _exempted.append("%s:%d（夹具样本·AST）" % (script_file, line_no))
+                _exempted.append("%s:%d [AST]（夹具样本·AST）" % (script_file, line_no))
                 continue
             # 同一文件同一行同一类别已由正则报过，不重复扣分
             kw = rule_name.split("（")[0]
@@ -1204,6 +1204,13 @@ def evaluate_skill(skill_path, provenance="self"):
               f"（{len(_files)} 个文件）：{', '.join(_files[:6])}"
               f"{' 等' if len(_files) > 6 else ''}")
         print("     仅豁免凭证/私钥/TLS 三类字面量规则；行为类规则从不豁免。")
+        # 逐条列出，不只给条数：夹具里放一个"真凭证"就会被这条豁免吞掉，
+        # 所以被吞掉的每一条都必须能被眼睛看到（最多印 12 条，其余看 --evidence-json）。
+        for _x in _exempted[:12]:
+            print("     · " + _x)
+        if len(_exempted) > 12:
+            print("     · …其余 %d 条未逐行打印（文件清单见上）；需要全清单请在本地复跑本命令" % (len(_exempted) - 12))
+        print("     ⚠ 夹具路径下若真存在有效凭证，本条豁免不会报错——请人工过一遍上面的清单。")
     # 评分与授权分离：分数只给"风险档位"，不签发任何执行权限。
     # 此前这里按分数直接打印「L0 免审批（可直接运行）」，等于让一个数字签了授权。
     tier = risk_tier_for(score)
