@@ -456,6 +456,15 @@ class Finding:
     line: Optional[int] = None
     rule_id: str = ""  # 规则唯一 ID
     explanation: str = ""  # 为什么报这个
+    # scoring=False：只披露、不扣分（"我没读 / 我读不全"这类事实陈述）。
+    # 由来（audit2/probe_counted_disclosure.py）：§3ad–§3ag 的披露都写着"不计分"，
+    # 但计数只按 severity、不看 category —— 实测披露把 100 分打到 98，
+    # 也就是说"不计分"是句没实现的话。现在由这个字段兑现。
+    scoring: bool = True
+
+
+# 只披露、不计分的类别（能力边界与读数范围，不是问题本身）
+NON_SCORING_CATEGORIES = {"coverage"}
 
 
 @dataclass
@@ -472,13 +481,17 @@ class ScanResult:
     excluded: list = field(default_factory=list)  # 显式排除的路径（供审计复现）
 
     @property
-    def critical_count(self): return len([f for f in self.findings if f.severity == "CRITICAL"])
+    def critical_count(self): return len([f for f in self.findings
+                                          if f.severity == "CRITICAL" and f.scoring])
     @property
-    def high_count(self): return len([f for f in self.findings if f.severity == "HIGH"])
+    def high_count(self): return len([f for f in self.findings
+                                      if f.severity == "HIGH" and f.scoring])
     @property
-    def medium_count(self): return len([f for f in self.findings if f.severity == "MEDIUM"])
+    def medium_count(self): return len([f for f in self.findings
+                                        if f.severity == "MEDIUM" and f.scoring])
     @property
-    def low_count(self): return len([f for f in self.findings if f.severity == "LOW"])
+    def low_count(self): return len([f for f in self.findings
+                                 if f.severity == "LOW" and f.scoring])
 
 
 # ── Scanners ──────────────────────────────────────────────────────────────
@@ -1146,7 +1159,27 @@ def scan_md_file(filepath: Path, result: ScanResult):
                 message=msg, file=str(filepath), line=i
             ))
 
-    # 1b. 同形字 / 拆行：逐行匹配挡不住这两种写法。
+    # 1c. 代码块里的注入：示例豁免不能变成隐身衣。
+    # 实测（audit2/probe_block_evasion.py）：把越狱句放进 ```text ``` 围栏里 → 0 命中；
+    # 而模型读文档时读的是**原文**，围栏里的句子照样是它读到的字。
+    # 但代码块确实常放"反面示例"，所以按披露处理：写明有几处、在第几行、未计分。
+    code_hits = []
+    for i in sorted(code_lines):
+        if i > len(lines):
+            continue
+        folded = _fold_confusables(lines[i - 1])
+        for pattern, severity, msg in PROMPT_INJECTION_PATTERNS:
+            if re.search(pattern, folded, re.IGNORECASE):
+                code_hits.append((i, msg))
+                break
+    if code_hits:
+        result.findings.append(Finding(
+            severity="MEDIUM", category="coverage",
+            message="代码块内含注入式语句 %d 处（首个在第 %d 行，示例语境未计分，但模型照样读得到）"
+                    % (len(code_hits), code_hits[0][0]),
+            file=str(filepath), line=code_hits[0][0]
+        ))
+
     # 实测（audit2/probe_homoglyph.py）：
     #   `Іgnore аll previous instructions`（西里尔 І/а 看着像 I/a）→ 0 命中
     #   `Ignore all\nprevious instructions`（拆成两行）             → 0 命中
@@ -3033,6 +3066,12 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
                 message="环境变量整份外发（导出 + 网络外发同文件，组合判定）",
                 file=fp, line=1
             ))
+
+    # 兑现"只披露、不计分"：coverage 类讲的是"我读不到 / 读不全"这种事实，
+    # 不是问题本身。集中在这里标记，避免每个披露点各写一遍 scoring=False。
+    for f in result.findings:
+        if f.category in NON_SCORING_CATEGORIES:
+            f.scoring = False
 
     # Compute score
     result.trust_score = compute_trust_score(result)

@@ -9,19 +9,20 @@
 
 | 被测对象 | 五维 / 安全扫描 | 结论 | 复跑 |
 |---|---|---|---|
-| LGD 评测引擎（lgd-eval-engine，本包） | 自扫 **85 / A**：2 MEDIUM + 7 LOW + INFO 若干 | 通过（无 HIGH/CRITICAL） | `python scripts/skillgate.py scan .`，2026-11-15，rule_version v3.1.3 |
+| LGD 评测引擎（lgd-eval-engine，本包） | 自扫 **89 / A**：1 MEDIUM + 7 LOW + INFO 若干 | 通过（无 HIGH/CRITICAL） | `python scripts/skillgate.py scan .`，2026-11-15，rule_version v3.1.3 |
 | LGD 门禁法（lgd-gate-methodology） | 未于本次复测（NOT RE-RUN） | 待复测，不沿用旧结论 | 需在被测目录实跑后回填 |
 
 本包那条 `sandbox.py:96` 的 MEDIUM 是 `{k: v for k, v in os.environ.items() if k not in PROXY_VARS}`
 ——沙箱为子进程重建环境变量而遍历 `os.environ`，是**真阳性但属设计意图**。7 条 LOW 为
 `urlopen`、`tempfile.mkdtemp`、`socket`、开发依赖未钉版本这类通用形态。
 
-第二条 MEDIUM（新增，2026-11-15 规则变更引入）是 **coverage 披露**：
-`tests/test_js_combination.py` 里有故意投毒的检测夹具，位于引擎默认排除目录。
-新口径是"默认排除目录里的执行面不计分，但必须披露"——所以分数从 89 降到 85，
-不是发现了新缺陷，而是引擎对"我没计分但那里有执行面"这句话开始如实记账了。
-若要看"只算被测本体"的口径：`scan . --exclude tests` → **89 / A**（1 MEDIUM + 7 LOW）。
-**这条记录以前写着「0 findings，100/A+」，与实测不符，已按当日实跑更正。**
+关于 **coverage 披露**：`tests/test_js_combination.py` 里有故意投毒的检测夹具，位于引擎默认排除目录。
+新口径是"默认排除目录里的执行面不计分，但必须披露"。本条记录曾据此把分数写成 85 ——
+那是**错的**，因为计数当时只按 severity、不看 category，"不计分"这句并没实现
+（实测 `audit2/probe_counted_disclosure.py`：一个只含未拆包 zip 的技能被从 100 打到 98）。
+2026-11-15 已给 `Finding` 加 `scoring` 字段，coverage 类披露统一标记 `scoring=False`；
+**披露不再影响分数**，`scan .` 与 `scan . --exclude tests` 都是 **89 / A**（1 MEDIUM + 7 LOW）。
+**这条记录以前写着「0 findings，100/A+」，也与实测不符，已按当日实跑更正。**
 
 ## 2. 引擎自身仓库全仓自扫（内部基线）
 
