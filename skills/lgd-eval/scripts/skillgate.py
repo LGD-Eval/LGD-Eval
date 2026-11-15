@@ -56,7 +56,10 @@ DANGEROUS_CODE_PATTERNS = [
     (r"\bos\.popen\s*\(", "HIGH", "os.popen() shell 调用"),  # skillgate: ignore
     (r"\b__import__\s*\(", "MEDIUM", "动态 import"),
     (r"\bpickle\.load(s)?\s*\(", "HIGH", "pickle 反序列化"),
-    (r"\byaml\.load\s*\([^)]*\)(?![^#]*Loader\s*=\s*SafeLoader)", "MEDIUM", "yaml.load 非安全加载"),
+    # §3bd：负向前瞻原来写在 `\)` 之后，而 `Loader=...` 在括号**里面**，
+    # 前瞻从 `)` 往后看当然看不到 → `yaml.load(x, Loader=yaml.SafeLoader)` 照样报 MEDIUM。
+    # 现在把断言放回括号内：先确认括号里没有 SafeLoader，才继续匹配。
+    (r"\byaml\.load\s*\((?![^)]*Loader\s*=\s*[^)]*SafeLoader)", "MEDIUM", "yaml.load 非安全加载"),
     (r"(?<!\.)\bcompile\s*\(", "INFO", "compile() 动态代码编译（低风险）"),
     (r"\bgetattr\s*\([^)]*os\.", "MEDIUM", "getattr 动态调用 os 模块"),
     (r"\bglobals\(\)", "INFO", "globals() 访问全局命名空间（低风险）"),
@@ -86,6 +89,16 @@ DANGEROUS_CODE_PATTERNS = [
     (r"\bexecSync\s*\(", "HIGH", "Node execSync 同步执行 shell"),
     (r"\bshell\s*:\s*true", "HIGH", "Node 子进程 shell:true"),
     (r"\bnew\s+Function\s*\(", "HIGH", "new Function 动态构造代码"),
+    # === §3bd 类覆盖：同族的其它入口 ===
+    # 上一站留下的原话是"新构造只写进一层，registry 守卫发现不了"。实测 8 个未登记
+    # 构造 100/A+ 直通之后，这里按「族」补，而不是按探针里那几个例子补。
+    (r"\bos\.exec(v|ve|l|le|lp|lpe|vp|vpe)\s*\(", "CRITICAL", "os.exec* 进程替换为外部程序"),
+    (r"\bos\.(spawn[a-z]*|posix_spawn[a-z]*)\s*\(", "MEDIUM", "os.spawn* 启动外部进程"),
+    (r"\bpty\.spawn\s*\(", "HIGH", "pty.spawn 起交互式 shell"),
+    (r"\brunpy\.run_(path|module)\s*\(", "HIGH", "runpy 执行磁盘上的代码"),
+    (r"\bdill\.load(s)?\s*\(", "HIGH", "dill 反序列化"),
+    (r"\bctypes\.(memmove|memset)\s*\(", "MEDIUM", "ctypes 原生内存写"),
+    (r"\byaml\.full_load\s*\(", "MEDIUM", "yaml.full_load 非安全加载"),
 ]
 
 # 2. Network calls / data exfiltration
@@ -820,7 +833,64 @@ _CALL_NAME_BY_PATTERN = {
     r"\bpickle\.load(s)?\s*\(": "pickle.load",
     r"\bshutil\.rmtree\s*\(": "shutil.rmtree",
     r"\bsubprocess\.(run|call|Popen|check_output)\s*\([^)]*shell\s*=\s*True": "subprocess.run",
+    # §3bd：下面这些以前只在文本表里登记过（"表有、AST 无"），是同一类不一致。
+    # 一条正则对应多个调用名时给元组；_align 只在全族同级别时才改写，否则保留原表
+    # 并由 tests/test_dangerous_call_registry.py 顶红。
+    r"\byaml\.load\s*\([^)]*\)(?![^#]*Loader\s*=\s*SafeLoader)": "yaml.load",
+    r"\byaml\.full_load\s*\(": "yaml.full_load",
+    r"\byaml\.unsafe_load\s*\(": "yaml.unsafe_load",
+    r"\bmarshal\.load(s)?\s*\(": ("marshal.load", "marshal.loads"),
+    r"\bjsonpickle\.decode\s*\(": "jsonpickle.decode",
+    r"\bdill\.load(s)?\s*\(": ("dill.load", "dill.loads"),
+    r"\bimportlib\.import_module\s*\(": "importlib.import_module",
+    r"\bctypes\.CDLL\s*\(": "ctypes.CDLL",
+    r"\bctypes\.windll\s*\(": "ctypes.windll",
+    r"\bctypes\.oledll\s*\(": "ctypes.oledll",
+    r"\bctypes\.(memmove|memset)\s*\(": ("ctypes.memmove", "ctypes.memset"),
+    r"\bos\.exec(v|ve|l|le|lp|lpe|vp|vpe)\s*\(": ("os.execv", "os.execve", "os.execl",
+                                                    "os.execle", "os.execlp", "os.execlpe",
+                                                    "os.execvp", "os.execvpe"),
+    r"\bos\.(spawn[a-z]*|posix_spawn[a-z]*)\s*\(": ("os.spawnl", "os.spawnle", "os.spawnlp",
+                                                    "os.spawnlpe", "os.spawnv", "os.spawnve",
+                                                    "os.spawnvp", "os.spawnvpe",
+                                                    "os.posix_spawn", "os.posix_spawnp"),
+    r"\bpty\.spawn\s*\(": "pty.spawn",
+    r"\brunpy\.run_(path|module)\s*\(": ("runpy.run_path", "runpy.run_module"),
+    r"\bshelve\.open\s*\(": "shelve.open",
+    r"\bdl\.open\s*\(": "dl.open",
 }
+
+
+# 「设计上只有文本侧」的正则：AST 侧没有对应调用名，或对应的是另一套 visitor。
+# 键是正则原文，值是理由。守卫（tests/test_dangerous_call_registry.py）要求
+# 每条点分调用规则要么登记进 CALL_SEVERITY，要么在这里写明为什么不必——
+# 不许悄悄留一条只有一层的东西。
+TEXT_ONLY_BY_DESIGN = {
+    r"\bgetattr\s*\([^)]*os\.": "AST 侧由 DynamicCallVisitor 按 getattr 常量折叠判定，不走本表",
+    r"\binput\s*\(\)": "INFO 级提示（CLI 常见），AST 不重复计分",
+    r"\binput\s*\([^)]*\)": "同上（带参数形态）",
+    r"\bsetattr\s*\(": "INFO 级提示，AST 不重复计分",
+    r"\bdelattr\s*\(": "INFO 级提示，AST 不重复计分",
+    r"\b__reduce__\s*\(": "反序列化钩子的定义点，不是调用点；pickle 调用已单独计分",
+    r"\bexecSync\s*\(": "JS/Node 形态，由 js_analyzer 负责，Python AST 无对应",
+}
+
+
+def _aligned_level(name_or_names, table):
+    """一条正则对应的调用名（一个或多个）在唯一来源表里的级别。
+
+    多个名字时：全部登记且级别、说明都一致才返回；否则 None（保留原表，交给守卫报红）。
+    """
+    names = (name_or_names,) if isinstance(name_or_names, str) else tuple(name_or_names)
+    rows = []
+    for n in names:
+        if n not in table:
+            return None
+        rows.append(table[n])
+    first = rows[0]
+    if any(r[:2] != first[:2] for r in rows):
+        return None
+    return first
 
 
 def _align_severities_with_ast():
@@ -833,18 +903,20 @@ def _align_severities_with_ast():
     for idx, row in enumerate(DANGEROUS_CODE_PATTERNS):
         pat, sev, msg = row[0], row[1], row[2]
         name = _CALL_NAME_BY_PATTERN.get(pat)
-        if name and name in table:
-            sev_dyn, sev_lit, ast_msg = table[name]
-            DANGEROUS_CODE_PATTERNS[idx] = (pat, sev_dyn, ast_msg)
+        level = _aligned_level(name, table) if name else None
+        if level:
+            sev_dyn, sev_lit, _ast_msg = level
+            DANGEROUS_CODE_PATTERNS[idx] = (pat, sev_dyn, msg)
             if sev_lit != sev_dyn:
-                FIXED_DOWNGRADE[pat] = (sev_lit, ast_msg + "（固定参数）")
+                FIXED_DOWNGRADE[pat] = (sev_lit, msg + "（固定参数）")
             else:
                 FIXED_DOWNGRADE.pop(pat, None)
     for idx, row in enumerate(FILESYSTEM_PATTERNS):
         pat, sev, msg = row[0], row[1], row[2]
         name = _CALL_NAME_BY_PATTERN.get(pat)
-        if name and name in table:
-            FILESYSTEM_PATTERNS[idx] = (pat, table[name][0], table[name][2])
+        level = _aligned_level(name, table) if name else None
+        if level:
+            FILESYSTEM_PATTERNS[idx] = (pat, level[0], msg)
 
     # subprocess 的 shell=True 是"字符串交给 shell"，AST 侧升到 CRITICAL；
     # 文本表这一行必须同样升，否则又是"表里 HIGH、实跑 CRITICAL"。

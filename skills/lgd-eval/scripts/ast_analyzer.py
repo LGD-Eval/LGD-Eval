@@ -61,6 +61,72 @@ class DangerousCallVisitor(ast.NodeVisitor):
         "subprocess.Popen": ("LOW", "LOW", "subprocess.Popen() 启动外部进程"),
         "subprocess.check_output": ("LOW", "LOW", "subprocess.check_output() 启动外部进程"),
         "shutil.rmtree": ("HIGH", "HIGH", "shutil.rmtree() 递归删除"),
+        # ── §3bd：把"类"补齐，而不是逐例打补丁 ──────────────────────────
+        # 上一站自己写下的缺口：一致性守卫只覆盖 11 个已登记名，同族里没登记的
+        # 成员一条不报，而 registry 守卫照样是绿的。实测（probe_unregistered_class.py）
+        # 12 个未登记用例里 8 个 100/A+ 直通：os.exec* / os.spawn* / pty.spawn /
+        # runpy.run_path / ctypes.memmove 全部零命中。
+        # 判级沿用同一判据：写死的目标算能力声明（降级），动态喂进去算执行面（不降）。
+        "os.execv": ("CRITICAL", "LOW", "os.execv() 进程替换为外部程序"),
+        "os.execve": ("CRITICAL", "LOW", "os.execve() 进程替换为外部程序"),
+        "os.execl": ("CRITICAL", "LOW", "os.execl() 进程替换为外部程序"),
+        "os.execle": ("CRITICAL", "LOW", "os.execle() 进程替换为外部程序"),
+        "os.execlp": ("CRITICAL", "LOW", "os.execlp() 进程替换为外部程序"),
+        "os.execlpe": ("CRITICAL", "LOW", "os.execlpe() 进程替换为外部程序"),
+        "os.execvp": ("CRITICAL", "LOW", "os.execvp() 进程替换为外部程序"),
+        "os.execvpe": ("CRITICAL", "LOW", "os.execvpe() 进程替换为外部程序"),
+        "os.spawnl": ("MEDIUM", "LOW", "os.spawn*() 启动外部进程"),
+        "os.spawnle": ("MEDIUM", "LOW", "os.spawn*() 启动外部进程"),
+        "os.spawnlp": ("MEDIUM", "LOW", "os.spawn*() 启动外部进程"),
+        "os.spawnlpe": ("MEDIUM", "LOW", "os.spawn*() 启动外部进程"),
+        "os.spawnv": ("MEDIUM", "LOW", "os.spawn*() 启动外部进程"),
+        "os.spawnve": ("MEDIUM", "LOW", "os.spawn*() 启动外部进程"),
+        "os.spawnvp": ("MEDIUM", "LOW", "os.spawn*() 启动外部进程"),
+        "os.spawnvpe": ("MEDIUM", "LOW", "os.spawn*() 启动外部进程"),
+        "os.posix_spawn": ("MEDIUM", "LOW", "os.posix_spawn() 启动外部进程"),
+        "os.posix_spawnp": ("MEDIUM", "LOW", "os.posix_spawnp() 启动外部进程"),
+        "pty.spawn": ("HIGH", "HIGH", "pty.spawn() 起交互式 shell"),
+        "runpy.run_path": ("HIGH", "MEDIUM", "runpy.run_path() 执行磁盘上的代码"),
+        "runpy.run_module": ("HIGH", "MEDIUM", "runpy.run_module() 执行已安装模块"),
+        "marshal.load": ("HIGH", "HIGH", "marshal.load() 反序列化"),
+        "marshal.loads": ("HIGH", "HIGH", "marshal.loads() 反序列化（可产出 code object）"),
+        "dill.load": ("HIGH", "HIGH", "dill.load() 反序列化"),
+        "dill.loads": ("HIGH", "HIGH", "dill.loads() 反序列化"),
+        "jsonpickle.decode": ("HIGH", "HIGH", "jsonpickle.decode() 反序列化"),
+        "yaml.load": ("MEDIUM", "MEDIUM", "yaml.load() 非安全加载"),
+        "yaml.full_load": ("MEDIUM", "MEDIUM", "yaml.full_load() 非安全加载"),
+        "yaml.unsafe_load": ("CRITICAL", "CRITICAL", "yaml.unsafe_load() 任意代码执行"),
+        "importlib.import_module": ("MEDIUM", "LOW", "importlib.import_module() 动态导入"),
+        "ctypes.CDLL": ("HIGH", "HIGH", "ctypes.CDLL() 加载动态库"),
+        "ctypes.WinDLL": ("HIGH", "HIGH", "ctypes.WinDLL() 加载 Windows DLL"),
+        "ctypes.cdll": ("HIGH", "HIGH", "ctypes.cdll() 加载动态库"),
+        "ctypes.windll": ("HIGH", "HIGH", "ctypes.windll() 加载 Windows DLL"),
+        "ctypes.oledll": ("HIGH", "HIGH", "ctypes.oledll() 加载 OLE DLL"),
+        "ctypes.memmove": ("MEDIUM", "MEDIUM", "ctypes.memmove() 原生内存写"),
+        "ctypes.memset": ("MEDIUM", "MEDIUM", "ctypes.memset() 原生内存写"),
+        "shelve.open": ("MEDIUM", "MEDIUM", "shelve.open() 反序列化载体"),
+        "dl.open": ("HIGH", "HIGH", "dl.open() 加载动态库"),
+    }
+
+    # 「类」清单：登记表不只要内部一致，还要按族覆盖。
+    # tests/test_dangerous_call_registry.py 用它顶红——同族新增成员没登记、族清单缩水、
+    # 或者某条只写进文本表没进 CALL_SEVERITY，都会红。
+    DANGEROUS_FAMILIES = {
+        "process_replace": ("os.execv", "os.execve", "os.execl", "os.execle",
+                            "os.execlp", "os.execlpe", "os.execvp", "os.execvpe"),
+        "process_spawn": ("os.spawnl", "os.spawnle", "os.spawnlp", "os.spawnlpe",
+                          "os.spawnv", "os.spawnve", "os.spawnvp", "os.spawnvpe",
+                          "os.posix_spawn", "os.posix_spawnp",
+                          "subprocess.call", "subprocess.run", "subprocess.Popen",
+                          "subprocess.check_output"),
+        "shell_wrapper": ("os.system", "os.popen", "pty.spawn"),
+        "code_from_disk": ("runpy.run_path", "runpy.run_module", "compile", "eval", "exec"),
+        "deserialization": ("pickle.load", "pickle.loads", "marshal.load", "marshal.loads",
+                            "dill.load", "dill.loads", "jsonpickle.decode",
+                            "yaml.load", "yaml.full_load", "yaml.unsafe_load"),
+        "dynamic_import": ("__import__", "builtins.__import__", "importlib.import_module"),
+        "native_memory": ("ctypes.CDLL", "ctypes.WinDLL", "ctypes.cdll", "ctypes.windll",
+                          "ctypes.oledll", "ctypes.memmove", "ctypes.memset"),
     }
 
     # 写死的命令若已是"下载并交给解释器/编码执行"，就不是"无注入面"，必须保持最高级别。
@@ -102,6 +168,21 @@ class DangerousCallVisitor(ast.NodeVisitor):
 
             literal = self._args_all_literal(node) and not self._literal_is_remote_exec(node)
             severity = sev_lit if literal else sev_dyn
+
+            # §3bd 的残留：yaml.load / yaml.full_load 的严重性由 Loader 决定，
+            # 不是由"参数写死没写死"决定。`yaml.load(payload, Loader=yaml.UnsafeLoader)`
+            # 是拿 YAML 当代码跑，即使 payload 是变量也必须 CRITICAL；
+            # 反过来 yaml.safe_load 不在表里、不报。这里按关键字实参判，不看字面量。
+            if func_name in ("yaml.load", "yaml.full_load"):
+                if self._uses_unsafe_loader(node):
+                    severity = "CRITICAL"
+                    msg += "（UnsafeLoader/FullLoader：等价于任意对象构造）"
+                    literal = False
+                elif self._uses_safe_loader(node):
+                    # 显式 SafeLoader 不是"没看见"，是"看过并判定安全"——不报也不计分。
+                    self.generic_visit(node)
+                    return
+
             self.findings.append(AstFinding(
                 severity=severity,
                 message=msg + ("（固定参数）" if literal else ""),
@@ -163,6 +244,47 @@ class DangerousCallVisitor(ast.NodeVisitor):
             if kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
                 return True
         return False
+
+    @classmethod
+    def _uses_unsafe_loader(cls, node: ast.Call) -> bool:
+        """yaml.load(...) 是否显式用了不安全 Loader。
+
+        只认关键字实参 `Loader=` 的取值（`yaml.UnsafeLoader` / `UnsafeLoader` /
+        `yaml.FullLoader`），以及"第二个位置实参是这类名字"。`Loader=yaml.SafeLoader`
+        与 `yaml.safe_load()` 不算——降噪与升格用的是同一条证据，不是印象。
+        """
+        def is_unsafe(expr) -> bool:
+            name = cls._static_name(expr)
+            return bool(name) and name.split(".")[-1] in ("UnsafeLoader", "FullLoader")
+
+        for kw in node.keywords:
+            if kw.arg == "Loader" and is_unsafe(kw.value):
+                return True
+        if len(node.args) >= 2 and is_unsafe(node.args[1]):
+            return True
+        return False
+
+    @classmethod
+    def _uses_safe_loader(cls, node: ast.Call) -> bool:
+        """显式 SafeLoader / CLoader？这是"看过并判定安全"，与"没看见"要分开。"""
+        def is_safe(expr) -> bool:
+            name = cls._static_name(expr)
+            return bool(name) and name.split(".")[-1] in ("SafeLoader", "CSafeLoader")
+        for kw in node.keywords:
+            if kw.arg == "Loader" and is_safe(kw.value):
+                return True
+        if len(node.args) >= 2 and is_safe(node.args[1]):
+            return True
+        return False
+
+    @classmethod
+    def _static_name(cls, expr) -> str:
+        if isinstance(expr, ast.Name):
+            return expr.id
+        if isinstance(expr, ast.Attribute):
+            parent = cls._static_name(expr.value)
+            return (parent + "." + expr.attr) if parent else expr.attr
+        return ""
 
 
 class DynamicCallVisitor(ast.NodeVisitor):
