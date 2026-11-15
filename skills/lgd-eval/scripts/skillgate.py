@@ -2109,6 +2109,18 @@ REMOTE_EXEC_PATTERNS = (
 )
 
 
+def _search_any(pattern, text: str) -> bool:
+    """规则表里既有字符串模式也有已编译的 Pattern，统一走这里。
+
+    坑：对已编译的 Pattern 再传 flags 会 ValueError（
+    "cannot process flags argument with a compiled pattern"），
+    影子扫描第一版就是这样崩的。
+    """
+    if hasattr(pattern, "search"):
+        return bool(pattern.search(text))
+    return bool(re.search(pattern, text, re.IGNORECASE))
+
+
 def scan_excluded_scope(skill_path: Path, result: ScanResult,
                         is_in_default_exclude, passed_excludes):
     """被排除目录里的执行面：不计分，但必须说出来。
@@ -2125,18 +2137,32 @@ def scan_excluded_scope(skill_path: Path, result: ScanResult,
 
     做法：影子扫描——真的扫一遍，但结果只作为**一条披露**（不计入评分），
     报出路径与最高级别，让评审者自己判断这个 demo 目录是不是执行面。
+
+    §3ao 补的两处（audit2/probe_exclude_class.py）：
+      ① **名单漂移**：这里原来自带一份手写目录表，与 DEFAULT_EXCLUDES 不是同一份，
+         后者多出 `.git`/`__pycache__`/`node_modules`/`._test_scratch`/`_backup` 五个
+         ——放在这几个目录里的载荷既不扫也不披露，彻底静默。
+         改为直接吃调用方传进来的同一份名单（单一来源）。
+      ② **只看代码后缀**：原来 EXEC_SUFFIXES 之外一律跳过，
+         于是 `docs/guide.md` 里写越狱句既不报也不披露——文档型载荷同样是模型读得到的东西。
+         现在文档/配置后缀也会扫，按"文档型载荷"披露。
     """
     SEV_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
     EXEC_SUFFIXES = {".py", ".js", ".ts", ".mjs", ".cjs", ".sh", ".ps1", ".bat", ".cmd"}
+    DOC_SUFFIXES_SHADOW = {".md", ".txt", ".json", ".yaml", ".yml", ".ini",
+                           ".cfg", ".conf", ".toml", ".env"}
+
+    default_set = set(is_in_default_exclude or ())
 
     for p in skill_path.rglob("*"):
-        if not p.is_file() or p.suffix.lower() not in EXEC_SUFFIXES:
+        if not p.is_file():
+            continue
+        suffix = p.suffix.lower()
+        if suffix not in EXEC_SUFFIXES and suffix not in DOC_SUFFIXES_SHADOW:
             continue
         rel = p.relative_to(skill_path).as_posix()
         parts = p.relative_to(skill_path).parts
-        in_default = any(part in {"tests", "test", "docs", "doc", "demo", "_demo",
-                                  "samples", "fixtures", "testdata", "benchmarks",
-                                  "corpus", "red-team"} for part in parts)
+        in_default = any(part in default_set for part in parts)
         in_explicit = any(rel == e or rel.startswith(e + "/") for e in passed_excludes)
         if in_explicit:
             # 用户用 --exclude 点名的目录是"我知道这是夹具"的主动声明，尊重它；
@@ -2146,7 +2172,7 @@ def scan_excluded_scope(skill_path: Path, result: ScanResult,
             continue
 
         scratch = ScanResult(skill_name=skill_path.name)
-        ext = p.suffix.lower()
+        ext = suffix
         if ext == ".py":
             scan_python_file(p, scratch)
         elif ext in {".js", ".ts", ".mjs", ".cjs"} and scan_js_file:
@@ -2155,19 +2181,33 @@ def scan_excluded_scope(skill_path: Path, result: ScanResult,
                                                 message=msg, file=str(p), line=line))
         elif ext == ".sh":
             scan_shell_file(p, scratch)
-        else:
+        elif ext in EXEC_SUFFIXES:
             scan_windows_script(p, scratch)
+        else:
+            # 文档/配置型：只查"模型会读到什么"——注入式语句与凭证
+            text = read_text_smart(p)
+            folded = _fold_confusables(text)
+            for pattern, severity, msg in PROMPT_INJECTION_PATTERNS:
+                if _search_any(pattern, folded):
+                    scratch.findings.append(Finding(
+                        severity=severity, category="prompt-injection",
+                        message=msg, file=str(p), line=1))
+            for pattern, severity, msg in CREDENTIAL_PATTERNS:
+                if _search_any(pattern, text):
+                    scratch.findings.append(Finding(
+                        severity=severity, category="credential-leak",
+                        message=msg, file=str(p), line=1))
 
         if not scratch.findings:
             continue
         top = min((f.severity for f in scratch.findings), key=lambda s: SEV_ORDER.get(s, 9))
-        why = "默认排除目录"
+        kind = "执行面" if suffix in EXEC_SUFFIXES else "文档型载荷"
         result.findings.append(Finding(
             severity="MEDIUM" if SEV_ORDER.get(top, 9) <= 1 else "LOW",
             category="coverage",
-            message="%s内有执行面且命中危险模式：%s（最高 %s，%d 处）——未计入评分，"
+            message="默认排除目录内%s，且命中危险模式：%s（最高 %s，%d 处）——未计入评分，"
                     "但它正是这条豁免名单可能被当成后门用的地方"
-                    % (why, rel, top, len(scratch.findings)),
+                    % (kind, rel, top, len(scratch.findings)),
             file=str(p), line=1
         ))
 
@@ -2968,8 +3008,11 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
     # 名字本身就是伪装：双向控制符/零宽字符/双扩展名，读内容永远读不出来
     scan_deceptive_names(skill_path, result, should_exclude)
 
-    # 被排除目录（demo/samples/tests/--exclude）：不计分，但里面有执行面就要披露
-    scan_excluded_scope(skill_path, result, lambda p: True, ex_parts)
+    # 被排除目录（demo/samples/tests/--exclude）：不计分，但里面有执行面就要披露。
+    # 名单必须是**同一份** DEFAULT_EXCLUDES：这里原来自带一份手写的，
+    # 与主表不是同一份，`.git`/`__pycache__`/`node_modules`/`_backup` 等五个目录
+    # 于是既不扫也不披露（audit2/probe_exclude_class.py）。
+    scan_excluded_scope(skill_path, result, DEFAULT_EXCLUDES, ex_parts)
 
     # 安装期脚本：package.json 的 postinstall 是一条装载代码的执行通道。
     # OWASP AST02 与 arXiv 2601.10338 都把它列为供应链风险的典型形态；
