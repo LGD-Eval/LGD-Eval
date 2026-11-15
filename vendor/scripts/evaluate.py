@@ -1113,7 +1113,12 @@ def evaluate_skill(skill_path, provenance="self"):
     elapsed = time.time() - start_time
 
     # ---- 安全否决：加权平均不得掩盖已经证实的安全事实 ----
-    raw_score = score
+    # ---- 先收敛到刻度内：扣分项叠加可以超过 100，实测出现过 -87/100 ----
+    # 对外只有一个 0–100 的分数，负分既违反这个刻度，又让"更差"失去可比性
+    # （-87 与 0 都印 F，但它们不是同一件事）。
+    raw_unclamped = score
+    raw_score = max(0, min(100, raw_unclamped))
+    score = raw_score
     veto_cap, veto_level, veto_reason = safety_cap(findings)
     if score > veto_cap:
         score = veto_cap
@@ -1124,6 +1129,8 @@ def evaluate_skill(skill_path, provenance="self"):
 
     # 对外唯一分数：一行给完，不分列其他分数
     print(f"  LGD Trust Score: {score}/100  {emoji} {grade}")
+    if raw_unclamped < 0 or raw_unclamped > 100:
+        print(f"  ⚠ 扣分叠加超出 0–100 刻度（{raw_unclamped}），按 {raw_score} 计")
     if raw_score != score:
         print(f"  ⛔ 安全否决：原始分 {raw_score} → 封顶 {score}（{veto_level}：{veto_reason}）")
     # 评分与授权分离：分数只给"风险档位"，不签发任何执行权限。
@@ -1166,8 +1173,13 @@ def evaluate_skill(skill_path, provenance="self"):
     print(f"  L2 有证（Evidenced · 结论有证据）: {'✅ 达标' if l2_ok else '❌ 待补'}")
     print(f"  L3 有门禁（Gated · 关键节点有检查）: {'✅ 达标' if l3_ok else '❌ 待补'}")
     print("-" * 70)
-    if l1_ok and l2_ok and l3_ok:
-        print("  🏛️  三律全绿 = 可申请 LGD 认证徽章，进入 LGD 生态超市互链")
+    # 三律"齐备"不等于"够格"：实测出现过三律全绿但分数 -87 的样本，
+    # 报告仍印"可申请认证徽章"。齐备只是文档层面的材料齐全，够格还要看分数与安全事实。
+    badge_ok = l1_ok and l2_ok and l3_ok and score >= 80
+    if badge_ok:
+        print("  🏛️  三律全绿 + 分数达标 = 可申请 LGD 认证徽章，进入 LGD 生态超市互链")
+    elif l1_ok and l2_ok and l3_ok:
+        print(f"  🏛️  三律齐备但未达徽章门槛（分数 {score}/100，需 ≥80）——先整改再申请")
     else:
         print("  🏛️  按 LGD 三律补齐缺口后，可申请 LGD 认证徽章进入生态")
     print("  登记入口: lgd-ecosystem-hub（LGD 生态治理中枢，单一事实源）")
@@ -1200,6 +1212,22 @@ def evaluate_skill(skill_path, provenance="self"):
     }
 
     return score, grade, dims, findings, warnings, veto_info
+
+
+def evaluate_skill_result(skill_path, provenance="self"):
+    """给 Web / MCP 等程序调用方的具名结果。
+
+    存在原因：evaluate_skill 返回的是**元组**，加一个安全否决项就从 5 个变成 6 个，
+    而 lgd_web.py 与 lgd_mcp_server.py 都在按位置解包 5 个 —— 于是"零安装入口"
+    一调用就 ValueError，对外表现为整个 Web / MCP 版不可用。
+    元组一变长就静默崩，是位置解包的必然代价；这里改成具名字典，并保留元组兼容。
+    """
+    r = evaluate_skill(skill_path, provenance=provenance)
+    score, grade, dims = r[0], r[1], r[2]
+    findings, warnings = r[3], r[4]
+    veto = r[5] if len(r) > 5 else None
+    return {"score": score, "grade": grade, "dims": dims,
+            "findings": findings, "warnings": warnings, "safety_veto": veto}
 
 def render_ascii_bars(dims):
     """扣分明细（得分/满分）。刻意不输出百分比，避免出现第二套分数。"""
