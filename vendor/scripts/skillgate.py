@@ -1896,6 +1896,71 @@ REMOTE_EXEC_PATTERNS = (
 )
 
 
+def _already_reported(result: ScanResult, filepath: str, category: str) -> bool:
+    """该文件在该类别下是否已经报过（防同一文件被多条 glob 重复扫）。"""
+    return any(f.file == filepath and f.category == category
+               for f in result.findings)
+
+
+def scan_config_secrets(filepath: Path, result: ScanResult):
+    """配置文件里的硬编码密钥。
+
+    为什么单列：泄漏最常发生在 .env / .ini / .toml / .json / .txt，而不是 .py / .js。
+    实测（audit2/probe_secrets_coverage.py）：同一批假密钥（AKIA… / ghp_… / sk-proj-…），
+    写进 creds.py 与 creds.js 都报 CRITICAL，而 .env / settings.ini / config.toml /
+    creds.txt / config.json 全部 0 命中——凭证这一类等于只覆盖了代码文件。
+
+    只认"形如真实密钥"的强格式与 key=value 赋值，并排除明确占位值，
+    不做"出现 password 一词就报"的宽判据，否则每个模板都会中招。
+    """
+    try:
+        text = filepath.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    if len(text) > 2_000_000:
+        return
+
+    PLACEHOLDER_HINTS = ("your_", "xxx", "example", "placeholder", "<", "${", "changeme",
+                         "redacted", "...", "***", "dummy", "sample")
+
+    STRONG = (
+        (r"AKIA[0-9A-Z]{16}", "CRITICAL", "AWS Access Key ID"),
+        (r"ghp_[A-Za-z0-9]{36}", "CRITICAL", "GitHub Token"),
+        (r"github_pat_[A-Za-z0-9_]{20,}", "CRITICAL", "GitHub fine-grained Token"),
+        (r"sk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}", "CRITICAL", "模型 API Key"),
+        (r"xox[baprs]-[A-Za-z0-9-]{10,}", "CRITICAL", "Slack Token"),
+        (r"AIza[0-9A-Za-z_-]{35}", "HIGH", "Google API Key"),
+        (r"glpat-[A-Za-z0-9_-]{20,}", "CRITICAL", "GitLab Token"),
+    )
+    WEAK = re.compile(
+        r"(?i)\b(aws_secret_access_key|secret_access_key|api[_-]?key|apikey|access[_-]?token|"
+        r"auth[_-]?token|client[_-]?secret|private[_-]?key|password|passwd)\b\s*[:=]\s*"
+        r"[\"']?([A-Za-z0-9/+_\-]{16,})[\"']?"
+    )
+
+    for pat, sev, label in STRONG:
+        for m in re.finditer(pat, text):
+            result.findings.append(Finding(
+                severity=sev, category="credential",
+                message="配置文件中硬编码凭证（%s）：%s…" % (label, m.group(0)[:12]),
+                file=str(filepath),
+                line=text[:m.start()].count("\n") + 1
+            ))
+            break
+
+    for m in WEAK.finditer(text):
+        val = m.group(2) or ""
+        if any(h in val.lower() for h in PLACEHOLDER_HINTS) or val.isdigit():
+            continue
+        result.findings.append(Finding(
+            severity="HIGH", category="credential",
+            message="配置文件里 %s 赋了非占位值（长度 %d）" % (m.group(1), len(val)),
+            file=str(filepath),
+            line=text[:m.start()].count("\n") + 1
+        ))
+        break
+
+
 def scan_windows_script(filepath: Path, result: ScanResult):
     """Windows 装载脚本（.ps1/.bat/.cmd）：技能在 Windows 上最常用的执行入口。
 
@@ -2212,6 +2277,18 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
                 continue
             scan_invisible_file(meta_file, result)
             result.files_scanned += 1
+
+    # 配置文件里的硬编码密钥：泄漏最常发生在这里，而不是代码里。
+    # 实测（audit2/probe_secrets_coverage.py）：同一批假密钥写进 .py/.js 报 CRITICAL，
+    # 写进 .env/.ini/.toml/.txt/.json 修复前全部 0 命中。
+    for cfg_glob in ("*.env", ".env", "*.ini", "*.cfg", "*.conf", "*.toml",
+                     "*.properties", "*.txt", "*.json", "*.yaml", "*.yml"):
+        for cfg_file in skill_path.rglob(cfg_glob):
+            if should_exclude(cfg_file) or not cfg_file.is_file():
+                continue
+            if _already_reported(result, str(cfg_file), "credential"):
+                continue        # 同一个文件被两条 glob 命中时不重复报
+            scan_config_secrets(cfg_file, result)
 
     # 安装期脚本：package.json 的 postinstall 是一条装载代码的执行通道。
     # OWASP AST02 与 arXiv 2601.10338 都把它列为供应链风险的典型形态；
