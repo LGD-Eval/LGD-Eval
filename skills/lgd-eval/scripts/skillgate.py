@@ -2699,6 +2699,65 @@ REMOTE_DOWNLOAD_PATTERNS = (
 )
 
 
+NOSUFFIX_SCRIPT_NAMES = {
+    "dockerfile", "containerfile", "makefile", "gnumakefile", "jenkinsfile",
+    "justfile", "vagrantfile", "procfile", "rakefile", "gemfile", "buildkite",
+    "brewfile", "nfdefile",
+}
+NOSUFFIX_SCRIPT_PREFIXES = ("dockerfile.", "makefile.", "jenkinsfile.")
+
+
+def scan_nosuffix_scripts(skill_path: Path, result: ScanResult, should_exclude):
+    """没有后缀的构建/CI 脚本：Dockerfile、Makefile、Jenkinsfile、Justfile…
+
+    实测（audit2/probe_nosuffix.py，修复前）：
+      Dockerfile `RUN curl … | sh`、Makefile recipe `curl … | sh`、
+      Jenkinsfile `sh 'curl … | sh'`、Justfile、Vagrantfile
+      —— 五例全部 **100/A+，一条不报**。
+
+    原因是分发挂在后缀上：没有后缀 → 走不进任何规则分支 → 跳过。
+    "没认出这个文件"和"看过且干净"在报告里长得一模一样，这是同一类 fail-open。
+    """
+    targets = []
+    for p in skill_path.rglob("*"):
+        if not p.is_file() or should_exclude(p):
+            continue
+        name = p.name.lower()
+        if name in NOSUFFIX_SCRIPT_NAMES or name.startswith(NOSUFFIX_SCRIPT_PREFIXES):
+            targets.append(p)
+    for p in skill_path.rglob("*.mk"):
+        if p.is_file() and not should_exclude(p):
+            targets.append(p)
+
+    for path in targets:
+        try:
+            text = read_text_smart(path)
+        except OSError:
+            continue
+        result.files_scanned += 1
+        for lineno, line in enumerate(text.splitlines(), 1):
+            low = line.lower()
+            if any(re.search(pat, low) for pat in REMOTE_EXEC_PATTERNS):
+                result.findings.append(Finding(
+                    severity="CRITICAL", category="nosuffix-exec",
+                    message="无后缀构建/CI 脚本里的远程取码执行：%s" % line.strip()[:80],
+                    file=str(path), line=lineno
+                ))
+                continue
+            if any(re.search(pat, low) for pat in REMOTE_DOWNLOAD_PATTERNS):
+                result.findings.append(Finding(
+                    severity="CRITICAL", category="nosuffix-exec",
+                    message="无后缀构建/CI 脚本里从远程下载文件到本地：%s" % line.strip()[:80],
+                    file=str(path), line=lineno
+                ))
+        # 这类文件在构建/CI 时必然被执行——存在本身就该说一句（不计分，只披露）
+        result.findings.append(Finding(
+            severity="LOW", category="nosuffix-exec",
+            message="存在构建/CI 脚本（构建或流水线执行时会运行，本扫描只判取码/下载两类）",
+            file=str(path), line=1, scoring=False
+        ))
+
+
 def _iter_config_strings(node, trail=()):
     """把 JSON 里所有字符串连同它的键路径摊平。"""
     if isinstance(node, dict):
@@ -3275,6 +3334,10 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
     # 同一类通道换个文件名就全绿：hooks / MCP 服务器定义 / 插件清单同样是
     # "读着是配置、跑起来是命令"（audit2/probe_config_exec.py，修复前均 100/A+）。
     scan_config_exec(skill_path, result, should_exclude)
+
+    # 没有后缀的构建/CI 脚本：分发挂在后缀上，于是 Dockerfile/Makefile/Jenkinsfile
+    # 一个都走不进规则分支（audit2/probe_nosuffix.py，修复前五例全 100/A+）。
+    scan_nosuffix_scripts(skill_path, result, should_exclude)
 
     # 同一类的另一条通道：binding.gyp / *.gyp 里的 `<!@(cmd)` 会在生成阶段执行 shell。
     # 实测（audit2/probe_install_bypass.py）：同样的 curl|sh，写在 postinstall 报 CRITICAL，
