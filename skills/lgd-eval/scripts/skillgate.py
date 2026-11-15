@@ -723,7 +723,15 @@ def read_text_smart(filepath: Path) -> str:
         raw = filepath.read_bytes()
     except OSError:
         return ""
+    return _decode_bytes(raw)
 
+
+def _decode_bytes(raw: bytes) -> str:
+    """字节 → 文本：BOM 嗅探 → UTF-8 严格 → GBK → 替换模式兜底。
+
+    独立出来是为了让备用数据流（ADS）的内容也能走同一套解码——
+    流里的载荷同样可能是 UTF-16 存的。
+    """
     boms = (
         (b"\xef\xbb\xbf", "utf-8-sig"),
         (b"\xff\xfe\x00\x00", "utf-32-le"),
@@ -745,6 +753,7 @@ def read_text_smart(filepath: Path) -> str:
             continue
 
     return raw.decode("utf-8", errors="replace")
+
 
 
 def scan_python_file(filepath: Path, result: ScanResult):
@@ -2368,7 +2377,124 @@ def scan_invisible_file(filepath: Path, result: ScanResult):
         ))
 
 
+ADS_BENIGN = ("::$DATA", ":Zone.Identifier", ":Zone.Identifier:$DATA")
+
+
+if os.name != "nt":
+    def scan_alternate_streams(skill_path: Path, result: ScanResult,
+                               should_exclude=None) -> None:
+        """非 Windows：没有 NTFS 备用数据流，此规则不适用（不披露、不扣分）。"""
+        return
+
+else:
+    import ctypes
+
+    class _LARGE_INTEGER(ctypes.Structure):
+        _fields_ = [("LowPart", ctypes.c_ulong), ("HighPart", ctypes.c_long)]
+
+    class _FIND_STREAM_DATA(ctypes.Structure):
+        _fields_ = [("StreamSize", _LARGE_INTEGER), ("cStreamName", ctypes.c_wchar * 296)]
+
+    def _list_streams(f: Path):
+        """枚举一个文件的全部 NTFS 数据流；失败返回空列表（不假装查过）。"""
+        k32 = ctypes.windll.kernel32
+        k32.FindFirstStreamW.argtypes = [ctypes.c_wchar_p, ctypes.c_int,
+                                         ctypes.POINTER(_FIND_STREAM_DATA), ctypes.c_uint]
+        k32.FindFirstStreamW.restype = ctypes.c_void_p
+        k32.FindNextStreamW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_FIND_STREAM_DATA)]
+        k32.FindNextStreamW.restype = ctypes.c_int
+        k32.FindClose.argtypes = [ctypes.c_void_p]
+
+        data = _FIND_STREAM_DATA()
+        h = k32.FindFirstStreamW(str(f), 0, ctypes.byref(data), 0)
+        if not h:
+            return []
+        out = []
+        try:
+            while True:
+                size = data.StreamSize.HighPart * (2 ** 32) + data.StreamSize.LowPart
+                out.append((data.cStreamName, size))
+                if not k32.FindNextStreamW(h, ctypes.byref(data)):
+                    break
+        finally:
+            k32.FindClose(h)
+        return out
+
+    def scan_alternate_streams(skill_path: Path, result: ScanResult,
+                               should_exclude=None) -> None:
+        """NTFS 备用数据流（ADS）：普通读取一律看不到的那部分内容。
+
+        实测（audit2/probe_ads_coverage.py）：`Set-Content -Stream hidden` 把越狱句
+        + `os.system(curl|sh)` 挂到 notes.md 上，资源管理器/type/Get-Content 都只显示主数据流，
+        引擎 **0 命中**；而 `open("notes.md:hidden")` 能原样读出来。
+        因此它既能藏载荷，也能藏"我扫过了"的证据。
+
+        口径：存在非默认流即披露——
+          · 流内容命中危险/越狱/隐形字符 → HIGH
+          · 只是存在、内容看不出问题     → MEDIUM（普通读取不可见，无法人工复核）
+        `Zone.Identifier` 必须放行：那是 Windows 给下载文件打的来源标记，
+        每个下载文件都有，报它等于让所有正常下载物全红。
+        """
+        def walk(d: Path):
+            try:
+                entries = list(os.scandir(str(d)))
+            except OSError:
+                return
+            for e in entries:
+                p = Path(e.path)
+                if _is_link_like(p):
+                    continue
+                try:
+                    is_dir = e.is_dir(follow_symlinks=False)
+                except OSError:
+                    continue
+                if is_dir:
+                    walk(p)
+                    continue
+                if should_exclude and should_exclude(p):
+                    continue
+                for name, size in _list_streams(p):
+                    if name in ADS_BENIGN:
+                        continue
+                    stream_path = str(p) + name.split(":$DATA")[0]
+                    try:
+                        raw = open(stream_path, "rb").read()
+                    except OSError:
+                        result.findings.append(Finding(
+                            severity="MEDIUM", category="ads",
+                            message="存在备用数据流 %s（%d 字节，读不出内容）" % (name, size),
+                            file=str(p), line=1
+                        ))
+                        continue
+                    text = _decode_bytes(raw)
+                    hit_label = ""
+                    for pat, label in (
+                        (r"(?i)ignore\s+(all\s+)?previous\s+instructions", "越狱句"),
+                        (r"(?i)curl[^\n]{0,60}\|\s*(ba)?sh", "远程执行"),
+                        (r"\bos\.system\s*\(", "危险调用"),
+                    ):
+                        if re.search(pat, text):
+                            hit_label = label
+                            break
+                    if hit_label:
+                        result.findings.append(Finding(
+                            severity="HIGH", category="ads",
+                            message="备用数据流 %s 内含%s（普通读取看不到，%d 字节）"
+                                    % (name, hit_label, size),
+                            file=str(p), line=1
+                        ))
+                    else:
+                        result.findings.append(Finding(
+                            severity="MEDIUM", category="ads",
+                            message="存在备用数据流 %s（%d 字节，普通读取看不到）" % (name, size),
+                            file=str(p), line=1
+                        ))
+
+        walk(skill_path)
+
+
 def _is_link_like(p: Path) -> bool:
+
     """符号链接、目录 junction、以及其他 reparse point。"""
     try:
         st = p.stat(follow_symlinks=False)
@@ -2475,6 +2601,9 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
     # 链接先定性：指向外部的链接只披露、不进内容扫描（否则读的是宿主机文件，
     # 而报告会把外部路径写成"仓库内"，证据链失真）
     escape_links = scan_links(skill_path, result)
+
+    # 备用数据流：普通读取看不到的那部分内容，必须单独查（Windows 专有）
+    scan_alternate_streams(skill_path, result, should_exclude=None)
 
     def should_exclude(filepath: Path) -> bool:
         """Check if a file should be excluded from scanning."""
