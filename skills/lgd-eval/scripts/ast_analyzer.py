@@ -332,6 +332,78 @@ DELETE_BINS = {"rm", "rmdir", "rd", "del", "erase", "unlink", "remove-item", "ri
 SYSTEM_UTILS = {"mkfs", "shutdown", "reboot", "halt", "poweroff", "diskpart", "format", "wipefs"}
 RISKY_UTILS = {"fdisk", "parted", "dd"}
 SHELL_WRAPPERS = {"sh", "bash", "zsh", "dash", "cmd", "powershell", "pwsh", "ksh"}
+
+# ── §3bg 解释器内联脚本：脚本不是 token，是参数里的字符串 ────────────────
+# `python -c "…"` / `node -e "…"` / `perl -e` / `php -r` / `osascript -e`：
+# token[0] 不是 shell，内层代码从来没被打开看过。
+INTERP_INLINE_FLAGS = {
+    "python": {"-c"}, "python3": {"-c"}, "py": {"-c"}, "pythonw": {"-c"},
+    "node": {"-e", "--eval", "eval"}, "nodejs": {"-e", "--eval", "eval"},
+    "bun": {"-e", "--eval", "eval"}, "deno": {"eval"},
+    "perl": {"-e", "-E"}, "ruby": {"-e"}, "php": {"-r"},
+    "osascript": {"-e"}, "lua": {"-e"}, "tclsh": {"-e"},
+}
+# PowerShell 的编码命令：连内容都读不出来，只能按"无法静态判定"处理
+PS_ENCODED_FLAGS = {"-encodedcommand", "-enc"}
+_B64_RE = None  # 惰性编译，避免 import 顺序问题
+
+
+def _looks_base64(tok: str) -> bool:
+    global _B64_RE
+    if _B64_RE is None:
+        import re as _re
+        _B64_RE = _re.compile(r"^[A-Za-z0-9+/]{8,}={0,2}$")
+    return bool(_B64_RE.match(tok))
+
+
+def _inline_flag_for(base: str):
+    return INTERP_INLINE_FLAGS.get(base)
+
+
+def _assemble(*parts) -> str:
+    """判据词拼接：规则源码里不出现可被自己文表命中的连续字面量。"""
+    return "".join(parts)
+
+
+INLINE_DANGER = (
+    # —— 删除/破坏：目标在系统面 ——
+    (_assemble("shutil.", "rmtree"), "CRITICAL", "内联脚本递归删目录"),
+    (_assemble("fs.", "rmSync"), "CRITICAL", "内联脚本递归删目录"),
+    (_assemble("rmSync("), "CRITICAL", "内联脚本递归删目录"),
+    (_assemble("unlinkSync("), "HIGH", "内联脚本删文件"),
+    (_assemble("fs.", "rm("), "HIGH", "内联脚本删文件"),
+    (_assemble("rm", " -rf"), "CRITICAL", "内联脚本递归强制删除"),
+    (_assemble("rmtree(", ), "CRITICAL", "内联脚本递归删目录"),
+    (_assemble("mk", "fs."), "CRITICAL", "内联脚本格式化磁盘"),
+    (_assemble("dd of=", "/dev/"), "CRITICAL", "内联脚本直接写块设备"),
+    (_assemble("shut", "down"), "CRITICAL", "内联脚本关机"),
+    (_assemble("/dev/s", "d"), "CRITICAL", "内联脚本操作块设备"),
+    (_assemble("form", "at c:"), "CRITICAL", "内联脚本格式化盘符"),
+    # —— 任意执行能力 ——
+    (_assemble("os.", "system("), "CRITICAL", "内联脚本调用 os.system"),
+    (_assemble("os.", "popen("), "CRITICAL", "内联脚本调用 os.popen"),
+    (_assemble("os.", "remove("), "HIGH", "内联脚本删文件"),
+    (_assemble("os.", "unlink("), "HIGH", "内联脚本删文件"),
+    (_assemble("sub", "process."), "CRITICAL", "内联脚本起子进程"),
+    (_assemble("child_", "process"), "CRITICAL", "内联脚本起子进程"),
+    (_assemble("exec", "Sync("), "CRITICAL", "内联脚本同步执行 shell"),
+    (_assemble("spawn", "Sync("), "CRITICAL", "内联脚本起子进程"),
+    (_assemble("system", "("), "CRITICAL", "内联脚本调用 system()"),
+    (_assemble("`", ), "MEDIUM", "内联脚本用反引号执行"),
+    (_assemble("Remove", "-Item"), "HIGH", "内联脚本递归删除"),
+    (_assemble("__import", "__("), "HIGH", "内联脚本动态导入"),
+)
+
+
+def _inline_code_verdict(code: str):
+    """看内联脚本的正文，而不是只看"有没有字符串"。"""
+    if not code:
+        return None
+    low = code.lower()
+    for pat, sev, why in INLINE_DANGER:
+        if pat.lower() in low:
+            return sev, "%s（%s）" % (why, pat)
+    return None
 # 判据词拼接而成：避免规则源码本身被扫描器的文本表命中（自扫自命中）
 _PS_DELETE = "remove" + "-" + "item"
 _PS_RECURSE = "-" + "recurse"
@@ -351,6 +423,12 @@ def _fold_str(expr, consts, depth: int = 0):
         return expr.value
     if isinstance(expr, ast.Name):
         return consts.get(expr.id) if consts else None
+    if isinstance(expr, ast.Attribute):
+        # sys.executable 就是解释器本身；不折它，`[sys.executable, "-c", "…"]`
+        # 这类写法连 token 都取不齐，内联脚本永远打不开。
+        if _dotted(expr) == "sys.executable":
+            return "python"
+        return None
     if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
         left = _fold_str(expr.left, consts, depth + 1)
         right = _fold_str(expr.right, consts, depth + 1)
@@ -539,6 +617,14 @@ def destructive_tokens(tokens, depth: int = 0):
     base = _basename(tokens[0])
     joined = " ".join(_norm(t) for t in tokens)
 
+    # §3bg：编码命令 —— 内容根本读不出来，只能按"无法静态判定"处理。
+    # 放在 shell 分支之前：pwsh 既是 shell 也是解释器，谁先接都一样要判。
+    for i, t in enumerate(tokens):
+        if _norm(t) in PS_ENCODED_FLAGS:
+            nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if _looks_base64(nxt):
+                return "HIGH", "%s 的编码命令无法静态判定" % _basename(tokens[0])
+
     if ":(){" in joined or "(){ :|" in joined:
         return "CRITICAL", "fork bomb 形态"
 
@@ -582,7 +668,29 @@ def destructive_tokens(tokens, depth: int = 0):
                 inner = tokens[i + 1:]
                 if len(inner) == 1:
                     inner = inner[0].split()
+                v = _inline_code_verdict(" ".join(inner))
+                if v:
+                    return v
                 return destructive_tokens(inner, depth + 1)
+        return None
+
+    # §3bg：解释器带内联脚本 —— 脚本是参数里的字符串，要打开看内容
+    if base in INTERP_INLINE_FLAGS:
+        flags = INTERP_INLINE_FLAGS[base]
+        for i, t in enumerate(tokens[1:], start=1):
+            nt = _norm(t)
+            if nt in PS_ENCODED_FLAGS:
+                nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+                if _looks_base64(nxt):
+                    return "HIGH", "%s 的编码命令无法静态判定" % base
+                continue
+            if nt in flags and i + 1 < len(tokens):
+                code = " ".join(tokens[i + 1:])
+                v = _inline_code_verdict(code)
+                if v:
+                    return v
+                return None
+        return None
     return None
 
 
