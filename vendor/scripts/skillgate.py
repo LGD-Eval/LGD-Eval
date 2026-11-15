@@ -704,6 +704,46 @@ SAFETY_CONTEXT_WORDS = (
 )
 
 
+# 同形字表：西里尔/希腊/全角/数学字母 里"看着像拉丁字母"的那一批。
+# 只收拉丁同形，不收整段转写——避免把正常俄语/希腊语正文改写成可匹配文本。
+_CONFUSABLE = {
+    # 西里尔
+    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H", "О": "O",
+    "Р": "P", "С": "C", "Т": "T", "У": "Y", "Х": "X", "І": "I", "Ї": "I",
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x",
+    "і": "i", "ї": "i", "ѕ": "s", "ј": "j", "ԁ": "d", "ӏ": "l", "һ": "h",
+    # 希腊
+    "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K",
+    "Μ": "M", "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X",
+    "α": "a", "ο": "o", "ν": "v", "ι": "i", "κ": "k", "υ": "u", "χ": "x",
+    # 常用全角
+    "ａ": "a", "ｂ": "b", "ｃ": "c", "ｄ": "d", "ｅ": "e", "ｆ": "f", "ｇ": "g",
+    "ｈ": "h", "ｉ": "i", "ｊ": "j", "ｋ": "k", "ｌ": "l", "ｍ": "m", "ｎ": "n",
+    "ｏ": "o", "ｐ": "p", "ｑ": "q", "ｒ": "r", "ｓ": "s", "ｔ": "t", "ｕ": "u",
+    "ｖ": "v", "ｗ": "w", "ｘ": "x", "ｙ": "y", "ｚ": "z",
+}
+_STRIP_INVISIBLE = dict.fromkeys(
+    [0x00AD, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x180E, 0x00A0]
+    + list(range(0x202A, 0x202F)) + list(range(0x2066, 0x206A))
+)
+
+
+def _fold_confusables(text: str) -> str:
+    """把"人眼看得懂、正则不认"的写法折叠成可匹配形式。
+
+    做三件事：去零宽/方向控制符 → 同形字映射到拉丁 → 空白压平。
+    实测（audit2/probe_homoglyph.py）：`Іgnore аll previous instructions`、
+    `Ignore all\\nprevious instructions` 在原文写法下都是 0 命中。
+    """
+    out = []
+    for ch in text:
+        cp = ord(ch)
+        if cp in _STRIP_INVISIBLE:
+            continue
+        out.append(_CONFUSABLE.get(ch, ch))
+    return re.sub(r"\s+", " ", "".join(out)).strip()
+
+
 def read_text_smart(filepath: Path) -> str:
     """按 BOM 与真实编码解码，而不是一律当成 UTF-8。
 
@@ -1105,6 +1145,47 @@ def scan_md_file(filepath: Path, result: ScanResult):
                 severity=severity, category="prompt-injection",
                 message=msg, file=str(filepath), line=i
             ))
+
+    # 1b. 同形字 / 拆行：逐行匹配挡不住这两种写法。
+    # 实测（audit2/probe_homoglyph.py）：
+    #   `Іgnore аll previous instructions`（西里尔 І/а 看着像 I/a）→ 0 命中
+    #   `Ignore all\nprevious instructions`（拆成两行）             → 0 命中
+    # 人眼和模型都照样读得懂，只是正则不认。所以把段落折叠后（去零宽、同形字转 ASCII、
+    # 空白压平）再跑一遍；同一模式在原文已命中则不重复计分。
+    reported_msgs = {f.message for f in result.findings
+                     if f.category == "prompt-injection" and f.file == str(filepath)}
+
+    para: list = []
+    para_start = 0
+    blocks = []
+    for i, line in enumerate(lines, 1):
+        if i in code_lines or not line.strip():
+            if para:
+                blocks.append((para_start, " ".join(para)))
+                para = []
+            continue
+        if not para:
+            para_start = i
+        para.append(line)
+    if para:
+        blocks.append((para_start, " ".join(para)))
+
+    for start_line, block in blocks:
+        folded = _fold_confusables(block)
+        if is_safety_discussion(block):
+            continue
+        for pattern, severity, msg in PROMPT_INJECTION_PATTERNS:
+            if msg in reported_msgs:
+                continue
+            if re.search(pattern, folded, re.IGNORECASE):
+                result.findings.append(Finding(
+                    severity=severity, category="prompt-injection",
+                    message=msg + "（同形字/拆行归一后命中）",
+                    file=str(filepath), line=start_line
+                ))
+                reported_msgs.add(msg)
+                break
+
 
     # 1.2 编码载荷：base64 解出来再判。只看"一长串 base64"会全员误报
     #     （文档里的哈希、证书、密钥指纹都是这种形态），解出明文再看里面有没有指令才准。
