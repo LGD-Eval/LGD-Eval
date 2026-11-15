@@ -467,7 +467,8 @@ class ScanResult:
     frontmatter: dict = field(default_factory=dict)
     trust_score: int = 0
     grade: str = ""
-    rule_version: str = "v3.1.3"  # 规则版本号（有籍）
+    rule_version: str = "v3.1.3"  # 规则版本号（有籍）；报告头与 JSON 都从这里取
+    engine: str = "skillgate.py"  # 引擎身份：本仓有两个引擎都打印 Trust Score，必须可区分
     excluded: list = field(default_factory=list)  # 显式排除的路径（供审计复现）
 
     @property
@@ -2246,6 +2247,7 @@ def print_terminal_report(result: ScanResult, fail_under: int = None):
     print(f"\n{'='*60}")
     print(f"  SkillGate 扫描报告")
     print(f"{'='*60}")
+    print(f"  引擎: {result.engine} {result.rule_version}（规则命中口径）")
     print(f"  Skill: {result.skill_name}")
     print(f"  目录: {result.skill_dir}")
     print(f"  扫描文件数: {result.files_scanned}")
@@ -2606,6 +2608,7 @@ def main():
             lines = [
                 f"# SkillGate 扫描报告",
                 f"",
+                f"- **引擎**: {result.engine} {result.rule_version}（规则命中口径）",
                 f"- **Skill**: {result.skill_name}",
                 f"- **Trust Score**: {result.trust_score}/100 ({result.grade})",
                 f"- **扫描文件数**: {result.files_scanned}",

@@ -97,6 +97,11 @@ def _invisible_hits(text):
 # 此前按分数直接打印「L0 免审批（可直接运行）」，等于一个数字替人签了授权。
 AUTHORIZATION_STATUS = "NOT_GRANTED"
 
+# 引擎身份（单一来源）：报告头、证据 JSON 都从这里取，不允许各处再写一遍字面量。
+# 本仓有两个引擎都会打印 "Trust Score: N/100"，一份没有出处的分数无法核验。
+ENGINE_NAME = "evaluate.py"
+ENGINE_VERSION = "1.1.0"
+
 # 评测来源必须可区分：维护者自评 / 自动化评测 / 无关联第三方复核。
 # 自评不得对外称第三方认证，这条是审计里的 P0。
 PROVENANCE_LABELS = {
@@ -285,6 +290,10 @@ def evaluate_skill(skill_path, provenance="self"):
     print("=" * 70)
     print("  🏛️  LGD-Gate 独立第三方评测报告")
     print("=" * 70)
+    # 引擎身份与版本必须自己报出来：本仓有两个引擎，都打印 "Trust Score: N/100"，
+    # 一份被引用的分数若不写明出自哪个引擎、哪版规则，就无法核验，也就无法反驳。
+    print(f"  引擎: {ENGINE_NAME} {ENGINE_VERSION}（五维评测口径）")
+    print(f"  授权状态: {AUTHORIZATION_STATUS}（评测不签发执行权限）")
     print(f"  评测对象: {skill_path}")
     print()
     
@@ -1551,7 +1560,8 @@ def build_attestation(root, score, grade, dims, evidence, veto=None, provenance=
     }
     return {
         "framework": "LGD 三律 · 有籍(可追溯) / 有证(可验证) / 有门禁(可阻断)",
-        "engine_version": "1.1.0",
+        "engine": ENGINE_NAME,
+        "engine_version": ENGINE_VERSION,
         "score": score,
         "grade": grade,
         # 评测与授权分离，且来源可区分：这两项是要给下游（CI / 注册表 / 人工复核）看的，
