@@ -2642,6 +2642,177 @@ def _config_exec_findings(tree, root_dir=None) -> List[AstFinding]:
     return findings
 
 
+_SENSITIVE_PREFIXES = (
+    "/etc", "/usr", "/bin", "/sbin", "/boot", "/root", "/lib", "/lib64",
+    "/sys", "/proc", "/var/lib", "/var/spool", "/opt",
+    "c:\\windows", "c:\\program files", "c:\\programdata",
+    "/library/launchdaemons", "/library/launchagents", "/system/",
+)
+
+_TEMP_PREFIXES = ("/tmp", "/var/tmp", "/dev/shm", "c:\\users\\", "\\temp", "\\tmp")
+
+
+def _is_sensitive_path(p: str, root_dir=None) -> bool:
+    q = (p or "").replace("\\", "/").lower()
+    if root_dir:
+        try:
+            base = str(Path(root_dir)).replace("\\", "/").lower()
+            if q.startswith(base):
+                return False        # 仓内路径不算
+        except Exception:
+            pass
+    return any(q.startswith(pre.replace("\\", "/")) for pre in _SENSITIVE_PREFIXES)
+
+
+def _is_temp_path(p: str) -> bool:
+    q = (p or "").replace("\\", "/").lower()
+    return any(q.startswith(pre.replace("\\", "/")) for pre in _TEMP_PREFIXES)
+
+
+def _escapes_up(p: str) -> int:
+    return (p or "").replace("\\", "/").count("../")
+
+
+def _path_escape_findings(tree, root_dir=None) -> List[AstFinding]:
+    """§3bs：路径穿越与链接。
+
+    `extractall("/tmp/x")` 不限制成员名 → zip-slip；`os.symlink("/etc/passwd", ...)`
+    → 任意文件读取口；`open("../../../../etc/cron.d/x", "w")`、`copy(x, "/usr/local/bin/tool")`
+    → 仓外写入。每一行单看都是正常文件操作，判据得看**目标路径**。
+    基线：CWE-22 / CWE-59 / CWE-732；ATT&CK T1547.006、T1574.005；ASVS V12.2、V12.3。
+    """
+    findings: List[AstFinding] = []
+    consts, _temps, _lists = collect_consts(tree)
+
+    def _join_fold(expr):
+        """`os.path.join("a", "..", "b")` 全字面时折成一个规范化路径。"""
+        if isinstance(expr, ast.Call) and (_dotted(expr.func) or "") == "os.path.join":
+            parts = []
+            for a in expr.args:
+                s = _fold_str(a, consts)
+                if not s:
+                    return None
+                parts.append(s)
+            if not parts:
+                return None
+            import posixpath
+            return posixpath.normpath("/".join(p.rstrip("/") for p in parts if p)) \
+                if parts[0].startswith("/") else posixpath.normpath("/".join(parts))
+        return None
+
+    joins: dict = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call):
+            v = _join_fold(n.value)
+            if v:
+                for t in n.targets:
+                    if isinstance(t, ast.Name):
+                        joins[t.id] = v
+
+    def lit(expr):
+        if expr is None:
+            return None
+        v = _fold_str(expr, consts)
+        if v:
+            return v
+        if isinstance(expr, ast.Name) and expr.id in joins:
+            return joins[expr.id]
+        return _join_fold(expr)
+
+    WRITE_SINKS = ("shutil.copy", "shutil.copy2", "shutil.copyfile", "shutil.move",
+                   "shutil.copytree", "os.rename", "os.replace")
+    LINK_SINKS = ("os.symlink", "os.link")
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _dotted(node.func) or ""
+
+        # 1) 解包：未限制成员路径（zip-slip）
+        if name.endswith(".extractall") or name == "extractall":
+            has_filter = any(k.arg == "filter" for k in node.keywords)
+            target = lit(node.args[0]) if node.args else None
+            # 只判"解到仓外/临时目录"或"目标本身带 .."：相对目标（如 docs/）
+            # 即便成员名带 ../ 也落在仓内，属常规用法，不误杀。
+            escaped_target = bool(target) and (
+                target.startswith("/") or (len(target) > 1 and target[1] == ":") or
+                _escapes_up(target) >= 1)
+            if not has_filter and escaped_target:
+                findings.append(AstFinding(
+                    severity="HIGH",
+                    message="解包未限制成员路径（成员名里的 ../ 可写到目标目录外，zip-slip）"
+                            "：%s" % target,
+                    line=node.lineno, col=0))
+            continue
+        if name.endswith(".extract") or name == "extract":
+            member = lit(node.args[0]) if node.args else None
+            if member and (_escapes_up(member) or member.startswith("/")):
+                findings.append(AstFinding(
+                    severity="CRITICAL",
+                    message="按成员名解包到仓外/上级目录：%s" % member,
+                    line=node.lineno, col=0))
+            continue
+
+        # 2) 链接：链到仓外/系统位置
+        if name in LINK_SINKS:
+            for idx in (0, 1):
+                if len(node.args) <= idx:
+                    continue
+                p = lit(node.args[idx])
+                if not p:
+                    continue
+                if _is_sensitive_path(p, root_dir):
+                    findings.append(AstFinding(
+                        severity="CRITICAL",
+                        message="%s 指向系统/仓外位置：%s" % (name.split(".")[-1], p),
+                        line=node.lineno, col=0))
+                    break
+                if _escapes_up(p) >= 1 or (p.startswith("/") and not _is_temp_path(p)):
+                    findings.append(AstFinding(
+                        severity="HIGH",
+                        message="%s 指向仓外：%s" % (name.split(".")[-1], p),
+                        line=node.lineno, col=0))
+                    break
+            continue
+
+        # 3) 写入类：系统目录 / 仓外绝对 / ../ 逃逸
+        is_write_call = name in WRITE_SINKS or name.endswith(("write_text", "write_bytes"))
+        is_open_write = name in ("open", "io.open") and len(node.args) > 1 and \
+            isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str) and \
+            any(c in node.args[1].value for c in "wax")
+        if not (is_write_call or is_open_write):
+            continue
+        if is_open_write:
+            target = lit(node.args[0]) if node.args else None
+        elif name.endswith(("write_text", "write_bytes")):
+            # `Path("x").write_text(...)`：目标在接收者里
+            target = lit(node.args[0]) if node.args else None
+            recv = getattr(node.func, "value", None)
+            if recv is not None:
+                target = lit(recv.args[0]) if isinstance(recv, ast.Call) and recv.args else None
+        else:
+            target = lit(node.args[-1]) if node.args else None
+        if not target:
+            continue
+        if _is_sensitive_path(target, root_dir):
+            findings.append(AstFinding(
+                severity="CRITICAL",
+                message="写入系统目录：%s" % target,
+                line=node.lineno, col=0))
+        elif _escapes_up(target) >= 2:
+            findings.append(AstFinding(
+                severity="HIGH",
+                message="相对路径逃逸写入（%d 级 ..）：%s" % (_escapes_up(target), target),
+                line=node.lineno, col=0))
+        elif (target.startswith("/") or (len(target) > 1 and target[1] == ":")) and \
+                not _is_temp_path(target):
+            findings.append(AstFinding(
+                severity="HIGH",
+                message="写入仓外绝对路径：%s" % target,
+                line=node.lineno, col=0))
+    return findings
+
+
 def _archive_run_findings(tree) -> List[AstFinding]:
     """§3bq：解包后执行包内文件。
 
@@ -2931,6 +3102,9 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
 
     # §3br：配置文件读入的值进入执行面（只在仓内读配置，不越界）
     findings.extend(_config_exec_findings(tree, filepath.parent))
+
+    # §3bs：路径穿越与链接（解包成员 / 链接 / 仓外写入）
+    findings.extend(_path_escape_findings(tree, filepath.parent))
 
     return findings
 
