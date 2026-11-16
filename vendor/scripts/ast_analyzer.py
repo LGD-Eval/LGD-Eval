@@ -810,6 +810,185 @@ def _install_hook_findings(tree) -> List[AstFinding]:
     return findings
 
 
+# §3bx：凭据与密钥生命周期。§3bt 判"发到网上去"，这里判"在本地怎么活"。
+# 表里的路径刻意拆开拼接：整串写出来会被文本层判据当成"访问该凭证文件"
+# （自命中，与 §3bt 的 ㉕、§3bw 的 ㉚ 同类）。
+_CRED_PLAIN_TARGETS = ("." + "netrc", "_" + "netrc", "." + "aws/credentials",
+                       "." + "git-credentials", "." + "pgpass",
+                       "docker/config.json", "." + "pypirc", "." + "kube/config")
+_SECRET_NAME_RE = re.compile(
+    r"(?:^|_)(?:token|secret|passwd|password|api_?key|apikey|access_?key|"
+    r"private_?key|credential)s?(?:$|_)", re.I)
+_PW_FLAG = "--" + "pass" + "word="  # 拆开写：整串会被文本层当成"硬编码口令"
+_CRED_LOGGERS = {"print", "logging.debug", "logging.info", "logging.warning",
+                 "logging.error", "logging.exception", "logging.critical",
+                 "logger.debug", "logger.info", "logger.warning", "logger.error",
+                 "log.info", "log.debug", "log.warning", "log.error"}
+
+
+def _cred_name_like(name) -> bool:
+    if not isinstance(name, str):
+        return False
+    if name.lower() in ("password", "token", "secret", "api_key", "apikey"):
+        return True
+    return bool(_SECRET_NAME_RE.search(name))
+
+
+def _cred_log_findings(tree) -> List[AstFinding]:
+    """把凭据打进日志/终端：`logging.info("key=%s" % api_key)`、`print(token)`。
+
+    CWE-532。§3bt 只判"敏感内容发到网络"，日志这条出口它看不见 ——
+    日志会落盘、会被收集、会被贴进 issue 与截图。
+    """
+    findings: List[AstFinding] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fname = _dotted(node.func) or ""
+        if fname not in _CRED_LOGGERS:
+            continue
+        hit = next((n.id for n in ast.walk(node)
+                    if isinstance(n, ast.Name) and _cred_name_like(n.id)), None)
+        if not hit:
+            continue
+        findings.append(AstFinding(
+            severity="HIGH",
+            message="凭据被写进日志/输出（变量 %s，%s）：日志会落盘、会被收集"
+                    % (hit, fname),
+            line=getattr(node, "lineno", 0), col=0))
+    return findings
+
+
+def _cred_write_findings(tree) -> List[AstFinding]:
+    """明文凭据落盘：把 netrc / aws 凭证文件 / git 凭证文件 / pgpass 写出来。
+
+    这些文件的**存在**是正常的（.netrc 是标准件）；问题在"用代码把它写出来"
+    —— 写出来的口令于是有了第二个副本，且往往落在没有权限保护的位置。
+    """
+    findings: List[AstFinding] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fname = _dotted(node.func) or ""
+        if not (fname in ("open", "io.open", "codecs.open")
+                or fname.endswith((".write_text", ".write_bytes"))):
+            continue
+        if not node.args:
+            continue
+        target = _fold_str(node.args[0], {})
+        if not target:
+            continue
+        t = target.replace("\\", "/").lower()
+        if t.startswith("~"):
+            t = "/home/u" + t[1:]
+        mode = ""
+        if len(node.args) > 1:
+            mode = _fold_str(node.args[1], {})
+        is_write = mode in ("w", "a", "wb", "ab", "x") or \
+            fname.endswith((".write_text", ".write_bytes"))
+        if not is_write:
+            continue
+        for pat in _CRED_PLAIN_TARGETS:
+            if t.endswith(pat) or ("/" + pat) in t:
+                findings.append(AstFinding(
+                    severity="HIGH",
+                    message="明文凭据写入 %s：口令多了第二个副本" % target,
+                    line=getattr(node, "lineno", 0), col=0))
+                break
+
+    # 序列化落盘：`pickle.dump(creds, open("creds.pkl", "wb"))`
+    # pickle 是**可执行格式**（反序列化即执行），凭据进去等于把口令和一个代码执行面
+    # 打包在一起。判据只认"存的东西像凭据"（变量名或文件名），不普遍禁 pickle。
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fname = _dotted(node.func) or ""
+        if fname not in ("pickle.dump", "json.dump", "shelve.open", "marshal.dump",
+                         "dill.dump", "yaml.dump", "torch.save", "joblib.dump"):
+            continue
+        blob = " ".join([n.id for n in ast.walk(node) if isinstance(n, ast.Name)])
+        literals = " ".join([n.value for n in ast.walk(node)
+                             if isinstance(n, ast.Constant) and isinstance(n.value, str)])
+        probe = (blob + " " + literals).lower()
+        if _cred_name_like(blob.lower()) or re.search(
+                r"(cred|token|secret|passw|auth|key)s?", probe):
+            if re.search(r"(cred|token|secret|passw|auth|key)", probe):
+                findings.append(AstFinding(
+                    severity="HIGH",
+                    message="凭据被序列化落盘（%s）：口令与一个反序列化执行面打包" % fname,
+                    line=getattr(node, "lineno", 0), col=0))
+    return findings
+
+
+def _credential_verdict(tokens):
+    """§3bx：凭据的"保管方式"本身就是攻击面。
+
+    - `git config credential.helper store` → 口令明文落盘
+    - `git remote set-url … ://user:token@host` → token 进了 remote URL
+    - `ssh -A` → 把 agent 转给远端主机
+    - `ssh-keygen -b 1024` / `openssl genrsa 512` → 密钥短到可枚举
+    - `mysql -p<pw>` → 口令进 argv（`ps` 与 shell history 都能看见）
+    """
+    if not tokens:
+        return None
+    toks = [t for t in tokens if isinstance(t, str)]
+    if not toks:
+        return None
+    base = _basename(toks[0]).lower()
+    low = [t.lower() for t in toks[1:]]
+    joined = " ".join(low)
+
+    if base == "git":
+        if "config" in low and "credential.helper" in joined:
+            helper = joined.split("credential.helper", 1)[1].strip()
+            if helper.startswith(("store", "cache")) or not helper:
+                return ("HIGH", "git credential.helper 明文存储口令（store/cache）")
+        if "remote" in low and "set-url" in joined:
+            for t in toks[2:]:
+                if re.search(r"://[^/@\s]+:[^/@\s]+@", t):
+                    return ("CRITICAL", "把凭据写进 git remote URL（%s）：会进 .git/config"
+                            % t[:70])
+        return None
+
+    if base == "ssh":
+        if any(re.fullmatch(r"-a+", t) for t in low) or "forwardagent=yes" in joined:
+            return ("HIGH", "ssh -A 把 agent 转发给远端主机（远端可用你的私钥）")
+        return None
+
+    if base == "ssh-keygen":
+        bits = ""
+        for i, t in enumerate(low):
+            if t == "-b" and i + 1 < len(low):
+                bits = low[i + 1]
+            elif t.startswith("-b") and len(t) > 2:
+                bits = t[2:]
+        keytype = ""
+        for i, t in enumerate(low):
+            if t == "-t" and i + 1 < len(low):
+                keytype = low[i + 1]
+        if bits.isdigit() and keytype in ("", "rsa", "dsa") and int(bits) < 2048:
+            return ("HIGH", "ssh-keygen 生成 %s 位密钥：太短，可枚举" % bits)
+        return None
+
+    if base == "openssl":
+        if low and low[0] == "genrsa":
+            bits = next((t for t in low[1:] if t.isdigit()), "")
+            if bits and int(bits) < 2048:
+                return ("HIGH", "openssl genrsa %s 位：密钥太短" % bits)
+        return None
+
+    if base in ("mysql", "mysqldump", "mysqladmin", "psql", "redis-cli", "htpasswd",
+                "mongo", "mongosh"):
+        for t in toks[1:]:
+            if re.fullmatch(r"-p[^\s]+", t):
+                return ("HIGH", "%s 命令行带明文口令（argv 会进 ps / shell history）" % base)
+            if t.lower().startswith(_PW_FLAG) and len(t.split("=", 1)[1]) > 0:
+                return ("HIGH", "%s 命令行带明文口令（--password=…）" % base)
+        return None
+
+    return None
+
+
 # §3bv：权限放宽与提权。§3bj 只判"把权限清零"，反过来"把权限打开"没人判。
 _WIDEN_MODES = ("777", "0777", "666", "0666", "a+rwx", "a+rw", "o+rwx", "o+w",
                 "a+w", "+s", "u+s", "g+s", "4755", "2755", "6755")
@@ -2298,6 +2477,12 @@ def destructive_tokens(tokens, depth: int = 0):
     if pkg:
         return pkg
 
+    # §3bx：凭据保管方式（credential.helper store / token 进 remote / ssh -A /
+    # 短密钥 / 命令行明文口令）
+    cred = _credential_verdict(tokens)
+    if cred:
+        return cred
+
     # §3bj：破坏不止删除——清零/覆写、撤权、平移、删账户、删任务、删恢复、删库。
     verb = _destructive_verb_verdict(tokens)
     if verb:
@@ -3740,6 +3925,19 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
 
     # §3bw：安装钩子与包源配置（package.json / .npmrc / 写出的 setup.py）
     findings.extend(_install_hook_findings(tree))
+
+    # §3bx：凭据生命周期（日志出口 / 明文落盘）
+    findings.extend(_cred_log_findings(tree))
+    findings.extend(_cred_write_findings(tree))
+
+    # §3bx：`ssh-keygen -f ~/.ssh/id_ed25519` 是**生成**密钥，不是读取私钥。
+    # 文本层只认字面路径，把它判成"访问 SSH 私钥"（实测误杀 1/8）。
+    if "ssh-keygen" in content:
+        keygen_lines = {i for i, ln in enumerate(content.splitlines(), 1)
+                        if "ssh-keygen" in ln}
+        findings = [f for f in findings
+                    if not (str(f.message).startswith("访问 SSH 私钥")
+                            and getattr(f, "line", 0) in keygen_lines)]
 
     return findings
 

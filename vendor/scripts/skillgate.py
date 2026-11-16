@@ -1294,6 +1294,10 @@ def scan_python_file(filepath: Path, result: ScanResult):
                 continue
             if i in ast_lines:  # AST 已经报过了，不要重复报
                 continue
+            # §3bx：`ssh-keygen -f ~/.ssh/id_ed25519` 是**生成**密钥，不是读取私钥。
+            # 字面路径判据只认路径，分不出"读"与"生成"（实测把这句判成访问私钥）。
+            if msg.startswith("访问 SSH 私钥") and "ssh-keygen" in line:
+                continue
             if downgrade is not None:
                 base_line = _strip_comment(line)
                 code_line = code_lines[i - 1]
@@ -4109,6 +4113,29 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
     for f in result.findings:
         if f.category in NON_SCORING_CATEGORIES:
             f.scoring = False
+
+    # §3bx：`ssh-keygen -f ~/.ssh/id_ed25519` 生成密钥，不是读取私钥。
+    # 文本层与 AST 层都只认字面路径，分不出读与写；集中在这里按"同一行有没有
+    # ssh-keygen"做一次收口（只压 SSH 私钥那一条，不动真正的读取）。
+    # 集中压的原因：这条判据在三个扫描阶段都会产出，逐阶段打补丁会漏。
+    _kg_files = {}
+    _kg_drop = []
+    for f in list(result.findings):
+        if not f.message.startswith("访问 SSH 私钥"):
+            continue
+        if f.file not in _kg_files:
+            try:
+                with open(f.file, encoding="utf-8", errors="ignore") as _fh:
+                    _kg_files[f.file] = _fh.read().splitlines()
+            except OSError:
+                _kg_files[f.file] = []
+        _lines = _kg_files[f.file]
+        ln = getattr(f, "line", 0) or 0
+        if 0 < ln <= len(_lines) and "ssh-keygen" in _lines[ln - 1]:
+            note_waiver(result, f.file, ln, f.severity, "ssh-keygen 生成密钥（非读取）")
+            _kg_drop.append(f)
+    if _kg_drop:
+        result.findings = [f for f in result.findings if f not in _kg_drop]
 
     # §3bb：把每条豁免"实际压掉了多严重的东西"补上，再计分。
     # 豁免本身不改分数（正常仓库要压噪声），但必须可被审计方看见。
