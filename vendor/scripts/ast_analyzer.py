@@ -4,6 +4,7 @@ SkillGate AST Analyzer — Python 语法树级别的安全分析。
 """
 import ast
 import base64
+import json
 import re
 from pathlib import Path
 from typing import List, Tuple
@@ -2276,6 +2277,371 @@ class DecodedExecVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def _parse_min_yaml(text: str):
+    """够用就行的 YAML 子集：缩进嵌套 + `- ` 列表 + `key: value`。
+
+    不引第三方库（扫描器本身要零依赖跑）。解析不了就返回 None —— 宁可不判。
+    """
+    root: dict = {}
+    stack = [(-1, root)]
+    pending_list = {}
+    for raw in text.splitlines():
+        if not raw.strip() or raw.strip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        line = raw.strip()
+        while stack and indent < stack[-1][0] + 1 and len(stack) > 1:
+            stack.pop()
+        cur = stack[-1][1]
+        if line.startswith("- "):
+            item = line[2:].strip()
+            parent = pending_list.get(id(cur))
+            if parent is None:
+                return None
+            parent.append(item)
+            continue
+        if ":" not in line:
+            return None
+        key, _, val = line.partition(":")
+        key, val = key.strip(), val.strip()
+        if not val:
+            child: dict = {}
+            cur[key] = child
+            pending_list[id(child)] = []
+            stack.append((indent, child))
+        else:
+            cur[key] = val
+            pending_list[id(cur)] = pending_list.get(id(cur))
+    # 把空的 dict 转成它收集到的列表（纯列表段）
+    def conv(d):
+        out = {}
+        for k, v in d.items():
+            if isinstance(v, dict):
+                lst = pending_list.get(id(v))
+                if lst:
+                    out[k] = lst
+                else:
+                    out[k] = conv(v)
+            else:
+                out[k] = v
+        return out
+    try:
+        return conv(root)
+    except Exception:
+        return None
+
+
+def _load_config_file(path: Path):
+    """按后缀读配置文件，返回 dict；读不出返回 None。"""
+    try:
+        ext = path.suffix.lower()
+        if ext == ".json":
+            return json.loads(path.read_text(encoding="utf-8"))
+        if ext in (".yaml", ".yml"):
+            return _parse_min_yaml(path.read_text(encoding="utf-8"))
+        if ext == ".toml":
+            import tomllib
+            with open(path, "rb") as fh:
+                return tomllib.load(fh)
+        if ext in (".ini", ".cfg", ".conf"):
+            import configparser
+            cp = configparser.ConfigParser()
+            cp.read(path, encoding="utf-8")
+            return {s: dict(cp[s]) for s in cp.sections()}
+        if ext == ".env":
+            env = {}
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if "=" in line and not line.strip().startswith("#"):
+                    k, _, v = line.partition("=")
+                    env[k.strip()] = v.strip()
+            return env
+    except Exception:
+        return None
+    return None
+
+
+def _config_chain(expr):
+    """把 `cfg["a"]["b"]` / `cfg.get("a")` 拆成 (根名字, [键…])；拆不出返回 (None, [])。"""
+    keys = []
+    node = expr
+    while True:
+        if isinstance(node, ast.Subscript):
+            sl = node.slice
+            if isinstance(sl, ast.Constant) and isinstance(sl.value, str):
+                keys.append(sl.value)
+            else:
+                return (None, [])
+            node = node.value
+            continue
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr in ("get", "getboolean", "getint", "getfloat") \
+                and node.args and isinstance(node.args[0], ast.Constant):
+            keys.append(node.args[0].value)
+            node = node.func.value
+            continue
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            # configparser：cp.get("run","cmd") 是 Call；cp["run"]["cmd"] 是 Subscript
+            keys.append(node.attr)
+            node = node.value
+            continue
+        break
+    root = node.id if isinstance(node, ast.Name) else None
+    return (root, list(reversed(keys)))
+
+
+def _lookup(cfg, keys):
+    cur = cfg
+    for k in keys:
+        if isinstance(cur, dict) and k in cur:
+            cur = cur[k]
+        else:
+            return None
+    return cur
+
+
+_CFG_LOADERS = ("json.load", "json.loads", "yaml.safe_load", "yaml.load",
+                "tomllib.load", "toml.load", "configparser.read")
+
+
+def _cfg_val(expr, loaded, env_maps):
+    """把表达式里的配置取值折出来。
+
+    支持 `cfg["a"]["b"]`、`cfg.get("a", 默认)`、`cp.get("s","k")`、`... .split()`、
+    `str(...)`、`os.environ["K"]`（有 load_dotenv 时按其文件解）。
+    返回 (值, 是否命中配置)。值可能是 str / list，或 None（命中但取不到具体值）。
+    """
+    node = expr
+    wrap_split = False
+    while True:
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            attr = node.func.attr
+            if attr == "split":
+                wrap_split = True
+                node = node.func.value
+                continue
+            if attr in ("strip", "lower", "upper"):
+                node = node.func.value
+                continue
+            if attr in ("get", "getboolean", "getint", "getfloat") and node.args \
+                    and isinstance(node.args[0], ast.Constant):
+                root, keys = _config_chain(node)
+                dflt = None
+                if len(node.args) > 1:
+                    d = node.args[1]
+                    if isinstance(d, ast.Constant) and isinstance(d.value, str):
+                        dflt = d.value
+                    elif isinstance(d, (ast.List, ast.Tuple)):
+                        dflt = [e.value for e in d.elts
+                                if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+                if root in loaded:
+                    val = _lookup(loaded[root], keys) if loaded[root] else None
+                    # configparser：cp.get("section", "option") 是两段路径，不是默认值
+                    if isinstance(val, dict) and len(node.args) > 1 and \
+                            isinstance(node.args[1], ast.Constant) and \
+                            node.args[1].value in val:
+                        val = val[node.args[1].value]
+                    elif val is None:
+                        val = dflt
+                    return (_split(val) if wrap_split else val), True
+                return (None, False)
+        if isinstance(node, ast.Call) and (getattr(node.func, "id", "") in ("str", "list")):
+            node = node.args[0]
+            continue
+        break
+
+    root, keys = _config_chain(node)
+    if root and root in loaded:
+        val = _lookup(loaded[root], keys) if loaded[root] else None
+        if isinstance(val, (int, float, bool)):
+            val = str(val)
+        return (_split(val) if wrap_split else val), True
+    # dotenv：os.environ["K"]
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) \
+            and _dotted(node.value).endswith("environ") \
+            and isinstance(node.slice, ast.Constant):
+        key = node.slice.value
+        for envmap in env_maps:
+            if envmap and key in envmap:
+                return envmap[key], True
+    return (None, False)
+
+
+def _split(v):
+    return v.split() if isinstance(v, str) else v
+
+
+def _judge_cfg_tokens(tokens, where=""):
+    """把折出来的 argv 当真判一遍：破坏性 → CRITICAL，否则 LOW（信息性披露）。"""
+    if not tokens:
+        return None
+    toks = [t for t in tokens if isinstance(t, str)]
+    if not toks:
+        return None
+    if len(toks) == 1 and " " in toks[0]:
+        toks = toks[0].split()     # 配置里一整条命令字符串
+    if not toks:
+        return None
+    if len(toks) == 1 and toks[0].endswith(_EXEC_FILE_EXTS):
+        return ("CRITICAL", "配置指向的脚本被执行：%s%s" % (toks[0], where))
+    v = destructive_tokens(toks)
+    if v:
+        return ("CRITICAL", "配置里的命令被执行：%s（%s）%s"
+                % (" ".join(toks)[:70], v[1], where))
+    return ("LOW", "配置值参与命令，已解析且未见破坏动作：%s%s"
+            % (" ".join(toks)[:60], where))
+
+
+def _config_exec_findings(tree, root_dir=None) -> List[AstFinding]:
+    """§3br：配置读入值 → 执行面。
+
+    `cfg = json.load(open("cfg.json"))` 再 `subprocess.run(cfg["cmd"])`。
+    §3bp 把「配置读入的值」明确列为折不出；这一站的做法是：**配置在仓内就把它读出来，
+    把值当真判一遍** —— 不是"看见了就算"，也不是"看见了就判死"。
+    基线：CWE-15（外部可控配置）/ CWE-78；ATT&CK T1059；ASVS V5.3.4。
+    """
+    findings: List[AstFinding] = []
+    sources: dict = {}   # 名字 -> 配置文件相对路径（None 表示来源不可知）
+    env_maps: list = []
+    dirs = [Path(root_dir)] if root_dir else []
+    if dirs:
+        for up in dirs[0].parents[:2]:
+            dirs.append(up)
+
+    def _find_path(expr):
+        for sub in ast.walk(expr):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str) \
+                    and ("." in sub.value or "/" in sub.value):
+                return sub.value
+        return None
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fname = _dotted(node.func) or ""
+        recv = getattr(node.func, "value", None)
+        is_loader = fname in _CFG_LOADERS or fname.endswith("load_dotenv") or ("dotenv" in fname)
+        is_cp_read = fname.endswith(".read") and isinstance(recv, ast.Name)
+        if not (is_loader or is_cp_read):
+            continue
+        path_lit = _find_path(node)
+        names = []
+        if is_cp_read:
+            names = [recv.id]        # configparser：cp.read("cfg.ini")
+        else:
+            for n in ast.walk(tree):
+                if isinstance(n, ast.Assign) and n.value is node:
+                    names = [t.id for t in n.targets if isinstance(t, ast.Name)]
+        if not names:
+            # `load_dotenv("cfg.env")` 常是单独一句：只看文件本身
+            if "dotenv" in fname or fname.endswith("load_dotenv"):
+                for d in dirs:
+                    full = Path(d) / path_lit if path_lit else None
+                    if full and full.is_file():
+                        cfg = _load_config_file(full)
+                        if cfg:
+                            env_maps.append(cfg)
+                        break
+            continue
+        for nm in names:
+            sources[nm] = path_lit
+
+    loaded = {}
+    for name, path_lit in sources.items():
+        if not path_lit:
+            loaded[name] = None
+            continue
+        for d in dirs:
+            full = Path(d) / path_lit if not Path(path_lit).is_absolute() else Path(path_lit)
+            if full.is_file():
+                cfg = _load_config_file(full)
+                loaded[name] = cfg
+                if cfg is not None and ("env" in str(full).lower() or path_lit.endswith(".env")):
+                    env_maps.append(cfg)
+                break
+        else:
+            loaded[name] = None
+
+    EXEC_SINKS = ("os.system", "os.popen", "os.execv", "os.execvp", "os.execve",
+                  "os.execvpe", "os.spawnv", "os.spawnl", "os.spawnvp", "os.spawnlp")
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fname = _dotted(node.func) or ""
+        is_sub = fname.startswith("subprocess.")
+        is_exec = fname in EXEC_SINKS
+        is_rm = fname.endswith("rmtree")
+        if not (is_sub or is_exec or is_rm) or not node.args:
+            continue
+
+        # 1) rmtree：只判"目标来自配置"这一种形态
+        if is_rm:
+            val, hit = _cfg_val(node.args[0], loaded, env_maps)
+            if hit:
+                tgt = val if isinstance(val, str) else None
+                absolute = bool(tgt) and (tgt.startswith("/") or
+                                          (len(tgt) > 1 and tgt[1] == ":"))
+                if tgt and (tgt.rstrip("/") in ("/", "~") or absolute):
+                    findings.append(AstFinding(
+                        severity="CRITICAL",
+                        message="配置指定的目标被递归删除：%s" % tgt,
+                        line=node.lineno, col=0))
+                else:
+                    findings.append(AstFinding(
+                        severity="HIGH",
+                        message="递归删除的目标来自配置（内容%s）" %
+                                ("＝%s" % tgt if tgt else "静态判不出"),
+                        line=node.lineno, col=0))
+            continue
+
+        first = node.args[0]
+        # 2) list/tuple 形态：逐项折，全折出就当真判
+        if isinstance(first, (ast.List, ast.Tuple)):
+            tokens, hit, ok = [], False, True
+            for e in first.elts:
+                v, h = _cfg_val(e, loaded, env_maps)
+                if h:
+                    hit = True
+                if isinstance(v, list):
+                    tokens.extend(v)
+                elif isinstance(v, str):
+                    tokens.append(v)
+                elif isinstance(e, ast.Constant) and isinstance(e.value, str):
+                    tokens.append(e.value)
+                elif isinstance(v, (int, float)):
+                    tokens.append(str(v))
+                else:
+                    ok = False
+            if hit and ok:
+                verdict = _judge_cfg_tokens(tokens)
+                if verdict:
+                    findings.append(AstFinding(severity=verdict[0], message=verdict[1],
+                                               line=node.lineno, col=0))
+            elif hit:
+                findings.append(AstFinding(
+                    severity="HIGH",
+                    message="配置读入的值进入执行面，参数未能全折出",
+                    line=node.lineno, col=0))
+            continue
+
+        # 3) 单个字符串表达式
+        val, hit = _cfg_val(first, loaded, env_maps)
+        if not hit:
+            continue
+        tokens = val if isinstance(val, list) else (val.split() if isinstance(val, str) else None)
+        if tokens:
+            verdict = _judge_cfg_tokens(tokens)
+            if verdict:
+                findings.append(AstFinding(severity=verdict[0], message=verdict[1],
+                                           line=node.lineno, col=0))
+        else:
+            findings.append(AstFinding(
+                severity="HIGH",
+                message="配置读入的值进入执行面，静态判不出内容",
+                line=node.lineno, col=0))
+    return findings
+
+
 def _archive_run_findings(tree) -> List[AstFinding]:
     """§3bq：解包后执行包内文件。
 
@@ -2562,6 +2928,9 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
 
     # §3bq：解包后执行包内文件（压缩包 → 目录 → 跑）
     findings.extend(_archive_run_findings(tree))
+
+    # §3br：配置文件读入的值进入执行面（只在仓内读配置，不越界）
+    findings.extend(_config_exec_findings(tree, filepath.parent))
 
     return findings
 
