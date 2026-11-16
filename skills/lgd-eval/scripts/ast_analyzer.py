@@ -593,6 +593,130 @@ def _arg_zero(mode: str) -> bool:
     return bool(m) and all(c == "0" for c in m)
 
 
+# §3bv：权限放宽与提权。§3bj 只判"把权限清零"，反过来"把权限打开"没人判。
+_WIDEN_MODES = ("777", "0777", "666", "0666", "a+rwx", "a+rw", "o+rwx", "o+w",
+                "a+w", "+s", "u+s", "g+s", "4755", "2755", "6755")
+_PRIV_SENSITIVE = re.compile(
+    r"^(?:/etc/(?:sudoers|sudoers\.d/[^/]+|passwd|shadow|group|gshadow|"
+    r"ssh/sshd_config)|/root/|/[^/]*/\.ssh/[^/]+|"
+    r"c:\\windows\\system32\\config\\[^\\]+)$", re.I)
+
+
+def _is_priv_sensitive(p) -> bool:
+    s = str(p or "").strip()
+    if not s:
+        return False
+    n = s.replace("\\", "/") if s[:2].lower() == "c:" else s
+    if n.startswith("~/"):
+        n = "/home/u/" + n[2:]
+    return bool(_PRIV_SENSITIVE.match(n))
+
+
+def _arg_widens(mode: str) -> bool:
+    m = (mode or "").strip().lower()
+    if not m or m.startswith("-"):
+        return False
+    return any(w in m for w in _WIDEN_MODES)
+
+
+def _privilege_verdict(tokens):
+    """§3bv：把权限打开 / 把自己抬到更高身份 —— 不是破坏，是"开门"。
+
+    chmod 777 /etc/passwd（谁都能改口令库）、chmod u+s（留 setuid 后门）、
+    icacls /grant Everyone:F、usermod -aG sudo、setcap cap_setuid+ep、
+    docker --privileged、runas 提权执行 —— §3bj 的 PERM_BINS 只管"清零"，
+    这些"加权限"的动作一条都不判。
+    """
+    if not tokens:
+        return None
+    toks = [t for t in tokens if isinstance(t, str)]
+    if not toks:
+        return None
+    base = _basename(toks[0])
+    low = [t.lower() for t in toks]
+    args = [t for t in toks[1:] if not t.strip().startswith("-")]
+
+    if base == "chmod":
+        mode = (args[0] if args else "")
+        targets = args[1:]
+        if _arg_widens(mode) or mode.lower() in ("a+x", "a+rwx", "+rwx"):
+            wide = [t for t in targets
+                    if _is_priv_sensitive(t) or
+                    (((_norm(t).startswith("/") or _hits_system([t]))) and
+                     not _is_benign_path(t))]
+            if wide:
+                return ("CRITICAL", "chmod 把敏感/系统路径的权限放宽（%s %s）：谁都改得动"
+                        % (mode, wide[0]))
+            if targets:
+                return ("MEDIUM", "chmod 把文件权限放宽（%s %s）" % (mode, targets[0]))
+        if any(f in low for f in ("--recursive", "-r")) and any(
+                "777" in t or "a+rwx" in t.lower() for t in toks):
+            return ("CRITICAL", "chmod -R 777：整棵目录树变成谁都能改")
+        return None
+
+    if base == "icacls":
+        wide = any(t.lower().startswith(("everyone", "authenticated users", "*s-1-1-0",
+                                         "*s-1-5-11")) for t in toks) or \
+            any(":f" in t.lower().replace(" ", "") for t in toks) and \
+            any(t.lower().startswith(("everyone", "users")) for t in toks)
+        if wide:
+            if _hits_system(toks) or any(_norm(t).startswith("c:/windows") for t in toks):
+                return ("CRITICAL", "icacls 把 Everyone/Users 授予完全控制（系统路径）")
+            return ("HIGH", "icacls 把 Everyone/Users 授予完全控制")
+        return None
+
+    if base == "chown" or base == "chgrp":
+        for t in args[1:]:
+            if _is_priv_sensitive(t):
+                return ("CRITICAL", "%s 把账户/密钥文件的属主改成 %s" % (base, args[0]))
+        return None
+
+    if base == "setcap":
+        cap = " ".join(low)
+        if any(c in cap for c in ("+ep", "+eip", "=ep", "=eip")) and any(
+                c in cap for c in ("cap_setuid", "cap_setgid", "cap_sys_admin",
+                                   "cap_dac_read_search", "cap_dac_override",
+                                   "cap_sys_ptrace")):
+            return ("HIGH", "setcap 给二进制加敏感 capability（可拿 root 权限）")
+        return None
+
+    if base in ("usermod", "gpasswd", "addgroup", "adduser"):
+        # `usermod -aG sudo deploy`：组名紧跟开关，被过滤掉的开关不能把组名一起吃掉
+        grp = [t for t in toks[1:] if t.lower() in
+               ("sudo", "wheel", "admin", "root", "adm", "sudoers", "administrators")]
+        if grp:
+            return ("CRITICAL", "%s 把用户加进管理组（%s）" % (base, grp[0]))
+        if any(t.lower() == "docker" for t in toks[1:]):
+            return ("HIGH", "%s 把用户加进 docker 组（等价 root）" % base)
+        return None
+
+    if base == "net" and "localgroup" in low:
+        joined = " ".join(low)
+        if "administrators" in joined and "/add" in joined:
+            return ("CRITICAL", "net localgroup 把账户加进 administrators 组")
+        if "domain admins" in joined and "/add" in joined:
+            return ("CRITICAL", "net group 把账户加进 Domain Admins")
+        return None
+
+    if base == "docker" or base == "podman":
+        if any(t in low for t in ("--privileged", "--cap-add=sys_admin",
+                                  "--cap-add", "--pid=host", "--network=host")):
+            return ("HIGH", "容器以 --privileged/--cap-add/--pid=host 运行（容器逃逸面）")
+        for i, t in enumerate(toks):
+            if t in ("-v", "--volume", "--mount"):
+                nxt = toks[i + 1] if i + 1 < len(toks) else ""
+                if nxt.startswith("/:") or nxt.split(":")[0] in ("/", "/etc", "/root"):
+                    return ("HIGH", "把宿主根目录挂进容器（%s）：容器内可直接改宿主" % nxt)
+        return None
+
+    if base == "runas":
+        if any(t.lower().startswith("/user:") for t in low):
+            return ("HIGH", "runas 以其他账户身份执行命令（提权执行面）")
+        return None
+
+    return None
+
+
 def _hits_system(tokens) -> bool:
     for t in tokens:
         n = _norm(t)
@@ -1943,6 +2067,12 @@ def destructive_tokens(tokens, depth: int = 0):
     literal = _b64_literal_verdict(tokens)
     if literal:
         return literal
+
+    # §3bv：权限放宽与提权（不是破坏，是"开门"：chmod 777 / setuid / sudoers /
+    # 管理组 / setcap / --privileged / runas）
+    priv = _privilege_verdict(tokens)
+    if priv:
+        return priv
 
     # §3bj：破坏不止删除——清零/覆写、撤权、平移、删账户、删任务、删恢复、删库。
     verb = _destructive_verb_verdict(tokens)
