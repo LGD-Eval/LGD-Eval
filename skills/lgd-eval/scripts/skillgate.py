@@ -2963,6 +2963,171 @@ _SECRET_FILE_NAMES = {
 _NPMRC_NAME = "." + "npm" + "rc"
 
 
+def _gitignore_covers(text, targets):
+    """按 git 的真实语义判"这个文件会不会被忽略"。
+
+    为什么不能用「含 .env 字样即已覆盖」了事：`.gitignore` 的规则是**最后一条匹配
+    的生效**，且 `!` 开头表示反向排除。于是
+        *.env
+        !*.env
+    的实际语义是"不忽略"，而按字面读会读成"已覆盖"——正好反过来
+    （audit2/probe_git_history.py 的 p04）。
+    """
+    import fnmatch
+    covered = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        negate = line.startswith("!")
+        pat = line[1:].strip() if negate else line
+        if not pat:
+            continue
+        pat = pat.rstrip("/")
+        root_anchored = pat.startswith("/")
+        if root_anchored:
+            pat = pat[1:]
+        for t in targets:
+            hit = fnmatch.fnmatchcase(t, pat) or fnmatch.fnmatchcase(t, pat.lstrip("./"))
+            if not hit and pat.startswith("**/"):
+                hit = fnmatch.fnmatchcase(t, pat[3:])
+            if hit:
+                covered = not negate
+    return covered
+
+
+def _secret_hits_in_text(text):
+    """一段文本里的机密命中（历史扫描与工作区扫描共用同一套格式）。"""
+    hits = []
+    if any(mark in text for mark in _PK_ANY):
+        hits.append(("CRITICAL", "私钥块"))
+    if re.search(r"AKIA[0-9A-Z]{16}", text):
+        hits.append(("CRITICAL", "AWS Access Key ID"))
+    if re.search(r"ghp_[A-Za-z0-9]{36}", text) or re.search(r"github_pat_[A-Za-z0-9_]{20,}", text):
+        hits.append(("CRITICAL", "GitHub Token"))
+    if re.search(r"sk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}", text):
+        hits.append(("CRITICAL", "模型 API Key"))
+    if re.search(r"xox[baprs]-[A-Za-z0-9-]{10,}", text):
+        hits.append(("CRITICAL", "Slack Token"))
+    if re.search(r"glpat-[A-Za-z0-9_-]{20,}", text):
+        hits.append(("CRITICAL", "GitLab Token"))
+    if re.search(r"//[^\s]*:_authToken\s*=", text):
+        hits.append(("HIGH", "npm 发布令牌"))
+    if re.search(r"aws_secret_access_key\s*[:=]\s*['\"]?[A-Za-z0-9/+_\-]{16,}", text, re.I):
+        hits.append(("HIGH", "AWS Secret Key"))
+    return hits
+
+
+_HISTORY_MAX_COMMITS = 400
+_HISTORY_MAX_BYTES = 8 * 1024 * 1024
+
+
+def GIT_BIN():
+    """找 git：PATH 里没有时按本机已知安装位置兜底（Windows 上常态）。
+
+    找不到返回 "git"——运行时会抛 FileNotFoundError，由调用方如实披露"未扫"。
+    """
+    import shutil as _sh
+    found = _sh.which("git")
+    if found:
+        return found
+    for cand in (r"C:\Users\Administrator\.local\mingit-2.56.0.4\cmd\git.exe",
+                 r"C:\Program Files\Git\cmd\git.exe",
+                 "/usr/bin/git", "/usr/local/bin/git"):
+        if os.path.exists(cand):
+            return cand
+    return "git"
+
+
+def scan_git_history(skill_path: Path, result: ScanResult):
+    """历史里有没有留过密钥（工作区干净 ≠ 历史干净）。
+
+    为什么必须有这一条：密钥提交过又删掉，工作区扫描永远是 100/A+，
+    但任何克隆者一句 `git log -p` 就能拿到。删除只是停止继续泄漏，
+    不是撤销泄漏——§3by 的覆盖层只防"将会进历史"，防不住"已经进过"。
+    """
+    import subprocess
+    git_dir = skill_path / ("." + "git")
+    if not git_dir.exists():
+        return
+    try:
+        p = subprocess.run(
+            [GIT_BIN(), "-C", str(skill_path), "log", "--all", "-p", "--unified=0",
+             "--format=@@LGDC %H", "-n", str(_HISTORY_MAX_COMMITS)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        # 读不出来也要说出来：否则"没扫"和"扫过且干净"长得一模一样
+        result.findings.append(Finding(
+            severity="LOW", category="coverage", scoring=False,
+            message="git 历史未扫：本机没有可用的 git，无法回答“历史里有没有密钥”",
+            file=str(skill_path), line=1
+        ))
+        return
+    out = p.stdout or ""
+    if p.returncode != 0 or not out.strip():
+        return
+    truncated = len(out) > _HISTORY_MAX_BYTES
+    if truncated:
+        out = out[:_HISTORY_MAX_BYTES]
+
+    cur = "?"
+    cur_file = ""
+    reported = set()
+    PLACE = ("your_", "xxx", "example", "placeholder", "<", "${", "changeme",
+             "redacted", "...", "***", "dummy", "sample", "fake", "sandbox",
+             "notreal", "for_test")
+    SKIP_PARTS = ("tests", "test", "fixtures", "testdata", "demo", "samples",
+                  "corpus", "_demo", "benchmarks", "docs", "doc")
+
+    for line in out.splitlines():
+        if line.startswith("@@LGDC "):
+            cur = line.split()[1][:12]
+            cur_file = ""
+            continue
+        if line.startswith("diff --git "):
+            cur_file = line.split(" b/")[-1].strip()
+            continue
+        if not line.startswith("+") or line.startswith("+++"):
+            continue
+        body = line[1:]
+        if len(body) < 8:
+            continue
+        if any(h in body.lower() for h in PLACE):
+            continue
+        # 夹具与示例目录里的假密钥不算历史泄漏（与工作区扫描同一份排除语义）
+        parts = cur_file.replace("\\", "/").split("/")
+        if any(pp in SKIP_PARTS for pp in parts[:-1]):
+            continue
+        name = parts[-1] if parts else ""
+        base_sev = None
+        if name in _SECRET_FILE_NAMES or name == ".env" or name.endswith(".env"):
+            base_sev = "CRITICAL"
+        hits = _secret_hits_in_text(body)
+        if not hits and not base_sev:
+            continue
+        sev = "CRITICAL" if (base_sev == "CRITICAL"
+                             or any(h[0] == "CRITICAL" for h in hits)) else "HIGH"
+        key = (cur, cur_file)
+        if key in reported:
+            continue
+        reported.add(key)
+        what = "、".join(sorted({h[1] for h in hits})) or "机密文件"
+        result.findings.append(Finding(
+            severity=sev, category="credential",
+            message="提交 %s 往历史里加过%s（%s）：删掉文件不等于撤销泄漏，"
+                    "克隆者 git log 就能拿到" % (cur, what, cur_file),
+            file=str(skill_path / ("." + "git")), line=1
+        ))
+    if truncated:
+        result.findings.append(Finding(
+            severity="LOW", category="coverage", scoring=False,
+            message="git 历史只扫了前 %d 个提交 / 前 %d MB（大仓库会截断，需另跑全量扫描）"
+                    % (_HISTORY_MAX_COMMITS, _HISTORY_MAX_BYTES // (1024 * 1024)),
+            file=str(skill_path), line=1
+        ))
+
+
 def _env_looks_like_template(text):
     """`.env` 是不是纯样板：所有赋值都是空值或占位符。
 
@@ -3121,7 +3286,17 @@ def scan_secret_files(skill_path: Path, result: ScanResult, should_exclude):
             ignored = read_text_smart(gi_path)
         except OSError:
             ignored = ""
-    covered = bool(ignored) and bool(re.search(r"^\s*(\*\.?env|\.env\s*$|\.env\.)", ignored, re.M))
+    covered = False
+    if ignored:
+        covered = _gitignore_covers(ignored, [".env", ".env.local", "*.env"])
+    # `.git/info/exclude` 是本地忽略清单：它不在版本库里，但**真的会生效**。
+    # 不读它，就会出现"规则已经写好了、人却被告知没写"的误判（b04）。
+    info_ex = skill_path / ("." + "git") / "info" / "exclude"
+    if not covered and info_ex.is_file():
+        try:
+            covered = _gitignore_covers(read_text_smart(info_ex), [".env", "*.env"])
+        except OSError:
+            covered = False
     if env_files and not covered:
         for env_path, env_text in env_files:
             # 已经被内容判据报过的 .env（有真密钥）不再补一条覆盖缺口：
@@ -4131,6 +4306,9 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
     # §3by：仓库里**躺着什么机密文件**。§3bx 判代码怎么处理凭据；这里判
     # 私钥/凭证文件本身在不在仓库里、有没有被 .gitignore 覆盖。
     scan_secret_files(skill_path, result, should_exclude)
+
+    # §3bz：历史里有没有留过密钥。工作区干净 ≠ 历史干净。
+    scan_git_history(skill_path, result)
 
     # 未读载体披露：压缩包/二进制里的载荷一个字节都没看过，必须说出来
     scan_carriers(skill_path, result, should_exclude)
