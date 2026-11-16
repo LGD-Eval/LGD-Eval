@@ -3403,6 +3403,119 @@ def scan_ci_release(skill_path: Path, result: ScanResult, should_exclude):
             ))
 
 
+CI_OTHER_NAMES = (".gitlab-ci.yml", ".gitlab-ci.yaml")
+CI_OTHER_PREFIX = ("azure-pipelines", "Jenkinsfile", "jenkinsfile", ".drone")
+
+
+def _gitlab_artifacts_root(text):
+    """`.gitlab-ci.yml` 里 `artifacts:` 下的 paths 把自己整个交出去。
+
+    GitLab 的口径与 GitHub 不同：`artifacts:public` 在**公开流水线**上默认 true，
+    匿名与 guest 都能下载；`expire_in` 默认 30 天，而且**最近一次成功流水线的产物
+    不受 expire_in 约束**。所以"我设了过期时间"不等于"过期就没了"。
+    `untracked: true` 更直接：把未经 git 跟踪的文件（`.env` 正在其中）一并收走。
+    """
+    hits = []
+    lines = text.splitlines()
+    in_block = False
+    for idx, line in enumerate(lines):
+        s = line.strip()
+        if re.match(r"artifacts\s*:", s) or s == "artifacts:":
+            in_block = True
+            continue
+        if in_block:
+            indent = len(line) - len(line.lstrip())
+            if s and indent == 0 and not s.startswith("#"):
+                in_block = False
+            if re.match(r"untracked\s*:\s*true", s):
+                hits.append((idx + 1, "untracked: true"))
+            m = re.match(r"-\s*['\"]?([^'\"]+)['\"]?\s*$", s)
+            if m:
+                v = m.group(1).strip()
+                if v in (".", "./", "*", "**", "**/*"):
+                    hits.append((idx + 1, v))
+    return hits
+
+
+def _azure_root_target(text):
+    """Azure Pipelines 把整个源码目录当产物发布。"""
+    hits = []
+    for idx, line in enumerate(text.splitlines(), 1):
+        m = re.search(r"(?:targetPath|PathtoPublish)\s*:\s*['\"]?\$\(\s*"
+                      r"(Build\.SourcesDirectory|System\.DefaultWorkingDirectory)", line)
+        if m:
+            hits.append((idx, m.group(1)))
+    return hits
+
+
+def _jenkins_archives_everything(text):
+    """Jenkins 的 `archiveArtifacts` 拿 `**` 当模式，等于把工作区全归档。
+
+    Jenkins 的归档件在"工作区浏览"里对内网可读，构建历史默认长期保留；
+    它不像 artifact 有 90 天回收，所以"归档一次"等于"长期留一份"。
+    """
+    hits = []
+    for idx, line in enumerate(text.splitlines(), 1):
+        if "archiveArtifacts" not in line and not re.search(r"\barchive\s+['\"]", line):
+            continue
+        m = re.search(r"[\'\"](\*\*|\*\*/\*)[\'\"]", line)
+        if m:
+            hits.append((idx, m.group(1)))
+    return hits
+
+
+def _compress_archive_root(text):
+    """Windows runner 上用 `Compress-Archive` 打包整个目录。"""
+    hits = []
+    for idx, line in enumerate(text.splitlines(), 1):
+        if "Compress-Archive" not in line:
+            continue
+        m = re.search(r"-Path\s+['\"]?([^\s\'\"]+)['\"]?", line)
+        if m:
+            v = m.group(1).strip()
+            if v in (".", "./", "$PWD", "$(pwd)", "$env:WORKSPACE", "%CD%"):
+                hits.append((idx, v))
+    return hits
+
+
+def scan_ci_other(skill_path: Path, result: ScanResult, should_exclude):
+    """§3cc 别的 CI 也会把东西送出去。
+
+    §3cb 只认 `.github/workflows`。同一个仓库常常还有 `.gitlab-ci.yml`、
+    `azure-pipelines.yml`、`Jenkinsfile`——它们的产物同样公开可下，但口径各不相同：
+    GitLab 看 `artifacts:public` 与 `untracked`，Azure 看 `targetPath` 是不是源码根，
+    Jenkins 看归档模式是不是 `**`，Windows runner 看 `Compress-Archive -Path`。
+    """
+    for f in skill_path.rglob("*"):
+        if not f.is_file() or should_exclude(f):
+            continue
+        name = f.name
+        if not (name in CI_OTHER_NAMES or name.startswith(CI_OTHER_PREFIX)
+                or f.suffix.lower() in (".ps1", ".psm1")):
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        pairs = []
+        for line, token in _gitlab_artifacts_root(text):
+            pairs.append(("GitLab `artifacts:` 把整个目录交出去（`%s`；匿名与 guest 可下，"
+                          "且最近一次成功流水线的产物不受 `expire_in` 约束）" % token, line))
+        for line, token in _azure_root_target(text):
+            pairs.append(("Azure Pipelines 把源码根当产物发布（`%s`）" % token, line))
+        for line, token in _jenkins_archives_everything(text):
+            pairs.append(("Jenkins `archiveArtifacts` 以 `%s` 归档整个工作区："
+                          "构建历史默认长期保留" % token, line))
+        for line, token in _compress_archive_root(text):
+            pairs.append(("Windows `Compress-Archive -Path %s` 打包整个目录，"
+                          "随后多半会被上传" % token, line))
+        for msg, line in pairs:
+            result.findings.append(Finding(
+                severity="HIGH", category="filesystem", message=msg,
+                file=str(f), line=line
+            ))
+
+
 def _env_looks_like_template(text):
     """`.env` 是不是纯样板：所有赋值都是空值或占位符。
 
@@ -4590,6 +4703,9 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
 
     # §3cb：CI 侧发布出口（artifact / npm pack / sdist / release 资产）
     scan_ci_release(skill_path, result, should_exclude)
+
+    # §3cc：别的 CI 也会把东西送出去（GitLab / Azure / Jenkins / Compress-Archive）
+    scan_ci_other(skill_path, result, should_exclude)
 
     # 未读载体披露：压缩包/二进制里的载荷一个字节都没看过，必须说出来
     scan_carriers(skill_path, result, should_exclude)
