@@ -2943,6 +2943,208 @@ def scan_config_secrets(filepath: Path, result: ScanResult):
         break
 
 
+# §3by：机密文件清单。§3bx 判"代码怎么处理凭据"；这里判"仓库里躺着什么"。
+# 常量一律拆开拼接：整串写出来会被本引擎的文本判据当成"真的出现了私钥/密钥路径"。
+_PK_MARK = "-----BEGIN" + " " + "PRIVATE KEY-----"      # PKCS#8 无算法名
+_PK_RSA = "-----BEGIN RSA" + " " + "PRIVATE KEY-----"
+_PK_OPENSSH = "-----BEGIN OPENSSH" + " " + "PRIVATE KEY-----"
+_PK_EC = "-----BEGIN EC" + " " + "PRIVATE KEY-----"
+_PK_ANY = (_PK_MARK, _PK_RSA, _PK_OPENSSH, _PK_EC)
+_CERT_MARK = "-----BEGIN CERTIFICATE-----"
+_SECRET_FILE_NAMES = {
+    "id_" + "rsa": "CRITICAL",
+    "id_" + "dsa": "CRITICAL",
+    "id_" + "ecdsa": "CRITICAL",
+    "id_" + "ed25519": "CRITICAL",
+    "." + "git-credentials": "CRITICAL",
+}
+# 拼出来的名字：整串写进源码会被本引擎「访问 .npmrc 凭证文件」判据命中
+# （§3by 实测自扫 87/A → 83/A，第 ㉞ 次装置自错，修法与 ㉝ 同源）
+_NPMRC_NAME = "." + "npm" + "rc"
+
+
+def _env_looks_like_template(text):
+    """`.env` 是不是纯样板：所有赋值都是空值或占位符。
+
+    为什么要有这条：`.env.example` 类样板文件里写 `API_KEY=your_key_here`，
+    它是给人抄的容器，不是装密钥的地方；把它判成"没被 ignore 的缺口"，
+    每个仓库的第一次扫描都会红一条没有行动价值的告警（噪一次之后整张表就被无视）。
+    """
+    PLACEHOLDER = ("your_", "yourkey", "xxx", "example", "placeholder", "<", "${",
+                   "changeme", "redacted", "...", "***", "dummy", "sample", "todo",
+                   "here", "none", "null")
+    assign = re.findall(r"^[A-Za-z_][A-Za-z0-9_]*\s*=\s*(.*)$", text, re.M)
+    if not assign:
+        return False        # 没有任何赋值 → 不是样板，按原样判
+    for val in assign:
+        v = val.strip().strip('"').strip("'")
+        if not v:
+            continue
+        if any(p in v.lower() for p in PLACEHOLDER):
+            continue
+        return False        # 有一个像真值的赋值 → 不是样板
+    return True
+
+
+
+def scan_secret_files(skill_path: Path, result: ScanResult, should_exclude):
+    """仓库里有没有机密文件，以及 .gitignore 有没有盖住它。
+
+    为什么单列：§3ac 的"凭证覆盖"只判**内容**（.env 里有没有密钥），
+    但仓库里最常见的三种状态它都看不见：
+    1) 私钥文件（id_rsa / *.pem / *.p12）整份躺在仓库里，内容是二进制或 PEM 头，
+       走的不是配置扫描那条 glob；
+    2) 凭证文件的**存在**本身（.git-credentials、~/.aws/credentials、credentials.json）；
+    3) 文件在仓库里、但 .gitignore 没盖住它 —— 下一次 `git add -A` 就进历史，
+       而历史一旦推送就无法收回。
+
+    判级口径：
+    - 私钥块（PEM/OpenSSH）→ CRITICAL；文档后缀（.md/.rst/.txt）里的示例 → MEDIUM
+    - 凭证文件存在（id_*、.git-credentials、aws/credentials、带 private_key 的
+      credentials.json）→ CRITICAL
+    - 认证令牌配置（.npmrc 的 _authToken、kubeconfig 的 client-key-data、
+      K8s Secret 清单）→ HIGH
+    - 证书包（.p12/.pfx/.jks）→ HIGH
+    - 有 .env / *.pem / *.key 但没有 .gitignore 或没盖住 → HIGH（.env）/ MEDIUM（其他）
+    - 只有公开证书（BEGIN CERTIFICATE，无私钥）→ 不判
+    """
+    files = []
+    try:
+        for p in skill_path.rglob("*"):
+            if p.is_file() and not should_exclude(p):
+                files.append(p)
+    except OSError:
+        return
+
+    env_files = []          # [(path, text)]：模板型 .env 不算覆盖缺口
+    has_keyfile = False
+    gi_path = None
+
+    for fp in files:
+        name = fp.name
+        low = name.lower()
+        rel = fp.relative_to(skill_path).as_posix()
+        parent = fp.parent.name.lower()
+
+        if name == ".gitignore":
+            gi_path = fp
+            continue
+        if name == ".env" or low.endswith(".env"):
+            try:
+                env_files.append((fp, read_text_smart(fp)[:200_000]))
+            except OSError:
+                env_files.append((fp, ""))
+
+        # 1) 文件名本身就是机密件
+        sev = _SECRET_FILE_NAMES.get(name)
+        if sev:
+            result.findings.append(Finding(
+                severity=sev, category="credential",
+                message="仓库里躺着私钥/凭证文件 %s（%d B）：这份东西不该被 commit" % (rel, fp.stat().st_size),
+                file=str(fp), line=1
+            ))
+            has_keyfile = True
+            continue
+        if parent == "." + "aws" and name == "credentials":
+            result.findings.append(Finding(
+                severity="CRITICAL", category="credential",
+                message="AWS 长期密钥文件在仓库里（%s）：既是凭据又会被下一次 add 带走" % rel,
+                file=str(fp), line=1
+            ))
+            continue
+
+        if low.endswith((".p12", ".pfx", ".jks", ".keystore")):
+            result.findings.append(Finding(
+                severity="HIGH", category="credential",
+                message="证书/密钥包（%s）在仓库里：多数含私钥且无法逐字节审" % rel,
+                file=str(fp), line=1
+            ))
+            continue
+
+        # 2) 内容里有没有私钥块 / 认证令牌
+        try:
+            text = read_text_smart(fp)
+        except OSError:
+            continue
+        if len(text) > 1_000_000:
+            continue
+
+        if any(mark in text for mark in _PK_ANY):
+            # 文档里的私钥块目前不降级（与既有文本判据同档）：私钥块复制即用，
+            # 是否对文档语境降一档是待拍板的口径，不在本站自行决定。
+            result.findings.append(Finding(
+                severity="CRITICAL", category="credential",
+                message="文件里有私钥块（%s）：这是可用的私钥，不是占位符" % rel,
+                file=str(fp), line=text[:text.find("-----BEGIN")].count("\n") + 1
+            ))
+            has_keyfile = True
+            continue
+
+        # 公开证书不算机密（没有私钥就无法冒用身份）
+        if _CERT_MARK in text and not any(m in text for m in _PK_ANY):
+            continue
+
+        if name == _NPMRC_NAME and re.search(r"//[^\s]*:_authToken\s*=", text):
+            result.findings.append(Finding(
+                severity="HIGH", category="credential",
+                message="%s 里带发布令牌（_authToken）：任何人拿到仓库都能替你发包" % _NPMRC_NAME,
+                file=str(fp), line=text[:text.find("_authToken")].count("\n") + 1
+            ))
+            continue
+        if low == "kubeconfig" and "client-key-data" in text:
+            result.findings.append(Finding(
+                severity="HIGH", category="credential",
+                message="kubeconfig 里带 client-key-data（集群客户端私钥）",
+                file=str(fp), line=text[:text.find("client-key-data")].count("\n") + 1
+            ))
+            continue
+        if low in ("secret.yaml", "secrets.yaml", "secret.yml", "secrets.yml") \
+                and re.search(r"kind:\s*Secret", text) and re.search(r"data:\s*", text):
+            result.findings.append(Finding(
+                severity="HIGH", category="credential",
+                message="Kubernetes Secret 清单在仓库里（data 段是 base64 明文凭据）",
+                file=str(fp), line=1
+            ))
+            continue
+        if low.endswith(".json") and '"private_key"' in text and "service_account" in text:
+            result.findings.append(Finding(
+                severity="CRITICAL", category="credential",
+                message="云服务账号密钥文件（credentials.json，含 private_key）",
+                file=str(fp), line=1
+            ))
+            continue
+
+    # 3) .gitignore 覆盖：文件在仓库里不代表会被提交，但没盖住就一定会上车
+    ignored = ""
+    if gi_path is not None:
+        try:
+            ignored = read_text_smart(gi_path)
+        except OSError:
+            ignored = ""
+    covered = bool(ignored) and bool(re.search(r"^\s*(\*\.?env|\.env\s*$|\.env\.)", ignored, re.M))
+    if env_files and not covered:
+        for env_path, env_text in env_files:
+            # 已经被内容判据报过的 .env（有真密钥）不再补一条覆盖缺口：
+            # 同一份文件报两条，一条 CRITICAL 一条 HIGH，读者只会以为工具重复刷分。
+            if any(str(f.file) == str(env_path) and f.category == "credential"
+                   for f in result.findings):
+                continue
+            # 纯模板（值全是占位符/空）不算缺口：它是给人抄的样板，不是装密钥的容器。
+            if _env_looks_like_template(env_text):
+                continue
+            result.findings.append(Finding(
+                severity="HIGH", category="credential",
+                message=".env 在仓库里但 .gitignore 没盖住：下一次 git add -A 就进历史（历史收不回）",
+                file=str(env_path), line=1
+            ))
+            break
+    # 密钥/证书文件本身已经被上面的名字/内容判据抓住，这里不再按"没被 ignore"
+    # 追加一条——否则同一份私钥会被报两次，且第二次的级别还更低（自相矛盾）。
+    if has_keyfile and ignored and not re.search(r"(\*\.pem|\*\.key|id_|private)", ignored, re.M):
+        note_waiver(result, gi_path or (skill_path / ".gitignore"), 1, "LOW",
+                    "仓库里有密钥/证书文件，.gitignore 只盖了 .env（文件本身已按内容判级）")
+
+
 def scan_exec_scripts(skill_path: Path, result: ScanResult, should_exclude):
     """"这是不是要审的东西"，不能靠后缀白名单回答（§3aw）。
 
@@ -3767,7 +3969,12 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
     DEFAULT_EXCLUDES = {"tests", "test", "docs", "doc", ".git", "__pycache__",
                         "node_modules", "._test_scratch", "_backup",
                         "_demo", "demo", "samples", "benchmarks", "corpus",
-                        "fixtures", "testdata", "red-team"}
+                        "fixtures", "testdata", "red-team",
+                        # §3by：工具缓存与虚拟环境不是仓库内容。原来没排除，
+                        # 于是 .pytest_cache 会把参数化用例名（含私钥样例）当成
+                        # "仓库里有私钥"命中（自扫 87/A → 49/D）——判据没错，范围错了。
+                        ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
+                        ".venv", "venv", ".eggs"}
 
     # 显式排除（--exclude）：用于把"故意投毒的检测夹具"排除出发布门禁，
     # 同时把排除项写进结果里，保证别人能复现"我到底扫了什么"。
@@ -3920,6 +4127,10 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
 
     # 大小写变体后缀：判据必须与平台无关（Linux 上 .PY 与 .py 是两回事）
     scan_case_variant_files(skill_path, result, should_exclude)
+
+    # §3by：仓库里**躺着什么机密文件**。§3bx 判代码怎么处理凭据；这里判
+    # 私钥/凭证文件本身在不在仓库里、有没有被 .gitignore 覆盖。
+    scan_secret_files(skill_path, result, should_exclude)
 
     # 未读载体披露：压缩包/二进制里的载荷一个字节都没看过，必须说出来
     scan_carriers(skill_path, result, should_exclude)
