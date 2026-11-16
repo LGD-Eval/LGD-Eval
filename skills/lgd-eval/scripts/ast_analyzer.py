@@ -182,9 +182,24 @@ class DangerousCallVisitor(ast.NodeVisitor):
             # 但权重只 −4，正常调用 git/pip 的工具仍落在 96/A，不至于整类被误杀。
             if func_name.startswith("subprocess."):
                 if self._has_shell_true(node):
-                    sev_dyn, sev_lit = "CRITICAL", "CRITICAL"
+                    # §3bp：原口径是"shell=True 一律 CRITICAL"，于是**良性 `git status` 也 49/D**
+                    # （probe_value_flow 的 b10），而真正的恶意内容反倒没被单独看见。
+                    # 改成按内容分档：命令看不见 → CRITICAL；能看见且是只读命令 → LOW；
+                    # 能看见但判不出 → HIGH（字符串交给 shell 这一层仍然算风险）。
                     msg += " (shell=True)"
+                    argv = static_argv(node, func_name, getattr(self, "consts", None),
+                                       getattr(self, "temps", None), getattr(self, "lists", None))
+                    if not argv or any(str(t).startswith(_ENV_MARK) for t in argv):
+                        sev_dyn, sev_lit = "CRITICAL", "CRITICAL"
+                    elif _shell_cmd_readonly(argv):
+                        sev_dyn, sev_lit = "LOW", "LOW"
+                        msg += "（命令为常量、只读）"
+                    else:
+                        sev_dyn, sev_lit = "HIGH", "HIGH"
+                        msg += "（命令为常量，内容未判出破坏）"
                 else:
+                    # 以下这段是 §3bc/§3be 的口径：不带 shell 也要让人看见"会起子进程"，
+                    # 但权重只 −4/−1，正常调用 git/pip 的工具不至于被误杀。
                     sev_dyn, sev_lit = "LOW", "LOW"
                     msg += "（无 shell，参数未静态判定）"
 
@@ -1279,6 +1294,60 @@ def _const_str(expr):
 
 
 # ── §3bf 常量折叠：把"藏进变量"的字面量折回来 ────────────────────────────
+_ENV_MARK = "\x00ENV"      # 值来自环境变量：运行期才知道，静态判不了内容
+_ENV_MARK_TEXT = "命令/路径来自环境变量（运行期输入）"
+
+# shell=True 但命令写死、且属只读查询类 → 不按危险算（否则 `git status` 也 49/D）
+_SHELL_READONLY_BINS = {"git", "ls", "cat", "echo", "grep", "rg", "find", "head",
+                        "tail", "pwd", "wc", "date", "which", "diff", "printenv",
+                        "node -v", "npm -v", "pip", "python -m pip"}
+_SHELL_META = ("|", "&", ";", "`", "$(", ">", "<")
+
+
+def _shell_cmd_readonly(argv):
+    """命令写死、第一个 token 是只读命令、且不含任何管道/重定向/串联符号。"""
+    toks = [str(t) for t in argv if t]
+    if not toks:
+        return False
+    joined = " ".join(toks)
+    if any(m in joined for m in _SHELL_META):
+        return False
+    first = _basename(toks[0])
+    return first in _SHELL_READONLY_BINS
+
+
+def _call_key(expr):
+    """`get()` → "get()"、`C().cmd()` → "C.cmd()"、`obj.method()` → "obj.method()"。"""
+    if not isinstance(expr, ast.Call):
+        return ""
+    fn = expr.func
+    if isinstance(fn, ast.Name):
+        return fn.id + "()"
+    if isinstance(fn, ast.Attribute):
+        base = _dotted(fn.value)
+        if base:
+            return base + "." + fn.attr + "()"
+        if isinstance(fn.value, ast.Call) and isinstance(fn.value.func, ast.Name):
+            return fn.value.func.id + "." + fn.attr + "()"
+    return ""
+
+
+def _globals_key(expr, consts):
+    """`globals()["CMD"]` → "CMD"（等价于模块级同名字面量）。"""
+    if not isinstance(expr, ast.Subscript):
+        return ""
+    inner = expr.value
+    if isinstance(inner, ast.Call) and _dotted(inner.func) == "globals":
+        name = _fold_str(expr.slice, consts)
+        return name or ""
+    return ""
+
+
+def _as_str(value):
+    """consts 里既存字符串也存列表；这里只取字符串，列表交给 _fold_argv。"""
+    return value if isinstance(value, str) else None
+
+
 def _fold_str(expr, consts, depth: int = 0):
     """把表达式折成一个字符串；折不出来返回 None（不猜）。"""
     if expr is None or depth > 4:
@@ -1286,12 +1355,47 @@ def _fold_str(expr, consts, depth: int = 0):
     if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
         return expr.value
     if isinstance(expr, ast.Name):
-        return consts.get(expr.id) if consts else None
+        return _as_str(consts.get(expr.id)) if consts else None
     if isinstance(expr, ast.Attribute):
         # sys.executable 就是解释器本身；不折它，`[sys.executable, "-c", "…"]`
         # 这类写法连 token 都取不齐，内联脚本永远打不开。
         if _dotted(expr) == "sys.executable":
             return "python"
+        # §3bp：类属性 `C.cmd` / `os.environ.X`
+        if consts:
+            got = _as_str(consts.get(_dotted(expr)))
+            if got is not None:
+                return got
+        return None
+    if isinstance(expr, ast.Subscript):
+        # §3bp：字典字面量 `D["c"]`、`globals()["CMD"]`、`os.environ["CMD"]`
+        if isinstance(expr.value, ast.Name) and consts:
+            key = _fold_str(expr.slice, consts, depth + 1)
+            if key is not None:
+                got = _as_str(consts.get("%s[%s]" % (expr.value.id, key)))
+                if got is not None:
+                    return got
+        if consts:
+            got = _as_str(consts.get(_globals_key(expr, consts)))
+            if got is not None:
+                return got
+        if _dotted(expr.value) == "os.environ":
+            return _ENV_MARK
+        return None
+    if isinstance(expr, ast.Call):
+        dotted = _dotted(expr.func)
+        if dotted in ("os.getenv", "os.environ.get"):
+            # §3bp：有默认值就折默认值；没有就是运行期才确定的命令
+            if len(expr.args) >= 2:
+                return _fold_str(expr.args[1], consts, depth + 1)
+            for kw in expr.keywords:
+                if kw.arg == "default":
+                    return _fold_str(kw.value, consts, depth + 1)
+            return _ENV_MARK
+        if consts:
+            got = _as_str(consts.get(_call_key(expr)))
+            if got is not None:
+                return got
         return None
     if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
         left = _fold_str(expr.left, consts, depth + 1)
@@ -1318,6 +1422,23 @@ def _fold_str(expr, consts, depth: int = 0):
 
 def _fold_argv(expr, consts):
     """列表/元组逐项可折叠 → token 列表；有一项取不到就整体放弃。"""
+    if isinstance(expr, ast.Call):
+        # §3bp：`get()` / `C().cmd()` / `D["c"]` 折成列表
+        got = (consts or {}).get(_call_key(expr) or "")
+        if isinstance(got, list):
+            return list(got)
+        return None
+    if isinstance(expr, ast.Subscript):
+        key = _globals_key(expr, consts)
+        got = (consts or {}).get(key)
+        if isinstance(got, list):
+            return list(got)
+        if isinstance(expr.value, ast.Name) and consts:
+            inner = _fold_str(expr.slice, consts)
+            got2 = consts.get("%s[%s]" % (expr.value.id, inner)) if inner is not None else None
+            if isinstance(got2, list):
+                return list(got2)
+        return None
     if not isinstance(expr, (ast.List, ast.Tuple)):
         return None
     out = []
@@ -1418,6 +1539,55 @@ def collect_consts(tree):
             distinct = {f for f in folded if f is not None}
             if len(distinct) == 1 and all(f is not None for f in folded):
                 consts[name] = distinct.pop()
+
+    # §3bp：值一过手就折不出来——函数返回、类属性、字典字面量、元组拆包。
+    # 同一处洞会同时打穿 argv / 路径 / URL 三套判据，所以在这里一次补齐。
+    rets, class_attrs, dict_vals, unpacked = {}, {}, {}, {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            rs = [s for s in ast.walk(node) if isinstance(s, ast.Return) and s.value is not None]
+            if len(rs) == 1:
+                rets.setdefault(node.name + "()", []).append(rs[0].value)
+        elif isinstance(node, ast.ClassDef):
+            for stmt in node.body:
+                if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                        and isinstance(stmt.targets[0], ast.Name):
+                    class_attrs.setdefault(node.name + "." + stmt.targets[0].id, []).append(stmt.value)
+                # §3bp：类方法的返回值同样要能折——`C().cmd()` 走的是限定名
+                elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    rs = [s for s in ast.walk(stmt) if isinstance(s, ast.Return) and s.value is not None]
+                    if len(rs) == 1:
+                        rets.setdefault(node.name + "." + stmt.name + "()", []).append(rs[0].value)
+        elif isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            if isinstance(node.value, ast.Dict):
+                for k, v in zip(node.value.keys, node.value.values):
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                        dict_vals.setdefault("%s[%s]" % (node.targets[0].id, k.value), []).append(v)
+        elif isinstance(node, ast.Assign) and isinstance(node.targets[0], (ast.Tuple, ast.List)):
+            # §3bp：`a, b = ("rm -rf /", "x")` —— 拆包后每个名字各自可折
+            tgt, val = node.targets[0], node.value
+            if isinstance(val, (ast.Tuple, ast.List)) and len(tgt.elts) == len(val.elts):
+                for t, v in zip(tgt.elts, val.elts):
+                    if isinstance(t, ast.Name):
+                        unpacked.setdefault(t.id, []).append(v)
+
+    for _ in range(3):
+        for bucket in (rets, class_attrs, dict_vals, unpacked):
+            for key, vals in bucket.items():
+                if key in consts or key in lists:
+                    continue
+                if all(isinstance(v, (ast.List, ast.Tuple)) for v in vals if v is not None):
+                    folded = [_fold_argv(v, consts) for v in vals]
+                    distinct = {tuple(f) for f in folded if f is not None}
+                    if len(distinct) == 1 and all(f is not None for f in folded):
+                        # 复合键的列表也放进 consts（值为 list 对象），
+                        # 由 _fold_str 跳过、由 _fold_argv 取用——两处都按类型分流。
+                        consts[key] = list(distinct.pop())
+                    continue
+                folded = [_fold_str(v, consts, 1) for v in vals]
+                distinct = {f for f in folded if f is not None}
+                if len(distinct) == 1 and all(f is not None for f in folded):
+                    consts[key] = distinct.pop()
     return consts, temps, lists
 
 
@@ -1451,7 +1621,12 @@ def static_argv(node, func_name: str, consts=None, temps=None, lists=None):
     if func_name.startswith("os.spawn"):
         vals = [v for v in (_fold_str(a, consts) for a in node.args) if v is not None]
         return vals or None
-    if isinstance(first, (ast.Constant, ast.BinOp, ast.JoinedStr, ast.Name)):
+    if isinstance(first, (ast.Constant, ast.BinOp, ast.JoinedStr, ast.Name,
+                          ast.Call, ast.Subscript, ast.Attribute)):
+        # §3bp：`get()` / `C().cmd()` / `D["c"]` / `os.environ["CMD"]` 也能折
+        lst = _fold_argv(first, consts)
+        if lst:
+            return lst
         s = _fold_str(first, consts)
         return s.split() if s else None
     return None
