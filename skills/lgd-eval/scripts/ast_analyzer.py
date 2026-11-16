@@ -849,9 +849,27 @@ _AUTOSTART_TARGETS = [
     ("run-key", re.compile(
         r"currentversion[/\\]run(?:once)?$|currentversion[/\\]runonce", re.I)),
     ("git-hooks", re.compile(r"\.git[/\\]hooks[/\\]|core\.hookspath", re.I)),
+    # §3bu：调度器注册面（不是"下次登录就跑"，而是"交给一张时间表"）
+    ("launchd", re.compile(
+        r"/(?:library/)?(?:launchagents|launchdaemons)/[^/]*\.plist$|"
+        r"/system/library/(?:launchagents|launchdaemons)/", re.I)),
+    ("desktop-autostart", re.compile(r"/\.config/autostart/[^/]*\.desktop$|"
+                                     r"/autostart/[^/]*\.desktop$", re.I)),
+    ("rc-local", re.compile(r"/etc/rc\.local$", re.I)),
+    ("systemd-timer", re.compile(r"/[^/]+\.timer$|/etc/systemd/system/[^/]+\.timer$", re.I)),
 ]
 # 写进这些位置的内容本身就会被解释执行（.pth 里的 import 行、sitecustomize 是启动时导入）
-_CRITICAL_AUTOSTART = {"py-hook"}
+_CRITICAL_AUTOSTART = {"py-hook", "launchd", "desktop-autostart", "rc-local", "systemd-timer"}
+_CI_WORKFLOW_RE = re.compile(r"\.github[/\\]workflows[/\\][^/\\]+\.ya?ml$", re.I)
+
+# §3bu：各调度位置的「谁来按时执行」口径（写进不同位置，执行者不同）
+_AUTOSTART_MSG = {
+    "py-hook": "写入 Python 启动钩子（%s）：解释器启动时自动执行",
+    "launchd": "写入 launchd 作业（%s）：系统登录/启动时由 launchd 拉起并按 StartInterval 重跑",
+    "desktop-autostart": "写入桌面自启动项（%s）：桌面会话登录时自动执行 Exec",
+    "rc-local": "写入 /etc/rc.local（%s）：开机阶段由 init 执行",
+    "systemd-timer": "写入 systemd timer（%s）：由 systemd 按 OnCalendar 周期执行对应 service",
+}
 
 
 def _autostart_target(text):
@@ -889,6 +907,21 @@ def _autostart_verdict(tokens):
 
     if base == "crontab" and any(t.strip() == "-" for t in low):
         return ("HIGH", "用 crontab 写入计划任务：之后由系统按周期执行")
+
+    # §3bu：crontab 读一个文件也是注册（`crontab jobs.txt`），会整体替换用户的任务表
+    if base == "crontab" and len(tokens) > 1 and not any(
+            t.strip().startswith("-") for t in low[1:]):
+        return ("HIGH", "用 crontab 装载任务文件（%s）：之后由 cron 按周期执行" % tokens[1])
+
+    # §3bu：launchd（macOS 的定时/常驻注册面）
+    if base == "launchctl" and low[1:2] and low[1] in (
+            "load", "bootstrap", "submit", "enable", "kickstart"):
+        return ("HIGH", "用 launchctl %s 注册 launchd 作业：之后由系统按 StartInterval/KeepAlive 执行"
+                % low[1])
+
+    if base == "systemctl" and any(t.endswith(".timer") for t in low) and (
+            "enable" in low or "start" in low or "--now" in low):
+        return ("HIGH", "启用 systemd timer：之后由 systemd 按 OnCalendar 周期执行")
 
     if base == "git" and "config" in low and "core.hookspath" in joined \
             and "--get" not in low and "--unset" not in low:
@@ -1587,6 +1620,15 @@ def _fold_str(expr, consts, depth: int = 0):
         return None
     if isinstance(expr, ast.Call):
         dotted = _dotted(expr.func)
+        # §3bu：`os.path.expanduser("~/…")` 折回原串（`~` 保留，判据认它）
+        if dotted in ("os.path.expanduser", "expanduser"):
+            return _fold_str(expr.args[0], consts, depth + 1) if expr.args else None
+        # §3bu：`os.path.join(常量, 常量)` 折成路径
+        if dotted in ("os.path.join", "os.path.expandvars"):
+            parts = [_fold_str(a, consts, depth + 1) for a in expr.args]
+            if parts and all(p is not None for p in parts):
+                return "/".join(p.rstrip("/") for p in parts)
+            return None
         if dotted in ("os.getenv", "os.environ.get"):
             # §3bp：有默认值就折默认值；没有就是运行期才确定的命令
             if len(expr.args) >= 2:
@@ -2165,21 +2207,34 @@ class AutostartWriteVisitor(ast.NodeVisitor):
     def __init__(self):
         self.findings: List[AstFinding] = []
         self._note = set()
+        self.text = ""
+        self.consts = {}
+
+    def prepare(self, tree):
+        # §3bu：路径经变量中转（`p = expanduser("~/…")` 再 `open(p, "w")`）要能折出来
+        try:
+            self.consts = collect_consts(tree)[0]
+        except Exception:
+            self.consts = {}
 
     def _add(self, node, label, path):
         key = (node.lineno, label, _norm(path))
         if key in self._note:
             return
         self._note.add(key)
-        if label in _CRITICAL_AUTOSTART:
-            sev, msg = "CRITICAL", "写入 Python 启动钩子（%s）：解释器启动时自动执行" % path
+        if label == "ci-schedule":
+            sev, msg = "HIGH", ("写入 CI 定时工作流（%s）：之后由 CI 按 cron 周期在跑"
+                                "（不是本机，但执行的是仓库里的命令）" % path)
+        elif label in _CRITICAL_AUTOSTART:
+            sev, msg = "CRITICAL", _AUTOSTART_MSG.get(
+                label, "写入自启动位置（%s）：由系统自动执行" % path) % path
         else:
             sev, msg = "HIGH", "写入自启动位置（%s，%s）：下次登录/启动时由系统执行" % (path, label)
         self.findings.append(AstFinding(severity=sev, message=msg, line=node.lineno, col=0))
 
     def visit_Call(self, node):
         name = _dotted(node.func)
-        consts = {}
+        consts = self.consts
         if name in self.OPENERS and node.args:
             path = _fold_str(node.args[0], consts)
             mode = "r"
@@ -2191,6 +2246,10 @@ class AutostartWriteVisitor(ast.NodeVisitor):
                 label = _autostart_target(path)
                 if label:
                     self._add(node, label, path)
+                if _CI_WORKFLOW_RE.search(path):
+                    low = self.text.lower()
+                    if "cron:" in low and "schedule" in low:
+                        self._add(node, "ci-schedule", path)
         elif name in self.COPYERS and len(node.args) >= 2:
             dst = _fold_str(node.args[1], consts)
             if dst:
@@ -2712,12 +2771,14 @@ def _path_escape_findings(tree, root_dir=None) -> List[AstFinding]:
     def lit(expr):
         if expr is None:
             return None
-        v = _fold_str(expr, consts)
-        if v:
-            return v
+        # §3bu：`os.path.join` 必须先走规范化（normpath），否则
+        # "/tmp/b/../../../etc/x" 会因前缀像临时目录被降档 —— 它的落点是 /etc/x
+        j = _join_fold(expr)
+        if j:
+            return j
         if isinstance(expr, ast.Name) and expr.id in joins:
             return joins[expr.id]
-        return _join_fold(expr)
+        return _fold_str(expr, consts)
 
     WRITE_SINKS = ("shutil.copy", "shutil.copy2", "shutil.copyfile", "shutil.move",
                    "shutil.copytree", "os.rename", "os.replace")
@@ -2909,6 +2970,36 @@ def _sink_payload(exprs, name, tainted) -> bool:
         if isinstance(e, ast.Name) and e.id in tainted:
             return True
     return False
+
+
+def _scheduler_manifest_findings(tree, text) -> List[AstFinding]:
+    """§3bu：清单里写着 `kind: CronJob`，再交给 kubectl 部署。
+
+    命令本身只是 `kubectl apply -f /tmp/cj.yaml`，看不出危险——
+    危险在清单文件里：外部调度器之后按 cron 周期反复执行容器里的命令。
+    """
+    out: List[AstFinding] = []
+    low = (text or "").lower()
+    if "kind: cronjob" not in low and "kind:cronjob" not in low:
+        return out
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        nm = _dotted(n.func)
+        if nm not in ("subprocess.run", "subprocess.call", "subprocess.check_output",
+                      "subprocess.Popen", "os.system", "sh"):
+            continue
+        try:
+            src = ast.unparse(n).lower()
+        except Exception:
+            src = ""
+        if "kubectl" in src and ("apply" in src or "create" in src):
+            out.append(AstFinding(
+                severity="HIGH",
+                message="以清单部署 CronJob：外部调度器之后按 cron 周期执行清单里的命令",
+                line=n.lineno, col=0))
+            break
+    return out
 
 
 def _exfil_findings(tree) -> List[AstFinding]:
@@ -3261,6 +3352,8 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
 
     # §3bm：写入即执行——open(自启动位置, "w"/"a")、shutil.copy(…, 自启动位置)
     auto_visitor = AutostartWriteVisitor()
+    auto_visitor.text = content
+    auto_visitor.prepare(tree)
     auto_visitor.visit(tree)
     findings.extend(auto_visitor.findings)
 
@@ -3287,6 +3380,9 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
 
     # §3bt：读敏感内容 + 网络外发（数据外泄面）
     findings.extend(_exfil_findings(tree))
+
+    # §3bu：调度器注册面（清单部署 CronJob 一类）
+    findings.extend(_scheduler_manifest_findings(tree, content))
 
     return findings
 
