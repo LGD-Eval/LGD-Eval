@@ -1888,8 +1888,142 @@ class DecodedExecVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+class NativeExecVisitor(ast.NodeVisitor):
+    """§3bo：不走 subprocess 的执行面。
+
+    判据挂在 `subprocess.run/popen` 上时，换一条等价通道就整类绕过：
+    `os.execv` / `os.spawn*` / `os.posix_spawn*`（进程替换、spawn）、
+    `ctypes.windll.*.WinExec | ShellExecuteW | CreateProcessW`（直接调 Win32）、
+    `importlib.import_module("shutil")` 再 `getattr(m, "rmtree")(…)`（动态导入取函数）。
+
+    修前实测：`os.execv("/usr/bin/rm", ["rm","-rf","/"])` **99/A+**、
+    `ShellExecuteW(None,"open","cmd.exe","/c format C:")` **100/A+** —— 看见但不拦。
+    纪律：判的是"参数是什么"，不是"函数名在黑名单里没有"。
+    """
+
+    NATIVE = ("os.execv", "os.execve", "os.execvp", "os.execvpe", "os.execl",
+              "os.execle", "os.execlp", "os.execlpe", "os.spawnl", "os.spawnle",
+              "os.spawnlp", "os.spawnlpe", "os.spawnv", "os.spawnve", "os.spawnvp",
+              "os.spawnvpe", "os.posix_spawn", "os.posix_spawnp")
+    WIN_SINKS = ("winexec", "shellexecute", "shellexecutea", "shellexecutew",
+                 "createprocess", "createprocessa", "createprocessw")
+    EXEC_TARGETS = ("os.system", "os.popen", "subprocess.run", "subprocess.call",
+                    "subprocess.check_output", "subprocess.check_call",
+                    "subprocess.Popen")
+
+    def __init__(self):
+        self.findings: List[AstFinding] = []
+        self.consts, self.lists = {}, {}
+        self.modules = {}
+        self.aliases = {}
+
+    def prepare(self, tree):
+        self.consts, _temps, self.lists = collect_consts(tree)
+        self.aliases = collect_func_aliases(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = getattr(node, "value", None)
+            if not isinstance(value, ast.Call):
+                continue
+            fname = _dotted(value.func)
+            if (fname.endswith("import_module") or fname == "__import__") and value.args:
+                mod = _fold_str(value.args[0], self.consts)
+                if mod and isinstance(node, ast.Assign):
+                    for t in node.targets:
+                        if isinstance(t, ast.Name):
+                            self.modules[t.id] = mod
+
+    def _tokens(self, node) -> list:
+        toks = []
+        for a in node.args:
+            if isinstance(a, (ast.List, ast.Tuple)):
+                folded = _fold_argv(a, self.consts)
+                if folded:
+                    toks.extend(folded)
+                continue
+            if isinstance(a, ast.Name) and self.lists.get(a.id):
+                toks.extend(self.lists[a.id])
+                continue
+            s = _fold_str(a, self.consts)
+            if s:
+                toks.extend(s.split())
+        return toks
+
+    def _any_position(self, toks):
+        """命令可能不是第一个 token（`ShellExecuteW(None,"open","cmd.exe","/c format C:")`），
+        所以每个起点都试一遍，命中即返回。"""
+        for i in range(len(toks)):
+            v = destructive_tokens(toks[i:])
+            if v:
+                return v
+        return None
+
+    def visit_Call(self, node):
+        name = self.aliases.get(_dotted(node.func), _dotted(node.func))
+        low = name.lower()
+
+        # 1 进程替换 / spawn：把参数当命令判
+        if name in self.NATIVE:
+            toks = self._tokens(node)
+            v = self._any_position(toks) if toks else None
+            if v:
+                self.findings.append(AstFinding(
+                    severity=v[0],
+                    message="%s 用原生执行面跑破坏命令：%s" % (name, v[1]),
+                    line=node.lineno, col=0))
+
+        # 2 ctypes 直接调 Win32 拉起进程
+        elif any(low.endswith(s) for s in self.WIN_SINKS) or (
+                isinstance(node.func, ast.Attribute) and
+                node.func.attr.lower().startswith(("winexec", "shellexecute", "createprocess"))):
+            toks = self._tokens(node)
+            v = self._any_position(toks) if toks else None
+            if v:
+                self.findings.append(AstFinding(
+                    severity=v[0],
+                    message="通过 ctypes 原生 API 执行破坏命令（%s）：%s"
+                            % (_dotted(node.func), v[1]),
+                    line=node.lineno, col=0))
+
+        # 3 getattr(动态导入的模块, "危险函数")(…)
+        if name == "getattr" and len(node.args) >= 2:
+            obj, attr = node.args[0], node.args[1]
+            attr_s = _fold_str(attr, self.consts)
+            mod = None
+            if isinstance(obj, ast.Name):
+                mod = self.modules.get(obj.id)
+            elif isinstance(obj, ast.Call) and obj.args:
+                mod = _fold_str(obj.args[0], self.consts)
+            if mod and attr_s:
+                full = "%s.%s" % (mod, attr_s)
+                if full in self.EXEC_TARGETS or full.startswith(("os.system", "os.popen")):
+                    self.findings.append(AstFinding(
+                        severity="HIGH",
+                        message="动态导入 + getattr 取到执行函数：%s（函数名运行期才出现）" % full,
+                        line=node.lineno, col=0))
+                elif full in _NATIVE_DESTRUCTIVE:
+                    self.findings.append(AstFinding(
+                        severity=_NATIVE_DESTRUCTIVE[full][0],
+                        message="动态导入 + getattr 取到破坏函数：%s（%s）"
+                                % (full, _NATIVE_DESTRUCTIVE[full][1]),
+                        line=node.lineno, col=0))
+        self.generic_visit(node)
+
+
 class AutostartWriteVisitorPlaceholder:
     pass
+
+
+# 动态导入后 getattr 取用的破坏函数（不是执行面，但同样"函数名运行期才出现"）
+_NATIVE_DESTRUCTIVE = {
+    "shutil.rmtree": ("CRITICAL", "递归删目录"),
+    "os.remove": ("HIGH", "删文件"),
+    "os.unlink": ("HIGH", "删文件"),
+    "os.rmdir": ("HIGH", "删目录"),
+    "shutil.move": ("MEDIUM", "移动/覆盖文件"),
+    "os.rename": ("MEDIUM", "改名/覆盖文件"),
+}
 
 
 def analyze_python_file(filepath: Path) -> List[AstFinding]:
@@ -1973,6 +2107,12 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
     dec_visitor.prepare(tree)
     dec_visitor.visit(tree)
     findings.extend(dec_visitor.findings)
+
+    # §3bo：不走 subprocess 的执行面（进程替换 / spawn / ctypes Win32 / 动态导入取函数）
+    native_visitor = NativeExecVisitor()
+    native_visitor.prepare(tree)
+    native_visitor.visit(tree)
+    findings.extend(native_visitor.findings)
 
     return findings
 
