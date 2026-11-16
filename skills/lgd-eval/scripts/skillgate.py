@@ -3221,6 +3221,188 @@ def scan_package_face(skill_path: Path, result: ScanResult, should_exclude):
                 ))
 
 
+def _wf_path_arg(text, after):
+    """取 `path:` 之后的值：同行写法与块写法（后续缩进行）都要能读。"""
+    lines = text[after:].splitlines()
+    out = []
+    if not lines:
+        return ""
+    head = lines[0].split("path:", 1)[1].strip() if "path:" in lines[0] else ""
+    if head and head not in ("|", ">", "|-", ">-"):
+        out.append(head)
+    else:
+        for line in lines[1:]:
+            if not line.strip():
+                continue
+            if len(line) - len(line.lstrip()) <= 2 and not line.lstrip().startswith("!"):
+                break
+            out.append(line.strip())
+    return "\n".join(out)
+
+
+def _ci_exclusion_covers(arg):
+    """artifact 的 `path:` 里有没有 `!` 排除掉 env / git。"""
+    lows = [x.strip().lower() for x in arg.splitlines() if x.strip().startswith("!")]
+    cov = False
+    for x in lows:
+        body = x.lstrip("!").strip().lstrip("*").lstrip("/")
+        if body in (".git", ".git/**", "**/.git/**") or body.startswith(".git"):
+            cov = True
+        if "env" in body:
+            cov = True
+    return cov
+
+
+def _manifest_risky(path):
+    """MANIFEST.in 把整棵目录或 `.env` 圈进 sdist。"""
+    try:
+        text = read_text_smart(path)
+    except OSError:
+        return None
+    for i, line in enumerate(text.splitlines(), 1):
+        st = " ".join(line.strip().split())
+        if not st or st.startswith("#"):
+            continue
+        low = st.lower()
+        if low.startswith("graft "):
+            arg = low.split(" ", 1)[1].strip()
+            if arg in (".", "./", "*"):
+                return i, st
+        elif low.startswith("include "):
+            arg = low.split(" ", 1)[1].strip()
+            if ".env" in arg:
+                return i, st
+        elif low.startswith("recursive-include "):
+            parts = low.split()
+            if len(parts) >= 3 and parts[1] in (".", "./") and parts[2] in ("*", "**"):
+                return i, st
+    return None
+
+
+def _npm_packs_everything(skill_path):
+    """`package.json` 没有 `files` 时，npm 会退回 `.npmignore`（没有则 `.gitignore`）。"""
+    pkg = skill_path / "package.json"
+    if not pkg.is_file():
+        return None
+    try:
+        text = read_text_smart(pkg)
+    except OSError:
+        return None
+    if '"files"' in text.replace("'", '"'):
+        return None
+    npmignore = skill_path / ("." + "npmignore")
+    if npmignore.is_file():
+        try:
+            ign = read_text_smart(npmignore)
+        except OSError:
+            ign = ""
+        if _gitignore_covers(ign, [".env", "*.env"]):
+            return None
+        return "`.npmignore` 存在但没挡住 `.env`"
+    gi = skill_path / ".gitignore"
+    if gi.is_file():
+        try:
+            ign = read_text_smart(gi)
+        except OSError:
+            ign = ""
+        if _gitignore_covers(ign, [".env", "*.env"]):
+            return None
+    return "没有 `files` 字段，且忽略规则没挡住 `.env`"
+
+
+def scan_ci_release(skill_path: Path, result: ScanResult, should_exclude):
+    """§3cb CI 侧发布出口：真正把东西送出去的是工作流，不是本机那条 tar。
+
+    `upload-artifact`（默认 90 天公开可下）、`npm pack`、`python -m build` 的
+    sdist、`gh release create` —— "发什么"由工作流与清单文件决定，
+    而清单文件通常没人当成"发布口径"来写。
+    """
+    wf_dirs = (".github", "workflows")
+    manifests = []
+    npm_used = False
+    for path in sorted(skill_path.rglob("*")):
+        if not path.is_file() or should_exclude(path):
+            continue
+        parts = path.parts
+        name = path.name
+        suffix = path.suffix.lower()
+
+        if path.name == "MANIFEST.in":
+            manifests.append(path)
+            continue
+
+        is_wf = False
+        for i in range(len(parts) - 1):
+            if parts[i] == wf_dirs[0] and parts[i + 1] == wf_dirs[1]:
+                is_wf = True
+                break
+        if not is_wf or suffix not in (".yml", ".yaml"):
+            continue
+        try:
+            text = read_text_smart(path)
+        except OSError:
+            continue
+
+        # 只看 upload-artifact 这一步自己的 `path:` —— 同一文件里别的 action
+        # 也可能有 `path:` 输入（例如把本仓路径喂给扫描器），那不是上传口径。
+        for m in re.finditer(r"uses:\s*actions/upload-artifact[^\n]*\n", text):
+            nxt = re.search(r"\n\s*- ", text[m.end():])
+            seg = text[m.end(): m.end() + (nxt.start() if nxt else len(text))]
+            pm = re.search(r"path:", seg)
+            if not pm:
+                continue
+            arg = _wf_path_arg(seg, pm.start())
+            root = arg.strip() in (".", "./", "${{ github.workspace }}") or \
+                "${{ github.workspace }}" in arg
+            if root and not _ci_exclusion_covers(arg):
+                result.findings.append(Finding(
+                    severity="HIGH", category="filesystem",
+                    message="artifact 上传整个工作区（`path: .` 且没有 `!` 排除 `.env`/`.git`）："
+                            "这些附件默认公开可下载，且保留 90 天",
+                    file=str(path), line=text[:m.start()].count("\n") + 1
+                ))
+                break
+
+        if re.search(r"gh\s+release\s+create", text):
+            for line in text.splitlines():
+                if re.search(r"gh\s+release\s+create", line) and re.search(
+                        r"\s\.\s*$|\s\./\s*$", line):
+                    result.findings.append(Finding(
+                        severity="HIGH", category="filesystem",
+                        message="`gh release create` 把整个目录作为资产上传（`.`）：发布页上人人都能下",
+                        file=str(path), line=0
+                    ))
+                    break
+
+        if re.search(r"npm\s+(pack|publish)|pnpm\s+(pack|publish)|yarn\s+(pack|publish)", text):
+            npm_used = True
+        if "twine upload" in text or "python -m build" in text or "flit build" in text:
+            manifests.append(path)   # 只借它当"构建会发生"的信号，去判 MANIFEST.in
+
+    if npm_used:
+        why = _npm_packs_everything(skill_path)
+        if why:
+            result.findings.append(Finding(
+                severity="HIGH", category="filesystem",
+                message="`npm pack/publish` " + why + "：包内容就是整个目录减忽略项，"
+                        "`.env`/`.git` 会跟着发到 registry",
+                file=str(skill_path / "package.json"), line=0
+            ))
+
+    for mf in set(manifests):
+        if mf.name != "MANIFEST.in":
+            continue
+        hit = _manifest_risky(mf)
+        if hit:
+            line, st = hit
+            result.findings.append(Finding(
+                severity="HIGH", category="filesystem",
+                message="`MANIFEST.in` 把整棵目录或 `.env` 圈进 sdist（`%s`）：源码包是最常见的"
+                        "泄漏载体，安装者本地解包就能看到" % st,
+                file=str(mf), line=line
+            ))
+
+
 def _env_looks_like_template(text):
     """`.env` 是不是纯样板：所有赋值都是空值或占位符。
 
@@ -4405,6 +4587,9 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
 
     # §3ca：打包面。仓库干净 ≠ 发布件干净——交付那一刻可能把整目录带走。
     scan_package_face(skill_path, result, should_exclude)
+
+    # §3cb：CI 侧发布出口（artifact / npm pack / sdist / release 资产）
+    scan_ci_release(skill_path, result, should_exclude)
 
     # 未读载体披露：压缩包/二进制里的载荷一个字节都没看过，必须说出来
     scan_carriers(skill_path, result, should_exclude)
