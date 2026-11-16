@@ -1138,6 +1138,16 @@ def _inline_code_verdict(code: str):
             return sev, "%s（%s）" % (why, pat)
     # §3bn：内联脚本自己带解码器（`node -e "eval(Buffer.from('…','base64').toString())"`、
     # `php -r "eval(base64_decode('…'))"`）——解码器在场且载荷解得出危险命令
+    # §3bq：PowerShell 解压流再执行 —— `IEX (New-Object IO.StreamReader(
+    # [IO.Compression.GzipStream]::new(...)).ReadToEnd()`。整条链路里没有一个
+    # 危险命令词，载荷还是压缩过的 base64；只解一层根本读不到正文。
+    if ("iex" in low or "invoke-expression" in low) and any(
+            k in low for k in ("gzipstream", "deflatestream", "ziparchive",
+                               "expand-archive", "decompress")):
+        return "CRITICAL", "PowerShell 解压/解码后再执行（IEX + 压缩流）"
+    if any(k in low for k in ("gzipstream", "deflatestream", "ziparchive")) \
+            and "frombase64string" in low and "readtoend" in low:
+        return "CRITICAL", "PowerShell 从压缩流还原脚本并取全文（待执行）"
     if "base64" in low or "fromhex" in low or any(k in low for k in _PS_DECODE_CALLS):
         for m in re.finditer(r"['\"]([A-Za-z0-9+/=_-]{16,})['\"]", code):
             inner = _decode_b64_payload(m.group(1))
@@ -1162,6 +1172,9 @@ _DECODE_SINKS = (
     "base64 -d", "base64 --decode", "base64 -D", "openssl base64 -d",
     "openssl enc -d", "xxd -r", "certutil -decode", "uudecode", "base32 -d",
     "b64decode", "decode_base64", "frombase64string", "atob(",
+    # §3bq：解完再解压——`base64 -d | gunzip | sh`
+    "gunzip", "gzip -d", "bunzip2", "bzip2 -d", "xz -d", "unxz", "unzstd",
+    "zcat", " inflate",
 )
 _EXEC_SINKS = ("| sh", "|sh", "| bash", "|bash", "| zsh", "| python", "|python",
                "| perl", "|perl", "| php", "|php", "| node", "|node", "|iex", "| iex")
@@ -1177,6 +1190,188 @@ _PS_DESTRUCTIVE = {
     "stop" + "-" + "computer", "restart" + "-" + "computer", "reset" + "-" + "computer",
     "clear" + "-" + "content", "remove" + "-" + "aduser", "remove" + "-" + "adgroup",
 }
+
+
+def _decompress_bytes(data):
+    """§3bq：按魔数判断压缩格式并解开（gzip / zlib / bz2 / xz·lzma）。
+
+    只解 base64 一层时，`base64(gzip(载荷))` 解出来是二进制垃圾，
+    判据拿着乱码找命令词——看着有实现，实际永远命中不了。
+    """
+    if not data:
+        return None
+    sigs = ((b"\x1f\x8b", "gzip"), (b"BZh", "bz2"), (b"\xfd7zXZ\x00", "xz"))
+    kind = None
+    for sig, name in sigs:
+        if data.startswith(sig):
+            kind = name
+            break
+    if kind is None and len(data) >= 2 and data[0] == 0x78:
+        kind = "zlib"
+    if kind is None:
+        return None
+    try:
+        if kind == "gzip":
+            import gzip as _gz
+            return _gz.decompress(data)
+        if kind == "zlib":
+            import zlib as _zl
+            return _zl.decompress(data)
+        if kind == "bz2":
+            import bz2 as _bz
+            return _bz.decompress(data)
+        if kind == "xz":
+            import lzma as _lm
+            return _lm.decompress(data)
+    except Exception:
+        return None
+
+
+def _looks_text(data):
+    if not isinstance(data, (bytes, bytearray)) or not data:
+        return None
+    for enc in ("utf-8", "utf-16-le"):
+        try:
+            txt = bytes(data).decode(enc)
+        except Exception:
+            continue
+        if not txt:
+            continue
+        ok = sum(1 for ch in txt if 32 <= ord(ch) < 127 or ch in "\r\n\t")
+        if ok / float(len(txt)) >= 0.75:
+            return txt
+    return None
+
+
+def _eval_payload(expr, depth: int = 0):
+    """静态求值一段"解码/解压表达式"，返回 bytes；取不出返回 None。
+
+    按 Python 求值顺序从内到外：字面 → base64/hex 解 → 解压 → rot13 → 逐字节异或。
+    坑（§3bq）：只认最外层 `b64decode` 时，`exec(zlib.decompress(base64.b64decode(x)).decode())`
+    最外层是 `.decode()`，一个属性调用就把整条链丢掉了——判据看着有实现，实际没跑。
+    """
+    if depth > 8 or not isinstance(expr, ast.Call):
+        return None
+    dotted = (_dotted(expr.func) or "").lower()
+    attr = (getattr(expr.func, "attr", "") or "").lower()
+    args = list(expr.args)
+
+    # 0 bytes(generator) 的逐字节异或：`bytes(b ^ 7 for b in base64.b64decode("…"))`
+    if args and isinstance(args[0], (ast.GeneratorExp, ast.ListComp)):
+        comp = args[0]
+        gen = comp.generators[0] if getattr(comp, "generators", None) else None
+        if gen is None:
+            return None
+        base = _eval_payload(gen.iter, depth + 1)
+        if not isinstance(base, (bytes, bytearray)):
+            return None
+        elt = comp.elt
+        if isinstance(elt, ast.Name):
+            return bytes(base)
+        if isinstance(elt, ast.BinOp) and isinstance(elt.right, ast.Constant) \
+                and isinstance(elt.right.value, int):
+            k = elt.right.value
+            if isinstance(elt.op, ast.BitXor):
+                return bytes(b ^ k for b in base)
+            if isinstance(elt.op, ast.Add):
+                return bytes((b + k) % 256 for b in base)
+        return None
+
+    # 1 rot13 先行：`codecs.decode(...)` 的 attr 也是 "decode"，放在直通分支后面会被吞掉
+    rot = ("rot13" in dotted
+           or any(isinstance(a, ast.Constant) and a.value == "rot13" for a in args))
+    if rot:
+        target = args[0] if args else None
+        text = target.value if isinstance(target, ast.Constant) and isinstance(target.value, str) else None
+        if text is None and isinstance(target, ast.Call):
+            val = _eval_payload(target, depth + 1)
+            if isinstance(val, (bytes, bytearray)):
+                text = _looks_text(val)
+            elif isinstance(val, str):
+                text = val
+        if text:
+            import codecs as _cs
+            return _cs.decode(text, "rot13").encode("utf-8", "ignore")
+        return None
+
+    # 2 零成本直通：.decode()/.encode()/.strip()/bytes()/str()/bytearray()
+    #    注意方法调用的接收者在 func.value 里，不在 args 里——漏了它整条链就断在这
+    if attr in ("decode", "encode", "strip", "rstrip", "lstrip") \
+            or dotted.split(".")[-1] in ("bytes", "str", "bytearray", "memoryview"):
+        if args:
+            return _eval_payload(args[0], depth + 1)
+        recv = getattr(expr.func, "value", None)
+        if isinstance(recv, ast.Call):
+            return _eval_payload(recv, depth + 1)
+        return None
+
+    lit_text, lit_bytes, inner = None, None, None
+    operand = args[0] if args else None   # 只认第一个参数，别把 "rot13" 这种模式串当载荷
+    if isinstance(operand, ast.Constant) and isinstance(operand.value, str):
+        lit_text = operand.value
+    elif isinstance(operand, ast.Constant) and isinstance(operand.value, (bytes, bytearray)):
+        lit_bytes = bytes(operand.value)
+    elif isinstance(operand, ast.Call):
+        inner = _eval_payload(operand, depth + 1)
+
+    # 2 base64 / hex 解码
+    if any(k in dotted for k in ("b64decode", "b32decode", "b85decode", "a85decode",
+                                 "frombase64string", "atob", "unhexlify", "fromhex")):
+        if lit_text is not None:
+            s = lit_text.strip()
+            try:
+                if "unhexlify" in dotted or "fromhex" in dotted:
+                    digits = "".join(c for c in s if c in "0123456789abcdefABCDEF")
+                    return bytes.fromhex(digits)
+                return base64.b64decode(s.replace("-", "+").replace("_", "/")
+                                        + "=" * (-len(s) % 4))
+            except Exception:
+                return None
+        return inner
+
+    # 3 解压（只信魔数，不靠函数名猜）
+    if attr == "decompress" or "decompress" in dotted:
+        data = inner if inner is not None else lit_bytes
+        if data is None and lit_text is not None:
+            data = lit_text.encode("utf-8", "ignore")
+        if data is None:
+            return None
+        return _decompress_bytes(data)
+
+    return inner
+
+
+def _unwrap_literal_layers(expr, depth: int = 0):
+    """把 `zlib.decompress(base64.b64decode("…")).decode()` 这类套娃解开，返回最深层文本。"""
+    if not isinstance(expr, ast.Call):
+        return None
+    val = _eval_payload(expr)
+    if isinstance(val, (bytes, bytearray)):
+        txt = _looks_text(val)
+        return _unwrap_layers_text(txt) if txt else None
+    if isinstance(val, str):
+        return _unwrap_layers_text(val)
+    return None
+
+
+def _unwrap_layers_text(txt, depth: int = 0):
+    """解出来的文本如果还是 base64/压缩流，继续剥（最多 3 层）。"""
+    if not isinstance(txt, str) or depth > 3:
+        return txt
+    stripped = txt.strip()
+    if _decode_b64_payload(stripped):
+        data = None
+        try:
+            data = base64.b64decode(stripped.replace("-", "+").replace("_", "/")
+                                    + "=" * (-len(stripped) % 4))
+        except Exception:
+            data = None
+        if data:
+            dec = _decompress_bytes(data)
+            inner = _looks_text(dec) if dec else _looks_text(data)
+            if inner:
+                return _unwrap_layers_text(inner, depth + 1)
+    return txt
 
 
 def _decode_b64_payload(s: str):
@@ -1230,6 +1425,13 @@ def _decoded_danger(text: str, depth: int = 0):
         if _basename(t).lower() in _PS_DESTRUCTIVE:
             return ("CRITICAL", "编码载荷解码后是 PowerShell 破坏命令（%s）：%s"
                     % (t, text.strip()[:60]))
+    # §3bq：PowerShell 里"解压/解码再执行"的写法（IEX + GzipStream/FromBase64String）
+    low = text.lower()
+    if ("iex" in low or "invoke-expression" in low) and any(
+            k in low for k in ("gzipstream", "deflatestream", "frombase64string",
+                               "ziparchive", "decompress", "expand-archive")):
+        return ("CRITICAL", "PowerShell 解码/解压后再执行（IEX + 压缩流）：%s"
+                % text.strip()[:60])
     v = _inline_code_verdict(text)
     if v and v[0] in ("CRITICAL", "HIGH"):
         return ("CRITICAL", "编码载荷解码后是危险脚本：%s" % text.strip()[:60])
@@ -2055,12 +2257,81 @@ class DecodedExecVisitor(ast.NodeVisitor):
             arg = node.args[0]
             named = isinstance(arg, ast.Name) and arg.id in self.decoded_names
             if named or self._has_decoder(arg) or self._chr_built(arg):
-                self.findings.append(AstFinding(
-                    severity="CRITICAL",
-                    message="解码/拼接后执行：%s() 的参数不是字面代码，是先解出来再跑的"
-                            % name,
-                    line=node.lineno, col=0))
+                # §3bq：先把套娃解开（base64 → gzip/zlib/bz2 → 再 base64 → rot13），
+                # 再判"解出来的到底是什么"。只解一层时，压缩载荷是二进制垃圾，判据永远命中不了。
+                text = _unwrap_literal_layers(arg)
+                verdict = _decoded_danger(text) if text else None
+                if verdict:
+                    self.findings.append(AstFinding(
+                        severity="CRITICAL",
+                        message="编码/压缩载荷执行：%s() 的参数解出来是危险内容 —— %s"
+                                % (name, verdict[1]),
+                        line=node.lineno, col=0))
+                else:
+                    self.findings.append(AstFinding(
+                        severity="HIGH",
+                        message="编码/压缩载荷执行：%s() 的参数经解码/解压后才出现，"
+                                "内容未能判出破坏" % name,
+                        line=node.lineno, col=0))
         self.generic_visit(node)
+
+
+def _archive_run_findings(tree) -> List[AstFinding]:
+    """§3bq：解包后执行包内文件。
+
+    `tarfile.open(...).extractall("/tmp/x")` 再 `subprocess.run(["/tmp/x/run.sh"])`
+    —— 每一步单看都"没有危险词"：解包是正常操作，跑脚本也是正常操作。
+    危险在**两步之间**：跑的东西不在仓内、是刚从包里出来的。
+    基线：ATT&CK T1027.002（Software Packing）+ T1105（Ingress Tool Transfer）。
+    """
+    consts, _temps, lists = collect_consts(tree)
+    dirs, execs = set(), []
+
+    def _norm_dir(p):
+        q = _norm(p).rstrip("/")
+        return q or None
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _dotted(node.func)
+        # 解包目录（`tarfile.open(x).extractall("/tmp/x")` 折出的点号名可能只有末段）
+        if name in ("extractall", "extract") or name.endswith((".extractall", ".extract")):
+            for a in node.args:
+                s = _fold_str(a, consts)
+                if s:
+                    d = _norm_dir(s)
+                    if d:
+                        dirs.add(d)
+        # 执行路径
+        argv = None
+        if name.startswith("subprocess.") or name in ("os.execv", "os.execvp",
+                                                      "os.execve", "os.execvpe"):
+            argv = static_argv(node, name, consts, _temps, lists)
+        elif name in ("os.system", "os.popen"):
+            s = _fold_str(node.args[0], consts) if node.args else None
+            argv = [s] if s else None
+        if argv:
+            for tok in argv:
+                if isinstance(tok, str) and "/" in tok:
+                    execs.append((token_line(node), _norm(tok)))
+
+    out = []
+    for line, path in execs:
+        for d in dirs:
+            if path.startswith(d + "/") or path == d:
+                out.append(AstFinding(
+                    severity="CRITICAL",
+                    message="解包后执行包内文件：%s 是从 %s 里解出来的，不在仓内、"
+                            "也不是安装来源" % (path, d),
+                    line=line, col=0))
+                break
+    return out
+
+
+def token_line(node) -> int:
+    """取调用所在行（AstFinding 要行号）。"""
+    return getattr(node, "lineno", 0)
 
 
 class NativeExecVisitor(ast.NodeVisitor):
@@ -2288,6 +2559,9 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
     native_visitor.prepare(tree)
     native_visitor.visit(tree)
     findings.extend(native_visitor.findings)
+
+    # §3bq：解包后执行包内文件（压缩包 → 目录 → 跑）
+    findings.extend(_archive_run_findings(tree))
 
     return findings
 
