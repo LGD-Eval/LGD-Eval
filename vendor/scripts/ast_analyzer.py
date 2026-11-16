@@ -3,6 +3,7 @@ SkillGate AST Analyzer — Python 语法树级别的安全分析。
 比正则匹配更精准，误报率低一个数量级。
 """
 import ast
+import base64
 import re
 from pathlib import Path
 from typing import List, Tuple
@@ -1065,6 +1066,7 @@ class TwoStepExecVisitor(ast.NodeVisitor):
         self.aliases = {}
         self.downloads = []
         self.execs = []
+        self.programs = []
 
     def prepare(self, tree):
         self.consts, self.temps, self.lists = collect_consts(tree)
@@ -1082,6 +1084,17 @@ class TwoStepExecVisitor(ast.NodeVisitor):
                 self.downloads.append((p, node.lineno))
             for p in _exec_script_paths(argv):
                 self.execs.append((p, node.lineno))
+            # §3bn：解码类工具把产物落在本地，产物被执行的链路与"下载"同型
+            if len(argv) >= 2 and _basename(argv[0]) == "certutil":
+                if any(str(a).lower() in {"-decode", "-decodehex"} for a in argv):
+                    self.downloads.append((str(argv[-1]), node.lineno))
+            if argv and argv[0]:
+                self.programs.append((str(argv[0]), node.lineno))
+            # §3bn：解码后用重定向落盘（`base64 -d p.b64 > run.sh`），落盘件随后被跑
+            text = " ".join(str(a) for a in argv)
+            if any(k.lower() in text.lower() for k in _DECODE_SINKS):
+                for m in re.finditer(r">\s*([^\s;&|><]+)", text):
+                    self.downloads.append((m.group(1), node.lineno))
         # urlretrieve(url, filename)：第二个参数才是落盘路径，static_argv 只取第一个
         if name.endswith("urlretrieve") and len(node.args) >= 2:
             p = _fold_str(node.args[1], self.consts)
@@ -1108,7 +1121,153 @@ def _inline_code_verdict(code: str):
     for pat, sev, why in INLINE_DANGER:
         if pat.lower() in low:
             return sev, "%s（%s）" % (why, pat)
+    # §3bn：内联脚本自己带解码器（`node -e "eval(Buffer.from('…','base64').toString())"`、
+    # `php -r "eval(base64_decode('…'))"`）——解码器在场且载荷解得出危险命令
+    if "base64" in low or "fromhex" in low or any(k in low for k in _PS_DECODE_CALLS):
+        for m in re.finditer(r"['\"]([A-Za-z0-9+/=_-]{16,})['\"]", code):
+            inner = _decode_b64_payload(m.group(1))
+            v = _decoded_danger(inner) if inner else None
+            if v:
+                return v
+        for m in re.finditer(r"['\"]([0-9a-fA-F]{16,})['\"]", code):
+            try:
+                txt = bytes.fromhex(m.group(1)).decode("utf-8", "replace")
+            except Exception:
+                txt = ""
+            v = _decoded_danger(txt) if txt else None
+            if v:
+                return v
     return None
+
+
+# ── §3bn 先编码再解码执行：把载荷解出来，再看它是什么 ───────────────────────
+# 基线：ATT&CK T1027.010（命令混淆）/ T1140（反混淆解码）/ DET0340 AN0963
+#      （decode → pipe to interpreter）/ Elastic「Decoded Payload Piped to Interpreter」
+_DECODE_SINKS = (
+    "base64 -d", "base64 --decode", "base64 -D", "openssl base64 -d",
+    "openssl enc -d", "xxd -r", "certutil -decode", "uudecode", "base32 -d",
+    "b64decode", "decode_base64", "frombase64string", "atob(",
+)
+_EXEC_SINKS = ("| sh", "|sh", "| bash", "|bash", "| zsh", "| python", "|python",
+               "| perl", "|perl", "| php", "|php", "| node", "|node", "|iex", "| iex")
+_PS_DECODE_CALLS = ("frombase64string", "b64decode", "decode_base64", "atob(")
+_B64_PAYLOAD_RE = re.compile(r"^[A-Za-z0-9+/=_-]{8,}$")
+_HEX_PAYLOAD_RE = re.compile(r"^[0-9a-fA-F]{16,}$")
+_EXEC_FILE_EXTS = (".exe", ".dll", ".bat", ".cmd", ".ps1", ".sh", ".py", ".js",
+                   ".vbs", ".jar", ".scr", ".com")
+# PowerShell 自家破坏动词（拆开拼，避免规则源码被自己的文表命中）
+_PS_DESTRUCTIVE = {
+    "remove" + "-" + "item", "rm" + "-" + "item", "del", "erase", "rd", "rmdir",
+    "clear" + "-" + "disk", "format" + "-" + "volume", "remove" + "-" + "partition",
+    "stop" + "-" + "computer", "restart" + "-" + "computer", "reset" + "-" + "computer",
+    "clear" + "-" + "content", "remove" + "-" + "aduser", "remove" + "-" + "adgroup",
+}
+
+
+def _decode_b64_payload(s: str):
+    """把 base64 串解出来。UTF-8 与 UTF-16LE 都试，取"最像可读文本"的那个。
+
+    坑：只试一种编码会把 UTF-8 的载荷解成 UTF-16LE 乱码，而乱码在"可打印率"检查下
+    照样过关，于是判据拿着一段乱码去找命令词——看着有实现，实际永远命中不了。
+    """
+    if not s or not _B64_PAYLOAD_RE.match(s.strip()):
+        return None
+    raw = s.strip().replace("-", "+").replace("_", "/")
+    raw += "=" * (-len(raw) % 4)
+    try:
+        data = base64.b64decode(raw, validate=False)
+    except Exception:
+        return None
+    best, best_score = None, -1.0
+    for enc in ("utf-8", "utf-16-le"):
+        try:
+            txt = data.decode(enc)
+        except Exception:
+            continue
+        if not txt:
+            continue
+        ascii_ok = sum(1 for ch in txt if 32 <= ord(ch) < 127 or ch in "\r\n\t")
+        score = ascii_ok / float(len(txt))
+        if score > best_score:
+            best, best_score = txt, score
+    if best and best_score >= 0.75:
+        return best
+    return None
+
+
+def _decoded_danger(text: str, depth: int = 0):
+    """解码出来的正文里是不是一条危险命令；是就返回 (级别, 理由)。"""
+    if not text or depth > 2:
+        return None
+    toks = text.replace("\r", "\n").split()
+    if not toks:
+        return None
+    if len(toks) == 1 and _B64_PAYLOAD_RE.match(toks[0]):
+        inner = _decode_b64_payload(toks[0])
+        if inner:
+            return _decoded_danger(inner, depth + 1)
+    v = destructive_tokens(toks, depth + 1)
+    if v:
+        return ("CRITICAL", "编码载荷解码后是破坏性命令：%s（原文 %s）"
+                % (v[1], text.strip()[:60]))
+    # PowerShell 自家动词（`Remove-Item -Recurse -Force`）不在 POSIX 命令表里
+    for t in toks:
+        if _basename(t).lower() in _PS_DESTRUCTIVE:
+            return ("CRITICAL", "编码载荷解码后是 PowerShell 破坏命令（%s）：%s"
+                    % (t, text.strip()[:60]))
+    v = _inline_code_verdict(text)
+    if v and v[0] in ("CRITICAL", "HIGH"):
+        return ("CRITICAL", "编码载荷解码后是危险脚本：%s" % text.strip()[:60])
+    return None
+
+
+def _decode_pipeline_verdict(tokens):
+    """解码之后直接喂解释器：`echo <payload> | base64 -d | sh`。"""
+    if not tokens:
+        return None
+    parts = [str(t) for t in tokens]
+    joined = " ".join(parts).replace("\\", "/")
+    low = joined.lower()
+    if not any(k.lower() in low for k in _DECODE_SINKS):
+        return None
+    if _basename(parts[0]) == "certutil" and any(
+            str(p).lower() in {"-decode", "-decodehex"} for p in parts):
+        dst = _norm(parts[-1]).lower()
+        if dst.endswith(_EXEC_FILE_EXTS):
+            return ("CRITICAL", "certutil 把编码文件解码成可执行件：%s" % parts[-1])
+    if not any(k.lower() in low for k in _EXEC_SINKS):
+        return None
+    for t in parts:
+        inner = _decode_b64_payload(t)
+        if inner:
+            v = _decoded_danger(inner)
+            if v:
+                return v
+    return ("CRITICAL", "解码后的载荷直接喂给解释器执行（decode | shell）")
+
+
+def _b64_literal_verdict(tokens, depth: int = 0):
+    """参数里躺着一段 base64/hex 字面量，解出来是危险命令。"""
+    if not tokens or depth > 1:
+        return None
+    for t in tokens:
+        if not isinstance(t, str) or len(t) < 16:
+            continue
+        if _HEX_PAYLOAD_RE.match(t) and len(t) % 2 == 0:
+            try:
+                txt = bytes.fromhex(t).decode("utf-8", "replace")
+            except Exception:
+                txt = ""
+            v = _decoded_danger(txt, depth + 1) if txt else None
+            if v:
+                return v
+        inner = _decode_b64_payload(t)
+        if inner:
+            v = _decoded_danger(inner, depth + 1)
+            if v:
+                return v
+    return None
+
 # 判据词拼接而成：避免规则源码本身被扫描器的文本表命中（自扫自命中）
 _PS_DELETE = "remove" + "-" + "item"
 _PS_RECURSE = "-" + "recurse"
@@ -1322,13 +1481,18 @@ def destructive_tokens(tokens, depth: int = 0):
     base = _basename(tokens[0])
     joined = " ".join(_norm(t) for t in tokens)
 
-    # §3bg：编码命令 —— 内容根本读不出来，只能按"无法静态判定"处理。
+    # §3bg：编码命令 —— 内容读不出来就只能是"无法静态判定"。
+    # §3bn：但编码是能解的：解出来再按普通命令判，比只披露一句"判不了"有用。
     # 放在 shell 分支之前：pwsh 既是 shell 也是解释器，谁先接都一样要判。
     for i, t in enumerate(tokens):
         if _norm(t) in PS_ENCODED_FLAGS:
             nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
             if _looks_base64(nxt):
-                return "HIGH", "%s 的编码命令无法静态判定" % _basename(tokens[0])
+                inner = _decode_b64_payload(nxt)
+                v = _decoded_danger(inner) if inner else None
+                if v:
+                    return v
+                return "HIGH", "%s 的编码命令解码后未发现危险词（仍按编码命令披露）" % _basename(tokens[0])
 
     if ":(){" in joined or "(){ :|" in joined:
         return "CRITICAL", "fork bomb 形态"
@@ -1351,6 +1515,14 @@ def destructive_tokens(tokens, depth: int = 0):
     autostart = _autostart_verdict(tokens)
     if autostart:
         return autostart
+
+    # §3bn：先编码再执行——解码之后直接喂解释器，或参数里躺着的就是一段编码命令
+    pipeline = _decode_pipeline_verdict(tokens)
+    if pipeline:
+        return pipeline
+    literal = _b64_literal_verdict(tokens)
+    if literal:
+        return literal
 
     # §3bj：破坏不止删除——清零/覆写、撤权、平移、删账户、删任务、删恢复、删库。
     verb = _destructive_verb_verdict(tokens)
@@ -1422,7 +1594,13 @@ def destructive_tokens(tokens, depth: int = 0):
             if nt in PS_ENCODED_FLAGS:
                 nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
                 if _looks_base64(nxt):
-                    return "HIGH", "%s 的编码命令无法静态判定" % base
+                    # §3bn：不满足于"披露"——把命令解出来，再按普通命令判
+                    inner = _decode_b64_payload(nxt)
+                    if inner:
+                        v = _decoded_danger(inner)
+                        if v:
+                            return v
+                    return "HIGH", "%s 的编码命令解码后未发现危险词（仍按编码命令披露）" % base
                 continue
             if nt in flags and i + 1 < len(tokens):
                 code = " ".join(tokens[i + 1:])
@@ -1644,6 +1822,72 @@ class AutostartWriteVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+class DecodedExecVisitor(ast.NodeVisitor):
+    """§3bn：把命令编起来，再在同一个进程里解回来执行。
+
+    `exec(base64.b64decode("…"))`、`eval(bytes.fromhex("…"))`、
+    `exec(chr(114)+chr(109)+"…")` —— 规则只认字面命令词，这几种一条都看不见。
+    判法：看 exec/eval/compile 的参数里有没有"解码动作"或"逐字符拼接"，有就打开算。
+    """
+
+    SINKS = {"exec", "eval", "compile", "__import__"}
+    DECODERS = ("b64decode", "decode_base64", "frombase64string", "fromhex",
+                "unhexlify", "a85decode", "b32decode", "atob")
+    EXEC_CALLS = {"exec", "eval", "compile"}
+
+    def __init__(self):
+        self.findings: List[AstFinding] = []
+        self.decoded_names = set()
+
+    def prepare(self, tree):
+        """`payload = base64.b64decode("…")` / `cmd = chr(114)+chr(109)…` —— 先记下这些名字。"""
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = getattr(node, "value", None)
+            if value is None:
+                continue
+            names = []
+            if isinstance(node, ast.Assign):
+                names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            elif isinstance(getattr(node, "target", None), ast.Name):
+                names = [node.target.id]
+            if names and (self._has_decoder(value) or self._chr_built(value)):
+                self.decoded_names.update(names)
+
+    def _has_decoder(self, node) -> bool:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                name = _dotted(sub.func).lower()
+                if any(d in name for d in self.DECODERS):
+                    return True
+            if isinstance(sub, ast.Attribute):
+                if _dotted(sub).lower().endswith(self.DECODERS):
+                    return True
+        return False
+
+    def _chr_built(self, node) -> bool:
+        """`chr(114) + chr(109)` 这种逐字符拼出来的命令。"""
+        chrs = 0
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call) and _dotted(sub.func).lower() == "chr":
+                chrs += 1
+        return chrs >= 2
+
+    def visit_Call(self, node):
+        name = _dotted(node.func)
+        if name in self.EXEC_CALLS and node.args:
+            arg = node.args[0]
+            named = isinstance(arg, ast.Name) and arg.id in self.decoded_names
+            if named or self._has_decoder(arg) or self._chr_built(arg):
+                self.findings.append(AstFinding(
+                    severity="CRITICAL",
+                    message="解码/拼接后执行：%s() 的参数不是字面代码，是先解出来再跑的"
+                            % name,
+                    line=node.lineno, col=0))
+        self.generic_visit(node)
+
+
 class AutostartWriteVisitorPlaceholder:
     pass
 
@@ -1694,6 +1938,18 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
                 break
         if hit:
             break
+    if not hit:
+        # §3bn：解码产物被当成程序名直接跑（`certutil -decode p.b64 p.exe` → `p.exe`）
+        for prog, line in two.programs:
+            pb = _basename(prog)
+            for dl_path, _dl_line in two.downloads:
+                if not _norm(dl_path).endswith(_EXEC_FILE_EXTS):
+                    continue
+                if pb and pb == _basename(dl_path):
+                    hit = (prog, line)
+                    break
+            if hit:
+                break
     if hit:
         findings.append(AstFinding(
             severity="CRITICAL",
@@ -1711,6 +1967,12 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
     auto_visitor = AutostartWriteVisitor()
     auto_visitor.visit(tree)
     findings.extend(auto_visitor.findings)
+
+    # §3bn：解码/拼接后执行
+    dec_visitor = DecodedExecVisitor()
+    dec_visitor.prepare(tree)
+    dec_visitor.visit(tree)
+    findings.extend(dec_visitor.findings)
 
     return findings
 
