@@ -3128,6 +3128,99 @@ def scan_git_history(skill_path: Path, result: ScanResult):
         ))
 
 
+def _dockerignore_covers(skill_path: Path):
+    """`.dockerignore` 有没有同时挡住 `.git` 与 `.env`。
+
+    `docker build .` 会把**整个构建上下文**塞给守护进程，`.dockerignore` 是唯一
+    能挡的闸门——`.gitignore` 在这一层完全无效（这是镜像里带 `.env` 的常见原因）。
+    """
+    p = skill_path / ("." + "dockerignore")
+    if not p.is_file():
+        return False
+    try:
+        text = read_text_smart(p)
+    except OSError:
+        return False
+    try:
+        return _gitignore_covers(text, ["." + "git"]) and _gitignore_covers(
+            text, [".env", "*.env", "*.key", "id_" + "rsa"])
+    except Exception:
+        return False
+
+
+def scan_package_face(skill_path: Path, result: ScanResult, should_exclude):
+    """§3ca 打包面：对外交付那一刻，会不会把没打算给的东西一起打包。
+
+    类：`tar -czf out.tgz .`；shutil 里"归档/整树复制"两个函数把源写成当前目录；
+    `docker build .` 配 `COPY . /app`。
+    它们都不区分"要发的"与"不该发的"；用户拿到的是 tgz/镜像，不是 git 仓库。
+    （本 docstring 不写这些函数调用的整串字面量：本文件自己也在扫描范围内。）
+    """
+    ctx_ok = _dockerignore_covers(skill_path)
+    dock = "Doc" + "kerfile"
+    for path in sorted(skill_path.rglob("*")):
+        if not path.is_file() or should_exclude(path):
+            continue
+        name = path.name
+        suffix = path.suffix.lower()
+
+        if name.startswith(dock) or name.endswith("." + dock):
+            try:
+                text = read_text_smart(path)
+            except OSError:
+                continue
+            for i, line in enumerate(text.splitlines(), 1):
+                st = line.strip()
+                if not st or st.startswith("#"):
+                    continue
+                words = st.split()
+                if len(words) < 2 or words[0].lower() not in ("copy", "add"):
+                    continue
+                src = words[1]
+                if src not in (".", "./") or ctx_ok:
+                    continue
+                result.findings.append(Finding(
+                    severity="HIGH", category="filesystem",
+                    message="`%s %s` 把**整个构建上下文**塞进镜像：没有 `.dockerignore`"
+                            "（或它没挡住 `.git`/`.env`），镜像层里会带上不该给的东西"
+                            % (words[0], src),
+                    file=str(path), line=i
+                ))
+            continue
+
+        if suffix not in (".py", ".js", ".ts", ".sh"):
+            continue
+        try:
+            text = read_text_smart(path)
+        except OSError:
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            # 名字拆开拼：本文件自己也在扫描范围内，整串字面量会自命中
+            arch = "make_" + "archive"
+            cpy = "copy" + "tree"
+            cpy2 = "copy" + "_tree"
+            if (re.search(arch + r"\s*\(", line)
+                    and re.search(r"[,\( =]\s*[\"']\.[\"']", line)
+                    or re.search(cpy + r"\s*\(\s*[\"']\.?/?[\"']", line)
+                    or re.search(cpy2 + r"\s*\(\s*[\"']\.?/?[\"']", line)):
+                result.findings.append(Finding(
+                    severity="HIGH", category="filesystem",
+                    message="整目录打包/复制（源是 `.`）：`.git`、`.env`、历史与缓存会一起进"
+                            "交付件；发布件不是 git 仓库，`.gitignore` 在这一步不起作用",
+                    file=str(path), line=i
+                ))
+            elif ("doc" + "ker") in line.lower() and (re.search(r"[\"']build[\"']", line) or " build" in line.lower()) and \
+                    re.search(r"[\s,\[][\"']\.[\"']", line) and not ctx_ok:
+                result.findings.append(Finding(
+                    severity="HIGH", category="filesystem",
+                    message="`docker build .`：构建上下文是整个目录，缺 `.dockerignore` 覆盖，"
+                            "镜像层会带上 `.git`/`.env`",
+                    file=str(path), line=i
+                ))
+
+
 def _env_looks_like_template(text):
     """`.env` 是不是纯样板：所有赋值都是空值或占位符。
 
@@ -4309,6 +4402,9 @@ def scan_skill(skill_dir: str, excludes=None) -> ScanResult:
 
     # §3bz：历史里有没有留过密钥。工作区干净 ≠ 历史干净。
     scan_git_history(skill_path, result)
+
+    # §3ca：打包面。仓库干净 ≠ 发布件干净——交付那一刻可能把整目录带走。
+    scan_package_face(skill_path, result, should_exclude)
 
     # 未读载体披露：压缩包/二进制里的载荷一个字节都没看过，必须说出来
     scan_carriers(skill_path, result, should_exclude)

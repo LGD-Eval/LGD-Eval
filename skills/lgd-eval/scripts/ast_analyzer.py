@@ -1015,6 +1015,48 @@ def _arg_widens(mode: str) -> bool:
     return any(w in m for w in _WIDEN_MODES)
 
 
+PACK_BINS = {"tar", "bsdtar", "gtar", "star", "zip", "7z", "7za", "rar"}
+
+
+def _pack_verdict(tokens):
+    """§3ca 打包面：`tar -czf out.tgz .` 会把整个目录连 `.git`、`.env` 一起带走。
+
+    为什么单列一条：前几站判的都是"仓库里有什么"，这一条判的是
+    **对外交付那一刻会带上什么**。用户拿到的是 tgz，不是 git 仓库，
+    `.gitignore` 在 tgz 里不起任何作用。
+    """
+    base = _norm(tokens[0]) if tokens else ""
+    if base not in PACK_BINS:
+        return None
+    excl = set()
+    pos = []
+    for i, t in enumerate(tokens[1:], 1):
+        t = t.strip()
+        if t in ("--exclude", "-x", "--exclude-from") and i + 1 < len(tokens):
+            excl.add(tokens[i + 1].strip())
+            continue
+        if t.startswith("--exclude="):
+            excl.add(t.split("=", 1)[1].strip())
+            continue
+        if t.startswith("-"):
+            continue
+        pos.append(t)
+    whole = any(p in (".", "./", "./.", "*", "./*") for p in pos)
+    if not whole and ".." in [t.strip() for t in tokens]:
+        whole = True           # tar -C .. repo：整仓在包里
+    if not whole:
+        return None
+
+    covers_git = any(e.rstrip("/") in (".git", "**/.git", "*/.git") for e in excl)
+    covers_secrets = any(("env" in e) or ("key" in e) or ("id_" in e) for e in excl)
+    if covers_git and covers_secrets:
+        return None
+    if excl:
+        return "HIGH", ("打包整个目录：排除项只挡了部分（%s），`.git`/`.env` 仍会一起打进发布件"
+                        % "、".join(sorted(excl)[:3]))
+    return "HIGH", "打包整个目录（含 `.git`、`.env` 与全部历史）：发布件里会多出不该给的东西"
+
+
 def _privilege_verdict(tokens):
     """§3bv：把权限打开 / 把自己抬到更高身份 —— 不是破坏，是"开门"。
 
@@ -2465,6 +2507,11 @@ def destructive_tokens(tokens, depth: int = 0):
     literal = _b64_literal_verdict(tokens)
     if literal:
         return literal
+
+    # §3ca：打包面（tar/zip 把整个目录打进发布件）
+    pack = _pack_verdict(tokens)
+    if pack:
+        return pack
 
     # §3bv：权限放宽与提权（不是破坏，是"开门"：chmod 777 / setuid / sudoers /
     # 管理组 / setcap / --privileged / runas）
