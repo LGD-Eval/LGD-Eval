@@ -2813,6 +2813,185 @@ def _path_escape_findings(tree, root_dir=None) -> List[AstFinding]:
     return findings
 
 
+_SENSITIVE_SOURCES = (
+    "/etc/passwd", "/etc/shadow", ".s" "sh", "id_" "rsa", "id_" "ed25519",
+    ".aws", "credentials", ".env", ".npmrc", ".netrc", ".pgpass", ".kube",
+    "secrets", "secret", "token", "passwd", "shadow", ".git-credentials",
+)
+
+_ENV_SECRET_KEYS = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "APIKEY", "API_KEY",
+                    "ACCESS_KEY", "PRIVATE_KEY", "CREDENTIAL", "AUTH")
+
+_NET_SINKS = (
+    "requests.get", "requests.post", "requests.put", "requests.patch",
+    "requests.request", "requests.head",
+    "urllib.request.urlopen", "urllib.urlopen", "urllib.request.Request",
+    "urlopen", "http.client.HTTPConnection", "http.client.HTTPSConnection",
+    "socket.send", "socket.sendto", "socket.sendall", "socket.gethostbyname",
+    "gethostbyname", "smtplib.SMTP", "ftplib.FTP",
+)
+
+
+_SKIP_KW = {"headers", "auth", "cookies", "proxies", "verify", "timeout", "stream"}
+
+
+def _skip_ids(expr):
+    """鉴权头/代理/超时这类关键字不算载荷：API key 放在 Authorization 里是常规用法。"""
+    skip = set()
+    for n in ast.walk(expr):
+        if isinstance(n, ast.Call):
+            for k in n.keywords:
+                if k.arg in _SKIP_KW:
+                    for d in ast.walk(k.value):
+                        skip.add(id(d))
+    return skip
+
+
+def _has_sensitive_ref(expr, tainted, env_any=False) -> bool:
+    """表达式里是否出现敏感读取（敏感路径 / 环境变量 / 已污染变量）。
+
+    env_any=True 用于 sink 载荷位：取任何环境变量值当载荷都算敏感；
+    env_any=False 用于污染传播：只有 TOKEN/SECRET/KEY 这类键才算，
+    否则 `model = os.environ["LGD_MODEL"]` 会把整个 payload 染上色（自命中）。
+    """
+    if expr is None:
+        return False
+    skip = _skip_ids(expr)
+
+    # `os.environ.get("K")` 的键要按名字判，不能因为出现 environ 就整体判敏感
+    envget = set()
+    for n in ast.walk(expr):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and \
+                n.func.attr == "get":
+            owner = n.func.value
+            if isinstance(owner, ast.Attribute) and owner.attr == "environ":
+                envget.add(id(owner))
+
+    for n in ast.walk(expr):
+        if id(n) in skip or id(n) in envget:
+            continue
+        if isinstance(n, ast.Name) and n.id in tainted:
+            return True
+        if isinstance(n, ast.Attribute) and n.attr == "environ":
+            return True     # 裸 os.environ（dict(os.environ) 这类整份导出）
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and \
+                n.func.attr == "get":
+            owner = n.func.value
+            if isinstance(owner, ast.Attribute) and owner.attr == "environ":
+                if env_any:
+                    return True
+                k = n.args[0].value if n.args and isinstance(n.args[0], ast.Constant) else None
+                if isinstance(k, str) and any(s in k.upper() for s in _ENV_SECRET_KEYS):
+                    return True
+        if isinstance(n, ast.Subscript):
+            v = n.value
+            if isinstance(v, ast.Attribute) and v.attr == "environ":
+                if env_any:
+                    return True     # 取环境变量值当载荷
+                k = getattr(n.slice, "value", None)
+                if isinstance(k, str) and any(s in k.upper() for s in _ENV_SECRET_KEYS):
+                    return True
+        if isinstance(n, ast.Constant) and isinstance(n.value, str):
+            sv = n.value.lower()
+            # 只认「看着像路径」的字面（带分隔符或以 ~/点 开头），
+            # 否则规则表里出现 "token"/"secret" 这种词就会自命中。
+            if ("/" in sv or "\\" in sv or sv.startswith("~") or sv.startswith(".")) and \
+                    any(s in sv for s in _SENSITIVE_SOURCES):
+                return True
+    return False
+
+
+def _sink_payload(exprs, name, tainted) -> bool:
+    """只看载荷位：URL 位、鉴权头、超时不看。"""
+    for e in exprs:
+        if _has_sensitive_ref(e, tainted, env_any=True):
+            return True
+        if isinstance(e, ast.Name) and e.id in tainted:
+            return True
+    return False
+
+
+def _exfil_findings(tree) -> List[AstFinding]:
+    """§3bt：读敏感内容 + 网络外发（数据外泄面）。
+
+    一位普通技能读 `.env` / `~/.aws/credentials` / `/etc/passwd` / `os.environ`，
+    再把内容 `requests.post` 出去，或塞进域名做 DNS 外泄。每一步单看都正常。
+    基线：CWE-200 / CWE-201 / CWE-532；ATT&CK T1041、T1048、T1071.001；ASVS V7.1。
+    """
+    findings: List[AstFinding] = []
+    tainted: dict = {}
+    sinks: list = []
+    sensitive_reads: list = []
+
+    # 1) 污染传播：赋值右值里出现敏感读取，左侧变量即污染（迭代几轮覆盖 a→b→c）
+    for _ in range(4):
+        changed = False
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.Assign):
+                continue
+            if _has_sensitive_ref(n.value, tainted):
+                for t in n.targets:
+                    if isinstance(t, ast.Name) and t.id not in tainted:
+                        tainted[t.id] = n.lineno
+                        changed = True
+        if not changed:
+            break
+
+    # 2) 采集敏感读取与网络 sink
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        name = _dotted(n.func) or ""
+        if name in ("open", "io.open") and n.args and isinstance(n.args[0], ast.Constant) and \
+                isinstance(n.args[0].value, str) and \
+                any(s in n.args[0].value.lower() for s in _SENSITIVE_SOURCES):
+            sensitive_reads.append((n.lineno, n.args[0].value))
+        if name in ("subprocess.check_output", "subprocess.run", "subprocess.getoutput") and \
+                _has_sensitive_ref(n, {}):
+            sensitive_reads.append((n.lineno, "subprocess 读取敏感路径"))
+        if name.endswith("read_text") or name.endswith("read_bytes"):
+            recv = getattr(n.func, "value", None)
+            if isinstance(recv, ast.Call) and recv.args and \
+                    isinstance(recv.args[0], ast.Constant) and \
+                    isinstance(recv.args[0].value, str) and \
+                    any(s in recv.args[0].value.lower() for s in _SENSITIVE_SOURCES):
+                sensitive_reads.append((n.lineno, recv.args[0].value))
+        if name in _NET_SINKS or name.endswith(("sendmail", "send", ".request")):
+            sinks.append(n)
+
+    if not sinks:
+        return findings
+
+    # 3) 判级：载荷位带敏感内容 → CRITICAL；同文件共存 → HIGH
+    direct = []
+    for s in sinks:
+        name = _dotted(s.func) or ""
+        pos = list(s.args)
+        if name.startswith(("requests.", "urllib", "urlopen")) or name.endswith(".request"):
+            pos = pos[1:] if pos else pos      # 第一位是 URL/方法
+        if name.endswith("sendmail"):
+            pos = pos[2:] if len(pos) > 2 else []
+        kws = [k.value for k in s.keywords if k.arg not in _SKIP_KW]
+        if _sink_payload(pos + kws, name, tainted):
+            direct.append(s)
+
+    if direct:
+        for s in direct:
+            findings.append(AstFinding(
+                severity="CRITICAL",
+                message="读到的敏感内容经网络外发（%s）" % (_dotted(s.func) or "call"),
+                line=s.lineno, col=0))
+        return findings
+    if sensitive_reads:
+        ln, what = sensitive_reads[0]
+        findings.append(AstFinding(
+            severity="HIGH",
+            message="同文件内既读敏感内容（%s，第 %d 行）又有网络外发口，静态无法确认同源"
+                    % (what, ln),
+            line=sinks[0].lineno, col=0))
+    return findings
+
+
 def _archive_run_findings(tree) -> List[AstFinding]:
     """§3bq：解包后执行包内文件。
 
@@ -3105,6 +3284,9 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
 
     # §3bs：路径穿越与链接（解包成员 / 链接 / 仓外写入）
     findings.extend(_path_escape_findings(tree, filepath.parent))
+
+    # §3bt：读敏感内容 + 网络外发（数据外泄面）
+    findings.extend(_exfil_findings(tree))
 
     return findings
 
