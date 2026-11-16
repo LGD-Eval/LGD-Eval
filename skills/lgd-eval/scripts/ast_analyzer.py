@@ -593,6 +593,223 @@ def _arg_zero(mode: str) -> bool:
     return bool(m) and all(c == "0" for c in m)
 
 
+# §3bw：依赖与供应链执行面。装一个依赖 = 别人的代码在本机跑一遍。
+# 可信包源白名单 —— 不在这里的源，装什么都是"来源不可验证"。
+PKG_TRUSTED_HOSTS = (
+    "pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "npmjs.com",
+    "rubygems.org", "crates.io", "index.crates.io", "proxy.golang.org",
+    "deb.debian.org", "archive.ubuntu.com", "security.ubuntu.com",
+    "repo.anaconda.com", "conda.anaconda.org", "packages.microsoft.com",
+    "api.nuget.org", "repo.packagist.org", "packages.brew.sh",
+    "formulae.brew.sh", "go.dev", "golang.org",
+)
+PKG_INSTALLERS = {"pip", "pip3", "pipx", "uv", "poetry", "pipenv",
+                  "npm", "npx", "yarn", "pnpm",
+                  "gem", "cargo", "go", "conda", "mamba", "micromamba",
+                  "apt", "apt-get", "add-apt-repository", "yum", "dnf", "zypper",
+                  "brew", "composer", "nuget", "choco", "scoop", "winget"}
+# 安装器里"换来源"的开关：一旦出现，装什么由这一行决定，不由官方索引决定
+_PKG_SOURCE_FLAGS = ("--index-url", "--extra-index-url", "-i", "--registry",
+                     "--source", "--git", "--path", "--find-links", "-f",
+                     "--channel", "-c", "--trusted-host", "--trust-policy",
+                     "--allow-unauthenticated", "--insecure", "--no-verify",
+                     "--cafile", "--cert")
+_INSTALL_HOOK_KEYS = ("preinstall", "install", "postinstall", "prepare",
+                      "prepublish", "preuninstall")
+_EXEC_IN_HOOK_RE = re.compile(
+    r"(?:curl|wget|Invoke-WebRequest|iwr)\s+|(?:^|[\s;&|])(?:sh|bash|zsh|node|python|python3|"
+    r"powershell|pwsh|cmd|perl|ruby)\s+(?:-|/|\.|e\s*$)|os\.system|subprocess\.|"
+    r"child_process|exec\s*\(|iex\s*\(|base64\s+-d|eval\s*\(", re.I)
+
+
+def _pkg_positionals(tokens):
+    """去掉开关之后的位置参数 —— 并且**不能把开关的值当成位置参数**。
+
+    `pip install --index-url https://pypi.org/simple requests`：URL 是 `--index-url`
+    的值，不是"装的东西"。§3bw 第一版这条判据把值当成了包，导致
+    「指向官方源」也被判成「从 URL 直装」（test_official_index_ok 当场抓出）。
+    """
+    out = []
+    skip = False
+    for t in tokens[1:]:
+        if not isinstance(t, str):
+            continue
+        tl = t.strip().lower()
+        if skip:
+            skip = False
+            continue
+        if tl in _PKG_SOURCE_FLAGS or tl in _PKG_VALUE_FLAGS:
+            skip = "=" not in tl
+            continue
+        if tl.startswith("-"):
+            continue
+        out.append(t)
+    return out
+
+
+_PKG_VALUE_FLAGS = ("-r", "--requirement", "--save-dev", "--save", "-d", "--dev",
+                    "--upgrade", "-u", "--package", "-p", "--prefix", "--target",
+                    "-t", "--python", "--user", "-e", "--editable")
+
+
+def _pkg_host_trusted(url) -> bool:
+    s = str(url or "").strip().strip('"\'')
+    if not s:
+        return False
+    s = re.sub(r"^[a-z]+(?:git|\+https|\+ssh|file)?[:/]+", "", s, flags=re.I)
+    s = s.split("@")[-1]
+    host = re.split(r"[/:]", s)[0].lower()
+    return any(host == h or host.endswith("." + h) for h in PKG_TRUSTED_HOSTS)
+
+
+def _pkg_install_verdict(tokens):
+    """§3bw：装一个包 = 执行别人的代码。
+
+    这一站判的是**安装动作本身带来的执行面**，不是"下载"（§3bk 判取回即执行）：
+    换源（--index-url 到非官方、--trusted-host 关校验）、从 URL/git/tarball 直装、
+    gem --trust-policy NoSecurity、cargo --git、go install 未知模块路径。
+    """
+    if not tokens:
+        return None
+    toks = [t for t in tokens if isinstance(t, str)]
+    if not toks:
+        return None
+    base = _basename(toks[0]).lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    if base not in PKG_INSTALLERS:
+        return None
+    low = [t.lower() for t in toks[1:]]
+    joined = " ".join(low)
+
+    # 1) 换源 / 关校验
+    for i, t in enumerate(low):
+        if t in _PKG_SOURCE_FLAGS or any(t.startswith(f + "=") for f in _PKG_SOURCE_FLAGS):
+            val = ""
+            if "=" in t:
+                val = t.split("=", 1)[1]
+            elif i + 1 < len(low):
+                val = low[i + 1]
+            if t in ("--trust-policy",) or val in ("nosecurity", "allowall", "all"):
+                return ("HIGH", "%s 关闭包来源校验（%s %s）" % (base, t, val))
+            if t in ("--trusted-host", "--insecure", "--allow-unauthenticated",
+                     "--no-verify"):
+                return ("HIGH", "%s 关掉来源 TLS/签名校验（%s %s）" % (base, t, val))
+            if val.startswith(("http://", "https://", "git+", "git:", "github:", "file:",
+                               "ftp://")) or "/" in val or "." in val:
+                if not _pkg_host_trusted(val):
+                    return ("HIGH", "%s 从非可信源安装（%s %s）：装的代码来源不可验证"
+                            % (base, t, val))
+            continue
+
+    # 2) 直接拿 URL / git / tarball 当包名
+    for t in toks[1:]:
+        tl = t.lower()
+        if tl.startswith(("http://", "https://", "git+", "git:", "github:", "gitlab:",
+                          "file:", "ftp://")) or tl.endswith((".tgz", ".whl", ".zip")):
+            if not _pkg_host_trusted(t):
+                return ("HIGH", "%s 直接安装远端包（%s）：安装即执行其构建/钩子脚本"
+                        % (base, t))
+
+    # 3) go install 未知模块域（go 的 build 会在本机编译并跑 init）
+    if base == "go" and low and low[0] == "install":
+        for t in toks[2:]:
+            if "@" in t and "/" in t:
+                if not _pkg_host_trusted(t):
+                    return ("HIGH", "go install 从未登记模块路径安装并编译（%s）" % t)
+
+    # 4) add-apt-repository / conda -c：先加源，后面所有装包都走这个源
+    if base == "add-apt-repository":
+        url = next((t for t in toks[1:] if "://" in t), "")
+        if url and not _pkg_host_trusted(url):
+            return ("HIGH", "把一个非可信 apt 源加进信任列表（%s）" % url)
+        return None
+    if base in ("conda", "mamba", "micromamba"):
+        for i, t in enumerate(low):
+            if t in ("-c", "--channel") and i + 2 < len(low):
+                url = toks[i + 2]
+                if "://" in url and not _pkg_host_trusted(url):
+                    return ("HIGH", "从非可信 conda channel 安装（%s）" % url)
+    return None
+
+
+def _install_hook_findings(tree) -> List[AstFinding]:
+    """§3bw：安装钩子与包源配置。
+
+    package.json 的 scripts 里写一条 postinstall，在别人 npm install 的那一刻执行；
+    .npmrc 里写一条 registry 指向某个主机，此后所有安装都走它。
+    这两样都被写成**数据**（JSON / ini / 生成的文件内容），不是调用，
+    所以 §3bp 的折叠、§3br 的配置链都看不见 —— 必须按"写出去的内容"判。
+
+    实现上只看**字符串常量与字典键**（真被写出去的东西），不看整份文件文本：
+    初版按整份文本判，结果把本函数自己的说明文字当成了攻击样例（自命中，
+    自扫 87/A → 55/D）。这类"判据读自己的注释"的错误在 §3bt 已经犯过一次。
+    """
+    findings: List[AstFinding] = []
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            body = getattr(node, "body", [])
+            if body and isinstance(body[0], ast.Expr) \
+                    and isinstance(body[0].value, ast.Constant) \
+                    and isinstance(body[0].value.value, str):
+                docstrings.add(id(body[0].value))
+
+    def _hit(line_no, msg):
+        findings.append(AstFinding(severity="HIGH", message=msg, line=line_no, col=0))
+
+    # 1) 字典字面量里的安装钩子：{"postinstall": "curl … | sh"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for k, v in zip(node.keys, node.values):
+            if not (isinstance(k, ast.Constant) and isinstance(k.value, str)):
+                continue
+            if k.value.lower() not in _INSTALL_HOOK_KEYS:
+                continue
+            if isinstance(v, ast.Constant) and isinstance(v.value, str) \
+                    and _EXEC_IN_HOOK_RE.search(v.value):
+                _hit(getattr(node, "lineno", 0),
+                     "npm 安装钩子 %s 会在 install 时执行命令：%s"
+                     % (k.value, v.value[:60]))
+
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+            continue
+        if id(node) in docstrings:
+            continue
+        text = node.value
+        if len(text) < 8:
+            continue
+        base_line = getattr(node, "lineno", 0)
+
+        # 2) 写出去的整份 package.json：带 hook 键的 JSON 文本
+        for key in _INSTALL_HOOK_KEYS:
+            m = re.search(r'"%s"\s*:\s*"([^"]{4,300})"' % key, text)
+            if m and _EXEC_IN_HOOK_RE.search(m.group(1)):
+                _hit(base_line + text[:m.start()].count("\n"),
+                     "写出的安装钩子 %s 会在 install 时执行命令：%s"
+                     % (key, m.group(1)[:60]))
+                break
+
+        # 3) 包源配置（.npmrc / pip.conf / poetry / uv）
+        for m2 in re.finditer(r"(?:registry|index[-_]url|extra[-_]index[-_]url|"
+                              r"channels?)\s*[=:]\s*[\[\"']?(https?://[^\s\"'\],]+)", text):
+            if not _pkg_host_trusted(m2.group(1)):
+                _hit(base_line + text[:m2.start()].count("\n"),
+                     "包源被指向非可信主机（%s）：此后所有依赖都在这里装"
+                     % m2.group(1)[:60])
+                break
+
+        # 4) 写出去的 setup.py：setuptools + install 阶段执行
+        if "setuptools" in text and re.search(
+                r"os\.system\s*\(|subprocess\.\w+\s*\(|\bexec\s*\(|"
+                r"urlopen\s*\(\s*['\"]http", text):
+            _hit(base_line, "写出的安装脚本在 install 阶段执行命令（setup.py 顶层代码）")
+
+    return findings
+
+
 # §3bv：权限放宽与提权。§3bj 只判"把权限清零"，反过来"把权限打开"没人判。
 _WIDEN_MODES = ("777", "0777", "666", "0666", "a+rwx", "a+rw", "o+rwx", "o+w",
                 "a+w", "+s", "u+s", "g+s", "4755", "2755", "6755")
@@ -916,9 +1133,11 @@ def _remote_exec_verdict(tokens):
             and _URLARG_RE.search(tail):
         return "HIGH", "%s run 直接执行远程脚本" % base
     if base in {"pip", "pip3", "uv"} and "install" in [t.lower() for t in tokens[1:]] \
-            and _URLARG_RE.search(tail):
+            and any(_URLARG_RE.search(t) or t.lower().endswith((".tgz", ".whl", ".zip"))
+                    for t in _pkg_positionals(tokens)):
         return "HIGH", "%s 安装远程归档/仓库直接产物（未走索引）" % base
-    if base in {"npm", "pnpm", "yarn"} and _URLARG_RE.search(tail) \
+    if base in {"npm", "pnpm", "yarn"} and any(
+            _URLARG_RE.search(t) for t in _pkg_positionals(tokens)) \
             and any(t.lower() in {"install", "i", "add"} for t in tokens[1:]):
         return "HIGH", "%s 从 URL 直接安装包（未走索引）" % base
     return None
@@ -2073,6 +2292,11 @@ def destructive_tokens(tokens, depth: int = 0):
     priv = _privilege_verdict(tokens)
     if priv:
         return priv
+
+    # §3bw：依赖与供应链执行面（换源 / URL 直装 / go install 未知模块）
+    pkg = _pkg_install_verdict(tokens)
+    if pkg:
+        return pkg
 
     # §3bj：破坏不止删除——清零/覆写、撤权、平移、删账户、删任务、删恢复、删库。
     verb = _destructive_verb_verdict(tokens)
@@ -3513,6 +3737,9 @@ def analyze_python_file(filepath: Path) -> List[AstFinding]:
 
     # §3bu：调度器注册面（清单部署 CronJob 一类）
     findings.extend(_scheduler_manifest_findings(tree, content))
+
+    # §3bw：安装钩子与包源配置（package.json / .npmrc / 写出的 setup.py）
+    findings.extend(_install_hook_findings(tree))
 
     return findings
 
