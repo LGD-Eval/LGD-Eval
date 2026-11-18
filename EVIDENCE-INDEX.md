@@ -12,7 +12,7 @@
 
 ## 已知不硬的地方
 
-1. **同一批脚本存在两份副本。** `skills/lgd-eval/scripts/` 与 `vendor/scripts/` 各 12 个同名文件，其中 `ast_analyzer.py` 已经分叉（6629 vs 6277 字节）。新增分叉现由 `tests/test_copy_parity.py` 拦截，但**已登记的这一处尚未收敛**，`known_divergence.txt` 清空才算解决。
+1. **同一批脚本存在两份副本，其中一处已分叉、现已收敛。** `skills/lgd-eval/scripts/` 与 `vendor/scripts/` 各 12 个同名文件。`ast_analyzer.py` 曾相差 352 字节：`skills` 侧多一段 `REGEX_SUFFIXES` 排除逻辑——**扫描器扫自己时，`secret_re`、`token_pattern` 这类规则名会被当成硬编码凭证误报**，`vendor` 侧是旧版。2026-11-18 已把 `skills` 侧同步到 `vendor`，`tests/known_divergence.txt` 清空；`test_copy_parity.py` 从此要求两侧逐字节一致。
 2. **`tests/README.md` 说明了为什么公开包里没有恶意样本**——这个理由成立（样本本身是载荷），但它同时意味着**外人无法独立验证检测能力**，只能看自家 benchmark 文本。所以检测能力目前只到 L1。
 3. **分数由被评对象之外的一套逻辑给出，但那套逻辑没有被评。** 评测器自身的准确性没有对照基准（没有人工标注的"应得分数"集合）。
 4. **排行榜与评分卡同源。** `evaluation-evidence` 的数据由本仓产出，两者互证等于自证。
