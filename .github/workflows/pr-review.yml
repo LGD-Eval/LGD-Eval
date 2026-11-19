@@ -42,10 +42,20 @@ jobs:
         env:
           GITHUB_BASE_REF: ${{ github.base_ref }}
           GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
-          GITHUB_OUTPUT: /tmp/audit_out.txt
+          # NOTE: do not override GITHUB_OUTPUT here. The runner injects the real
+          # path; pointing it at /tmp made steps.audit.outputs.result always empty,
+          # so the bot reported "0 blocking / 0 warnings" no matter what the audit
+          # found. The audit step itself still exits 1 on blocking errors (see
+          # pr-audit.py main()), which is what the required check actually grades.
 
       - name: Post structured review comment
         if: always()
+        # Courtesy step, not the gate. Fork PRs get a read-only GITHUB_TOKEN, so
+        # this 403s ("Resource not accessible by integration") and used to fail
+        # the whole required check even when the audit found nothing. The blocking
+        # verdict belongs to the audit step above; a missing comment is reported
+        # as a warning in the log, not as a red gate.
+        continue-on-error: true
         env:
           AUDIT_JSON: ${{ steps.audit.outputs.result }}
         uses: actions/github-script@v9
@@ -69,6 +79,11 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: body
+            }).catch(e => {
+              // Read-only token (fork PR) or comment permission not granted.
+              // Print to the log instead of failing: the audit step already
+              // produced the verdict, and a cosmetic post must not gate a merge.
+              core.warning("Could not post review comment: " + e.message);
             });
 
   self-test:

@@ -11,7 +11,7 @@
 
 | 权利 | 归属 | 载体/保证 |
 |---|---|---|
-| 版权 Copyright | **以各仓 LICENSE 官方文本为准**（本仓 LICENSE = MIT；工具侧 Apache-2.0；理论侧 ARR，见理论号）。**待定**：评测侧四个内容仓是否统一改用 CC-BY-4.0 —— 若定，须替换对应仓 LICENSE 正文，不能只改元数据 | 各仓 LICENSE 官方文本（SPDX 可识别） |
+| 版权 Copyright | **以各仓 LICENSE 官方文本为准**：评测侧四个内容仓（本仓 / evaluation-protocol / evaluation-reports / evaluation-evidence）均为 **CC BY 4.0**；工具侧 skill-audit 为 Apache-2.0；理论侧 ARR（见理论号）。**署名是 CC BY 的强制义务**，不是礼貌建议 | 各仓 LICENSE 官方文本（SPDX 可识别） |
 | 署名权 Attribution | 一切复用须署名（CC-BY 的 BY 义务）；AI 参与同样署名 | CITATION.cff / 报告作者节 / CONTRIBUTORS |
 | **首创权 Priority** | 首次提出者（人/AI 同权）——以首创证据链为准 | PRIORITY_EVIDENCE_GUIDELINES（时间戳+查重+版本化定义） |
 | 论文权 Paper rights | 理论号论文：首发权、版本权、DOI 所有权 | Zenodo DOI / SSRN / .ots |
