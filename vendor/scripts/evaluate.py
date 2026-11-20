@@ -18,6 +18,16 @@ import hashlib
 import subprocess
 import urllib.request
 
+# P0-2 评测—授权分轨：授权状态机 / 证据对象（同目录骨架；导入失败不阻断评测主流程）。
+try:
+    import authorization as _auth
+    import evidence as _evidence
+    _SEPARATION_AVAILABLE = True
+except Exception:
+    _auth = None
+    _evidence = None
+    _SEPARATION_AVAILABLE = False
+
 
 # ============================================================
 # 安全否决（safety veto）
@@ -798,20 +808,21 @@ def evaluate_skill(skill_path):
     print(f"  LGD Trust Score: {score}/100  {emoji} {grade}")
     if raw_score != score:
         print(f"  ⛔ 安全否决：原始分 {raw_score} → 封顶 {score}（{veto_level}：{veto_reason}）")
-    # 分数 → 执行权限分档（竞品只给分数，这里给出可直接落地的限权建议）
+    # P0-2 分轨：分数只映射「风险分级建议」，不再直通执行权限档。
+    # 授权决策由独立决策方经 authorization 状态机另行产出；评测分数本身不授予任何权限。
     if score >= 96:
-        gate = "L0 免审批（可直接运行，无需限流）"
+        risk_tier = "R0 低风险（建议常规复核）"
     elif score >= 81:
-        gate = "L1 一次性确认（限流 60 次/分）"
+        risk_tier = "R1 较低风险（建议一次性确认）"
     elif score >= 51:
-        gate = "L2 人工复核（限流 30 次/分）"
+        risk_tier = "R2 中风险（建议人工复核）"
     elif score >= 31:
-        gate = "L3 沙箱运行（每次调用强制确认）"
+        risk_tier = "R3 较高风险（建议沙箱运行）"
     elif score >= 11:
-        gate = "L4 隔离环境（仅允许只读调用）"
+        risk_tier = "R4 高风险（建议隔离只读）"
     else:
-        gate = "L5 拒绝执行（需重写后重新评测）"
-    print(f"  🚦 建议执行权限: {gate}")
+        risk_tier = "R5 严重风险（建议拒绝执行，重写后重评）"
+    print(f"  🚦 风险分级建议（非授权决策）: {risk_tier}")
     print(f"  评测耗时: {elapsed:.2f}s")
     print("=" * 70)
     
@@ -869,6 +880,34 @@ def evaluate_skill(skill_path):
             "reason": veto_reason,
             "policy": "critical(凭证外泄/远程执行)→cap 49 · high(凭证暴露/命令执行)→cap 69；否决只封顶不替代五维明细",
         }
+
+    # P0-2 分轨授权：评测结果只作为证据输入；无独立决策方时落到 NOT_GRANTED/INCOMPLETE，
+    # 分数本身不构成授权。授权结构并入第 6 元组（veto_info），保持 6 元组向后兼容。
+    authorization = None
+    if _SEPARATION_AVAILABLE:
+        try:
+            _, tree = _tree_hashes(skill_path)
+            result_container = _evidence.build_result(
+                score=score, grade=grade, dims=dims, findings=findings,
+            )
+            result_container.update({
+                "evaluator": "lgd-eval",
+                "rule_version": "1.1.0",
+                "subject_fingerprint": tree,
+                "provenance": {"engine": "evaluate.py", "skill_path": skill_path},
+                "coverage": "source",
+                "evidence_id": None,
+                "scope": None,
+            })
+            decision = _auth.build_authorization(result_container, decision_by=None)
+            authorization = decision.__dict__.copy()
+            print(f"  🔐 授权状态: {decision.status.value}（{decision.reason}）")
+        except Exception as exc:  # 骨架期失败关闭：授权不可判定即 UNKNOWN
+            authorization = {"status": "UNKNOWN", "reason": f"authorization build failed: {exc}"}
+
+    if veto_info is None:
+        veto_info = {"applied": False}
+    veto_info["authorization"] = authorization
 
     return score, grade, dims, findings, warnings, veto_info
 

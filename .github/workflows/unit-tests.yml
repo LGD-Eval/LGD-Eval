@@ -1,10 +1,11 @@
 name: unit-tests
 
-# 本地契约门禁（阶段1）：把仓内既有两个纯标准库测试纳入 CI。
+# 本地契约门禁（阶段1 + P0-2 分轨骨架）：
 #   - tests/test_scorecard_contract.py：评分卡纯函数契约（unittest；依赖缺失则 SKIP，不伪装通过）
 #   - tests/test_copy_parity.py：skills/lgd-eval/scripts ↔ vendor/scripts 双副本逐字节守门；
 #     未登记的新分叉/单侧缺失即 FAIL（exit 1），已登记分叉见 tests/known_divergence.txt。
-# 阶段1 仅接入既有测试；授权状态机 / 证据链新桩在后续阶段经评审后再接入。
+#   - unittest discover：授权状态机 / 证据链 / MCP 作用域 / gold 夹具结构 / 端到端分轨桩。
+# 授权状态机为骨架期：无独立决策方一律 NOT_GRANTED；gold 阈值未标定，占位对照不计真实准确性达标。
 # Python 版本：先用 3.11（与 scanner-gate 对齐；纯标准库，无第三方依赖）。
 # 3.10/3.12/3.13 矩阵待依赖锁定、干净环境复跑通过后再扩。
 
@@ -33,3 +34,6 @@ jobs:
 
       - name: Vendor copy parity gate
         run: python tests/test_copy_parity.py
+
+      - name: P0 separation & evidence stubs
+        run: python -m unittest discover -s tests

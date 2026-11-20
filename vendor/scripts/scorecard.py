@@ -45,7 +45,7 @@ def tri_state(path, findings):
 def collect(path):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        score, grade, dims, findings, warnings = evaluate_skill(os.path.abspath(path))
+        score, grade, dims, findings, warnings, _veto = evaluate_skill(os.path.abspath(path))
     plan = build_fix_plan(findings, warnings)
     return {"score": score, "grade": grade, "dims": dims, "findings": findings,
             "plan": plan, "tri": tri_state(os.path.abspath(path), findings)}

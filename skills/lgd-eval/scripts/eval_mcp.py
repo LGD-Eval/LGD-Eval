@@ -84,9 +84,10 @@ def score_safety(text):
     if hits:
         score -= min(20, 5 * len(hits))
     notes = ["检测到能力：" + "、".join(hits)] if hits else ["未检测到高危能力调用"]
-    if hits and re.search(r"permission|scope|readOnly|read_only|allow", text, re.I):
-        score += 5
-        notes.append("存在权限声明（有一定收敛）")
+    # P0-2 修正：出现 permission/scope/readOnly 等声明文本不加分——文本声明不等于真收敛，
+    # 仅留作人工核对线索；是否真收敛须看实际工具暴露面。
+    if re.search(r"permission|scope|readOnly|read_only|allow", text, re.I):
+        notes.append("含权限/作用域声明文本（需人工核对是否真收敛，文本声明不加分）")
     return max(0, min(25, score)), notes
 
 

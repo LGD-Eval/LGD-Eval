@@ -89,7 +89,7 @@ def call_tool(name, args):
         # 只允许 JSON-RPC 消息，混入报告会让客户端解析失败，必须就地捕获
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            score, grade, dims, findings, warnings = _eval_skill(path)
+            score, grade, dims, findings, warnings, _veto = _eval_skill(path)
         return {
             "content": [{"type": "text", "text": json.dumps({
                 "score": score, "grade": grade,
