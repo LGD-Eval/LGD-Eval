@@ -1,0 +1,12 @@
+{
+  "id": "positive-01",
+  "class": "positive",
+  "status": "stub",
+  "fixture_path": "positive/skill/",
+  "fingerprint": null,
+  "expected": { "verdict": "PASS", "authorization": "NOT_GRANTED" },
+  "construct": "内部构造最小合规技能：README/CHANGELOG/examples 齐备，无高危能力声明；仅用于校准评测通过口径，不代表可授权。",
+  "required_fields": ["README", "examples", "manifest"],
+  "reproduce": "python -m unittest tests.test_gold_fixtures -v",
+  "notes": "评测达标不等于授权；授权须独立决策方 + 策略 + 复核留痕。fingerprint 待引擎冻结 result 后钉扎。"
+}

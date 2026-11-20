@@ -1,0 +1,12 @@
+{
+  "id": "boundary-01",
+  "class": "boundary",
+  "status": "stub",
+  "fixture_path": "boundary/skill/",
+  "fingerprint": null,
+  "expected": { "verdict": "INCONCLUSIVE", "authorization": "UNKNOWN" },
+  "construct": "证据不足样本：方法未冻结 / 仅元数据 / 覆盖为空；必须落 INCONCLUSIVE 与 UNKNOWN，不得回退 PASS 或 GRANTED。",
+  "required_behavior": ["失败关闭", "覆盖诚实度=metadata-only/empty"],
+  "reproduce": "python -m unittest tests.test_gold_fixtures -v",
+  "notes": "边界样本用于拦截'证据不足也放行'的虚高口径；与 uibc-core S19 首观 INCONCLUSIVE 口径对齐。fingerprint 待引擎冻结 result 后钉扎。"
+}

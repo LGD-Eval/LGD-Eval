@@ -1,0 +1,17 @@
+{
+  "schema_version": "0.1-draft",
+  "engine_version": "1.1.0",
+  "baseline_note": "骨架期空基线；gold 样本跑完后标定 precision/recall/FP/FN 阈值。任一指标跌破基线即 FAIL。",
+  "thresholds": {
+    "min_recall": null,
+    "max_false_positive_rate": null,
+    "min_precision": null
+  },
+  "current": {
+    "precision": null,
+    "recall": null,
+    "false_positive": null,
+    "false_negative": null,
+    "sample_count": 0
+  }
+}

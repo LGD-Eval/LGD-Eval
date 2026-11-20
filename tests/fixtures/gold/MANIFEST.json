@@ -1,0 +1,45 @@
+{
+  "manifest_version": "0.1-draft",
+  "description": "gold 基准样本清单：每条记录来源、许可证、版本、预期结果与离线复现说明。外部方可按本清单离线复跑比对指纹。",
+  "samples": [
+    {
+      "id": "positive-01",
+      "class": "positive",
+      "path": "positive/",
+      "fixture_path": "positive/skill/",
+      "fingerprint": null,
+      "source": "待补：内部构造 / 开源引用",
+      "license": "待补",
+      "version": "0.0.0",
+      "expected": { "verdict": "PASS", "authorization": "NOT_GRANTED" },
+      "reproduce": "python -m unittest tests.test_gold_fixtures -v",
+      "notes": "含 README/CHANGELOG/examples，无高危能力；评测达标不等于授权。fingerprint 待引擎冻结 result 后钉扎。"
+    },
+    {
+      "id": "negative-01",
+      "class": "negative",
+      "path": "negative/",
+      "fixture_path": "negative/skill/",
+      "fingerprint": null,
+      "source": "待补",
+      "license": "待补",
+      "version": "0.0.0",
+      "expected": { "verdict": "FAIL", "authorization": "NOT_GRANTED" },
+      "reproduce": "python -m unittest tests.test_gold_fixtures -v",
+      "notes": "硬编码凭证 / prompt injection / 命令执行等应被检出。fingerprint 待钉扎。"
+    },
+    {
+      "id": "boundary-01",
+      "class": "boundary",
+      "path": "boundary/",
+      "fixture_path": "boundary/skill/",
+      "fingerprint": null,
+      "source": "待补",
+      "license": "待补",
+      "version": "0.0.0",
+      "expected": { "verdict": "INCONCLUSIVE", "authorization": "UNKNOWN" },
+      "reproduce": "python -m unittest tests.test_gold_fixtures -v",
+      "notes": "证据不足/方法未冻结，必须落 INCONCLUSIVE/UNKNOWN，不得回退 PASS。fingerprint 待钉扎。"
+    }
+  ]
+}
