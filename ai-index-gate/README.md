@@ -1,0 +1,99 @@
+# AI-Index Gate — 可复跑门禁模板
+
+> 把一个"技能/文档投毒扫描器"变成一道**能被别人验证的门禁**。
+> scanner v0.3.4 ｜ 规则 81 / 模式 143 ｜ 中/英/法/德信号 + 零静默放行 ｜ 全程只读，不写对方仓库
+
+## 为什么不只是又一个扫描器
+
+大部分同类工具输出的是"结论"，我们输出的是**可复跑的取证 + 双侧验收**。
+
+| 维度 | 常见做法 | 本模板 |
+|---|---|---|
+| 结论可信度 | "我扫了，报告 3 条 P0" | 包里内嵌 LF 归一文本，`--verify` 离线重算，任何人可对账 |
+| 误报处理 | 靠人读、靠加白名单 | `--context-aware` 区分"描述攻击"与"实施攻击"，并保留 `original_level` 证据 |
+| 降噪代价 | 基本不测 | `--regression` 强制 20 条攻击样本 **0 丢失**，否则判失败 |
+| 集成方式 | 本地跑一次 | GitHub Action：PR 上 README/SKILL 变更即跑，P0 不过就挂 |
+
+一句话：**别人卖手电筒，我们卖"手电筒 + 照度计 + 可复查的测光记录"**。
+
+## 快速开始（3 条命令）
+
+```bash
+python gate.py --regression                              # 双侧回归：PASS = 降噪未伤召回
+python gate.py --repo promptfoo/promptfoo --path README.md --context-aware --out pack.json
+python gate.py --verify pack.json                        # 离线复跑：VERDICT: MATCH
+```
+
+本地文件同理：`python gate.py --file fixtures/attack.md --context-aware`。
+
+## 退出码（可直接当 CI 门禁用）
+
+| 码 | 含义 | CI 应对 |
+|---|---|---|
+| 0 | 干净（`--context-aware` 下 P0 = 0） | 放行 |
+| 1 | 仍有 P0 命中 | 失败，需人工裁决 |
+| 2 | 参数缺失 | 失败 |
+
+`--verify`：0 = MATCH，1 = MISMATCH（包失效，规则或文本变了）。
+`--regression`：0 = PASS（召回 0 丢失且文档误报 0），1 = FAIL。
+
+## 已实测（2026-11-18）
+
+| 指标 | 数值 |
+|---|---|
+| 调参集召回（20 条） | 20/20，降级后 0 丢失 |
+| 半盲测 v2（首次跑） | **5/20** → 调优后 20/20 |
+| 盲测 v3（首次跑） | **7/20** → 调优后 19/20 |
+| 真盲测 v4（未调参） | **3/7** ← 唯一未污染数字，如实公开 |
+| 文档语境误报（6 份真实 README，95,827 字符） | P0 **15 → 0**，P1 **13 → 0** |
+| 降噪伤召回（四批合计 67 条） | **0 条被洗掉** |
+| 良性技能语料（59 份 SKILL.md / 517,358 字符） | P0 **7 → 0**，P1 仍 5 条待复核 |
+| 红队自攻（10 条伪装成文档的攻击） | 仅降噪 7/10 放行 → 降噪+裁决器 **BLOCK 10/10、静默放行 0** |
+| 可复跑包 | 6 个对象 `VERDICT: MATCH` |
+| 跨语种盲测 v5（西/日/俄/葡，6 条攻击） | 自动识别 **0/6**，但**静默放行 0/6**（全部进人工队列） |
+| 裁决器作为独立候选源 | 正则漏检的行也逐行裁决：attack→BLOCK，uncertain→REVIEW，doc→PASS |
+
+
+> 我们不声称"高召回"，也不声称"零误报"。声称的是：可复跑、降噪不伤召回、中英双语覆盖、**零静默放行**（未知一律进人工队列）。
+> 跨语言泛化仍弱（西/日/俄/葡未覆盖），语义裁决器 `llm_adjudicator.py` 接口已成型、待密钥实测。详见 `HOLDOUT-泛化评估-20261118.md`、`D6-语义层与v5盲测-20261118.md`。
+
+## 判定层级（`ctx-1`）
+
+1. **硬载荷**（`=cmd|`、`grant yourself admin`、`bypass the approval`、零宽字符 U+200B/C/D 与 U+2060、Markdown 图片 URL 带 `data/leak/payload/conv` 参数）→ 永不降级；
+2. **攻击祈使式**（`ignore previous instructions`、`never refuse`、`without asking the user`…）→ 不降级，**除非**同一句内已有文档动词且无句号截断（"scanner detects X"）+ 引号示例；
+3. **可执行载荷**（`curl|bash`、`base64 -d`、`nc -e`…）且无描述标记 → 不降级；代码围栏**不作为**免罪符；
+4. **描述性标记**（文档动词/名词、局限自述、引号区间、描述性表格行）→ 降 P3，保留原级别。
+
+## 接进别的仓库（4 步）
+
+1. 复制 `scanner.py`、`gate.py` 到仓库根；
+2. 复制 `.github/workflows/ai-index-gate.yml`；
+3. 把 workflow 里的 `README.md` 换成你要守的文件（或保留 `**/*.md`）；
+4. 首次跑 `python gate.py --regression` 确认基线 PASS，再开门禁。
+
+> `scanner.py` 是 vendor 副本：主线 `scanner_v030.py` 更新后同步复制，避免规则漂移。
+
+## 边界（不要过度相信它）
+
+- `ctx-1` 是启发式，不是语义理解；把 payload 完整包进"我们检测 X"的句式可能被降级。
+- 20 条样本是人工构造的真实模式，不是独立第三方语料；真正的外部验证需别的评测号在未见样本上跑。
+- 只覆盖文本层（README / SKILL.md / 文档），不覆盖运行时行为与代码语义。
+- 不写对方仓库：无 issue / PR / 评论。
+
+## 变更记录
+
+**2026-11-19 · adjudicator 误报修复（不改规则库）**
+
+- 现象：deepeval README（30,553 字符）首扫 9 条 P1，全为 `adjudicator_attack`，原文是指标链接行与安装说明句。
+- 根因：① URL 内词参与动词/对象词表匹配；② "含外链 + 敏感名词即 attack"分支不要求动词；③ `a>=3` 分支同样不要求动词，URL 计 +2 使"1 名词 + 1 链接"过线；④ 基准名 `DROP` 被当动词。
+- 修复：URL 遮蔽 `_URL_`；逗号枚举专名（≥3 项）遮蔽 `_LIST_`；两条 attack 分支硬性要求出现动作动词。
+- 代价：红队 BLOCK 17→16、REVIEW 4→5、PASS 0；v4 union 6/7→5/7（逐条 6 BLOCK + 2 REVIEW，PASS=0）。无静默放行。
+- 收益：真实文档 P1 误报 9→0；`demo.py` 6/6、`--regression` PASS、取证包 MATCH 均保持。
+- 教训：判"攻击"必须以**动作**为必要条件；链接、枚举专名、URL 参数都不是动作。
+
+**2026-11-20 · 硬载荷护栏 + 候选聚合**
+
+- 新增 `PAYLOAD_URL` 硬规则：URL 查询串含 `leak/payload/exfil/data/conv/tokens/secrets` 参数即判 attack/high，且在文档用语判定之前返回——伪装成"我们拦截"的外泄样本不得被降级（红队 R10 实测）。
+- `gate.py` 新增 `BACKLOG_KEEP=10` + `review_backlog`：裁决器候选前 10 条逐条列出，其余聚合为 1 条并保留全量明细（deepeval 367 条 → 13 条，355 条明细留档）。
+- 不做"信号过滤"：按词表过滤会把西/日/俄/葡真实攻击直接丢掉，等于重新引入静默放行。
+- 验证：`demo.py` 6/6 PASS（红队 BLOCK 16 / REVIEW 5 / PASS 0）；`--regression` PASS；v4 6 BLOCK + 2 REVIEW、PASS 0；v5 攻击 6 条 0 PASS；取证包 MATCH。

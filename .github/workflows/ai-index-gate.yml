@@ -1,0 +1,44 @@
+name: AI-Index Gate
+on:
+  pull_request:
+    paths:
+      - "README.md"
+      - "**/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ai-index-gate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 自检 + 夹具回归
+        run: |
+          python scanner.py --self-test
+          python gate.py --regression
+          python demo.py
+      - name: 门禁 — 仓库文档不得留 P0（降噪与裁决器必须成对）
+        run: |
+          set +e
+          python gate.py --file ../README.md --context-aware --adjudicate --out ../repro-pr.json
+          code=$?
+          set -e
+          if [ $code -eq 1 ]; then
+            echo "::error::README 在上下文感知口径下仍有 P0，需人工裁决"
+            exit 1
+          fi
+      - name: 上传可复跑取证包
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repro-pack
+          path: repro-pr.json
+          if-no-files-found: warn
