@@ -118,6 +118,50 @@ def assemble_evidence(
     return evidence
 
 
+def attach_external_review(
+    evidence: EvidenceObject,
+    review: Mapping[str, Any],
+    validation: Mapping[str, Any],
+) -> EvidenceObject:
+    """把**已采信**的外部复核记录挂入证据对象（L4 骨架衔接）。
+
+    分轨红线：
+    - 仅当 ``validation["accepted_for_l4"]`` 为真才挂载 reviewer / external_anchor；
+      未采信只在 provenance 留痕拒绝原因，不抬高证据等级、不补锚点。
+    - 外部复核 verdict 只记入 external_anchor 留痕，**不回写 authorization**；
+      GRANTED 仍由独立决策方经授权状态机另行产出。
+    - 骨架期签名/锚点密码学校验为占位，本函数**不自动抬高
+      ``evidence.evidence_level``**；证据等级升级须待真实外部节点与密码学
+      校验落地（#61 挂账），不得在骨架数据上制造已达 L4 的外观。
+    """
+    accepted = bool(validation.get("accepted_for_l4"))
+    if not accepted:
+        evidence.provenance["external_review"] = {
+            "accepted": False,
+            "reasons": list(validation.get("reasons") or []),
+        }
+        return evidence
+
+    evidence.reviewer = {
+        "id": review.get("reviewer_id"),
+        "org": review.get("reviewer_org"),
+        "independent": bool(validation.get("independence_ok")),
+        "reviewed_at": review.get("reviewed_at"),
+    }
+    evidence.external_anchor = {
+        "type": "external-review",
+        "review_id": review.get("review_id"),
+        "digest": validation.get("digest"),
+        "verdict": review.get("verdict"),
+        "evidence_level": review.get("evidence_level", "L4"),
+    }
+    evidence.provenance["external_review"] = {
+        "accepted": True,
+        "review_id": review.get("review_id"),
+    }
+    return evidence
+
+
 # 接入后必须满足（对齐 INTEGRATION_SPEC_DRAFT 验收断言）：
 # 1. result 与 authorization 分轨，assert_separation 通过；
 # 2. 高分无独立决策方 -> NOT_GRANTED，不出现 L0 免审批直通；

@@ -887,8 +887,13 @@ def evaluate_skill(skill_path):
     if _SEPARATION_AVAILABLE:
         try:
             _, tree = _tree_hashes(skill_path)
+            # 结构化 findings 并带上严重度：critical 否决 → CRITICAL，供授权阻断判定；
+            # 其余按 HIGH/MEDIUM。原始文本 findings 仍由返回值第 4 位原样带出。
+            sev_map = {"critical": "CRITICAL", "high": "HIGH"}
+            sev = sev_map.get(veto_level, "MEDIUM")
+            structured_findings = [{"evidence": f, "severity": sev} for f in findings]
             result_container = _evidence.build_result(
-                score=score, grade=grade, dims=dims, findings=findings,
+                score=score, grade=grade, dims=dims, findings=structured_findings,
             )
             result_container.update({
                 "evaluator": "lgd-eval",
@@ -900,6 +905,9 @@ def evaluate_skill(skill_path):
                 "scope": None,
             })
             decision = _auth.build_authorization(result_container, decision_by=None)
+            # 分轨兜底：result 夹带授权字段、或无决策方却出 GRANTED 时立即拦截，
+            # 违例落入下方 except 失败关闭为 UNKNOWN，不回退 PASS/GRANTED。
+            _auth.assert_separation(result_container, decision)
             authorization = decision.__dict__.copy()
             print(f"  🔐 授权状态: {decision.status.value}（{decision.reason}）")
         except Exception as exc:  # 骨架期失败关闭：授权不可判定即 UNKNOWN

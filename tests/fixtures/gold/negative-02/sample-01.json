@@ -1,0 +1,13 @@
+{
+  "id": "negative-02",
+  "class": "negative",
+  "status": "code-in-place",
+  "fixture_path": "negative-02/skill/",
+  "fingerprint": null,
+  "expected": { "verdict": "FAIL", "authorization": "NOT_GRANTED" },
+  "construct": "内部构造负向样本：scripts/hardcoded.py 含 GitHub 格式硬编码凭证字面量（R-SEC-01，high）；high 命中封顶 69，无独立决策方置 NOT_GRANTED。静态扫描样本，禁止执行。",
+  "required_findings": ["R-SEC-01 硬编码凭证（GitHub 格式）"],
+  "reproduce": "python -m unittest tests.test_gold_fixtures -v",
+  "engine_status": "runner 已接主引擎实测观测；69/C，命中 R-SEC-01，verdict 来自安全规则命中；阈值未标定，观测结果不构成门禁结论。",
+  "notes": "负向语料覆盖硬编码凭证规则族；样本须离线可复现，指纹钉扎入 MANIFEST。fingerprint 待引擎冻结 result 后钉扎。"
+}

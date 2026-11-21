@@ -13,7 +13,7 @@
       "version": "0.0.0",
       "expected": { "verdict": "PASS", "authorization": "NOT_GRANTED" },
       "reproduce": "python -m unittest tests.test_gold_fixtures -v",
-      "notes": "含 README/CHANGELOG/examples，无高危能力；评测达标不等于授权。fingerprint 待引擎冻结 result 后钉扎。"
+      "notes": "含 README/CHANGELOG/examples/scripts，纯本地纯函数、无高危能力；评测达标不等于授权。runner 已接引擎实测观测，阈值未标定；fingerprint 待引擎冻结 result 后钉扎。"
     },
     {
       "id": "negative-01",
@@ -26,7 +26,7 @@
       "version": "0.0.0",
       "expected": { "verdict": "FAIL", "authorization": "NOT_GRANTED" },
       "reproduce": "python -m unittest tests.test_gold_fixtures -v",
-      "notes": "硬编码凭证 / prompt injection / 命令执行等应被检出。fingerprint 待钉扎。"
+      "notes": "scripts/leak.py 含凭证读取后外发（R-SEC-09 critical）与 os.system（R-SEC-05 high），静态样本禁止执行。runner 已接引擎实测观测，阈值未标定；fingerprint 待钉扎。"
     },
     {
       "id": "boundary-01",
@@ -40,6 +40,71 @@
       "expected": { "verdict": "INCONCLUSIVE", "authorization": "UNKNOWN" },
       "reproduce": "python -m unittest tests.test_gold_fixtures -v",
       "notes": "证据不足/方法未冻结，必须落 INCONCLUSIVE/UNKNOWN，不得回退 PASS。fingerprint 待钉扎。"
+    },
+    {
+      "id": "negative-02",
+      "class": "negative",
+      "path": "negative-02/",
+      "fixture_path": "negative-02/skill/",
+      "fingerprint": null,
+      "source": "待补",
+      "license": "待补",
+      "version": "0.0.0",
+      "expected": { "verdict": "FAIL", "authorization": "NOT_GRANTED" },
+      "reproduce": "python -m unittest tests.test_gold_fixtures -v",
+      "notes": "scripts/hardcoded.py 含 GitHub 格式硬编码凭证（R-SEC-01 high），静态样本禁止执行。runner 已接引擎实测观测，阈值未标定；fingerprint 待钉扎。"
+    },
+    {
+      "id": "negative-03",
+      "class": "negative",
+      "path": "negative-03/",
+      "fixture_path": "negative-03/skill/",
+      "fingerprint": null,
+      "source": "待补",
+      "license": "待补",
+      "version": "0.0.0",
+      "expected": { "verdict": "FAIL", "authorization": "NOT_GRANTED" },
+      "reproduce": "python -m unittest tests.test_gold_fixtures -v",
+      "notes": "scripts/shellcall.py 含 shell=True（R-SEC-03 high），静态样本禁止执行。runner 已接引擎实测观测，阈值未标定；fingerprint 待钉扎。"
+    },
+    {
+      "id": "boundary-02",
+      "class": "boundary",
+      "path": "boundary-02/",
+      "fixture_path": "boundary-02/skill/",
+      "fingerprint": null,
+      "source": "待补",
+      "license": "待补",
+      "version": "0.0.0",
+      "expected": { "verdict": "INCONCLUSIVE", "authorization": "UNKNOWN" },
+      "reproduce": "python -m unittest tests.test_gold_fixtures -v",
+      "notes": "仅有草稿描述、无可执行代码与示例，覆盖 metadata-only；强制 INCONCLUSIVE/UNKNOWN。fingerprint 待钉扎。"
+    },
+    {
+      "id": "negative-04",
+      "class": "negative",
+      "path": "negative-04/",
+      "fixture_path": "negative-04/skill/",
+      "fingerprint": null,
+      "source": "待补：内部构造 / 开源引用",
+      "license": "待补",
+      "version": "0.0.0",
+      "expected": { "verdict": "FAIL", "authorization": "NOT_GRANTED" },
+      "reproduce": "python -m unittest tests.test_gold_fixtures -v",
+      "notes": "scripts/dynamic.py 含 eval(...) 动态执行（R-SEC-04 high），静态样本禁止执行。runner 已接引擎实测观测，阈值未标定；fingerprint 待钉扎。"
+    },
+    {
+      "id": "negative-05",
+      "class": "negative",
+      "path": "negative-05/",
+      "fixture_path": "negative-05/skill/",
+      "fingerprint": null,
+      "source": "待补：内部构造 / 开源引用",
+      "license": "待补",
+      "version": "0.0.0",
+      "expected": { "verdict": "FAIL", "authorization": "NOT_GRANTED" },
+      "reproduce": "python -m unittest tests.test_gold_fixtures -v",
+      "notes": "scripts/env_dump.py 整份 dict(os.environ) 打包后经 urllib 外发（R-SEC-21 critical），静态样本禁止执行。runner 已接引擎实测观测，阈值未标定；fingerprint 待钉扎。"
     }
   ]
 }

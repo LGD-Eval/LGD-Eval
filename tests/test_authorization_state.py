@@ -15,7 +15,14 @@ SCRIPTS = os.path.join(HERE, "..", "skills", "lgd-eval", "scripts")
 sys.path.insert(0, os.path.abspath(SCRIPTS))
 
 import authorization  # noqa: E402
-from authorization import AuthStatus, build_authorization, revoke  # noqa: E402
+from authorization import (  # noqa: E402
+    AuthStatus,
+    AuthorizationDecision,
+    SeparationViolation,
+    assert_separation,
+    build_authorization,
+    revoke,
+)
 
 
 def _base_result(**over):
@@ -66,6 +73,20 @@ class AuthorizationStateTests(unittest.TestCase):
         revoked = revoke(granted, "evidence stale", revoked_at="2026-11-20T00:00:00Z")
         self.assertTrue(revoked.revoked)
         self.assertEqual(revoked.status, AuthStatus.NOT_GRANTED)
+
+    # 分轨兜底：result 夹带授权字段 -> 断言拦截，不允许评测轨混授权结论
+    def test_separation_blocks_authorization_field_in_result(self):
+        res = _base_result(authorization="GRANTED")
+        dec = build_authorization(res)
+        with self.assertRaises(SeparationViolation):
+            assert_separation(res, dec)
+
+    # 分轨兜底：GRANTED 但无独立决策方 -> 断言拦截（无决策方授权被禁止）
+    def test_separation_blocks_granted_without_decisioner(self):
+        res = _base_result()
+        fake = AuthorizationDecision(status=AuthStatus.GRANTED, decision_by=None)
+        with self.assertRaises(SeparationViolation):
+            assert_separation(res, fake)
 
 
 if __name__ == "__main__":

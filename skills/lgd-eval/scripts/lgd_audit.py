@@ -779,6 +779,8 @@ def main():
     
     reviewer = ComprehensiveReview(project_dir, is_internal_skill=is_internal)
     score = reviewer.run_all()
+    # P0-2 分轨：此处退出码是内部质量审计门禁（0=达标 / 1=未达 90），
+    # 不是授权决策；授权走独立 authorization 状态机，质量分不授予任何权限。
     sys.exit(0 if score >= 90 else 1)
 
 

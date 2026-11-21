@@ -1,12 +1,13 @@
 {
   "id": "negative-01",
   "class": "negative",
-  "status": "stub",
+  "status": "code-in-place",
   "fixture_path": "negative/skill/",
   "fingerprint": null,
   "expected": { "verdict": "FAIL", "authorization": "NOT_GRANTED" },
-  "construct": "内部构造负向样本：硬编码凭证 / 命令执行 / prompt injection 等高危特征应被规则检出；命中 CRITICAL 须封顶并置 NOT_GRANTED。",
-  "required_findings": ["R-SEC-09 或等效高危规则命中"],
+  "construct": "内部构造负向样本：scripts/leak.py 含凭证文件读取后网络外发（R-SEC-09，critical）与 os.system 命令调用（R-SEC-05，high）；命中 CRITICAL 须封顶并置 NOT_GRANTED。静态扫描样本，禁止执行。",
+  "required_findings": ["R-SEC-09 凭证文件读取后网络外发", "R-SEC-05 系统命令调用"],
   "reproduce": "python -m unittest tests.test_gold_fixtures -v",
+  "engine_status": "runner 已接主引擎实测观测；verdict 来自引擎，阈值未标定，观测结果不构成门禁结论。",
   "notes": "负向语料用于校准误报/漏报；样本须离线可复现，指纹钉扎入 MANIFEST。fingerprint 待引擎冻结 result 后钉扎。"
 }

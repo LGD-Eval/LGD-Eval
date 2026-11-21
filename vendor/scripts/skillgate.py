@@ -11,6 +11,10 @@ Exit codes:
     1 = fail (critical/high findings)
     2 = usage error
 
+P0-2 分轨声明：本扫描器只产出质量分、安全发现与 CI 质量门禁退出码，
+**不产出授权结论**。exit 1 表示质量/安全门禁未过，不等同于拒绝授权；
+授权决策只能由独立决策方经 authorization 状态机另行产出，分数本身不授予任何权限。
+
 正典声明：本文件为 LGD-Eval 评测线 skillgate 扫描器的发布正典副本。
 公开仓同步对：LGD-Eval/lgd-gate/skillgate.py 与 zhaoxinghua09-cell/skillgate/scripts/skillgate.py
 两仓内容逐字节一致（blob SHA 相同）；本地开发正典位于 coze-publish/02-skill-eval-engine/scripts/。

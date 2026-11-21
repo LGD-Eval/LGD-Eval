@@ -1,0 +1,13 @@
+{
+  "id": "boundary-02",
+  "class": "boundary",
+  "status": "stub",
+  "fixture_path": "boundary-02/skill/",
+  "fingerprint": null,
+  "expected": { "verdict": "INCONCLUSIVE", "authorization": "UNKNOWN" },
+  "construct": "证据不足样本：仅有草稿 frontmatter 与描述，无可执行代码、无 README/examples；覆盖诚实度 = metadata-only；必须落 INCONCLUSIVE 与 UNKNOWN，不得回退 PASS 或 GRANTED。",
+  "required_behavior": ["失败关闭", "覆盖诚实度=metadata-only"],
+  "reproduce": "python -m unittest tests.test_gold_fixtures -v",
+  "engine_status": "metadata-only；引擎可跑（74/B，无安全命中）但 verdict 按覆盖诚实度强制 INCONCLUSIVE/UNKNOWN，不采用引擎授权结论；阈值未标定。",
+  "notes": "第二条边界样本，拦截'草稿描述也放行'的虚高口径。fingerprint 待引擎冻结 result 后钉扎。"
+}

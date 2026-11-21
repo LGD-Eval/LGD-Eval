@@ -1,0 +1,17 @@
+# requirements.txt — LGD-Eval 运行时依赖（P0 骨架期实测口径）
+#
+# 实测（2026-11-20，stage2-work 工作区）：skills/lgd-eval/scripts 与 tests 下全部
+# import 均为 Python 标准库或仓内模块，无运行时第三方依赖；测试使用标准库 unittest，
+# 不需要 pytest 或其它测试框架。
+#
+# 因此本文件在骨架期保持为空（无钉版本条目）。未来若引入第三方库（如 rfc8785、
+# cryptography 等），须在此钉死版本，并另生成 requirements-lock.txt（含哈希留痕）
+# 供 CI 干净环境复现；在此之前 CI 以纯标准库 3.11 单版本运行。
+#
+# 运行时第三方依赖：（无）
+# 测试第三方依赖：（无，unittest 标准库）
+#
+# 干净环境复现（2026-11-20，3.13.14）：--without-pip 隔离 venv + `python -I`
+# 隔离模式（不继承 PYTHONPATH / 用户 site-packages），unittest discover 43 tests OK；
+# venv site-packages 为空，pytest/cryptography/requests/yaml/httpx 均不可导入。
+# 仍挂账：3.10/3.11 本机未装，多版本矩阵未本机复跑；锁版文件待引入第三方后再生成。
