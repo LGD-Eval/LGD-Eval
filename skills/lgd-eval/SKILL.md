@@ -1,7 +1,7 @@
 ---
 name: lgd-eval-engine
 description: 独立第三方技能评测引擎：安全扫描 + 18 维审计 + 五维评分，输出可复现的 Trust Score 与改进清单。当用户说"这个技能安全吗""会不会乱动我的文件""给我打个分""这个值多少分""帮我评测这个技能""上架前体检一下""这两个哪个更该先修"时使用。触发词：技能评测、安全扫描、打个分、评分、体检、审计、Trust Score、上架前检查。
-version: 1.0.0
+version: 1.0.1
 license: MIT
 author: LGD-Eval
 tags:
@@ -95,7 +95,8 @@ python scripts/skillgate.py scan <技能目录> --format markdown --output repor
 
 - 覆盖：危险代码模式、硬编码密钥、可疑网络外发、文件系统越权、结构风险。
 - 不覆盖：深度语义攻击链、供应链投毒、混淆载荷还原、运行时行为。
-- 需要深度审计时叠加专用引擎：SkillScanner（49 条规则 / 11 类威胁 / APPROVE-CAUTION-REJECT 三档裁决）、AgentShield（`npx @elliotllliu/agentshield scan --json --fail-under`）、SafeSkill（Yara/AST/LLM 组合）。
+- 需要深度审计时叠加专用引擎：SkillScanner（49 条规则 / 11 类威胁 / APPROVE-CAUTION-REJECT 三档裁决）、AgentShield（`npx @elliotllliu/agentshield scan --json --fail-under`）、SafeSkill（Yara/AST/LLM 组合）、NVIDIA SkillSpector v2.12.0（`--no-llm` 静态模式，输出 `risk_assessment.score` + `recommendation` + `max_issue_severity`，同样是「分数 + 建议」而非否决式裁决）。
+- 2026-11-21 的三方同批对照（同一 7 个攻击样本）：本引擎源码 4/7 拒判、SkillSpector 2 项 DO_NOT_INSTALL + 2 项 CAUTION、旧 `1.0.0` 制品 0/7 拒判。对照数据与复跑脚本在 `docs/CROSSRUN-2026-11-21.md`，结论以可复跑为准，不作「更强」表述。
 - 不要把本引擎的 100 分读成「绝对安全」：它只代表「在这套快筛规则下未命中」。
 
 ## 公开评分卡

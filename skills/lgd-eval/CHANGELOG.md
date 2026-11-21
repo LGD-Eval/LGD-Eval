@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.1] - 2026-11-21
+
+### Fixed
+- 发布断层：用 `main` 的硬化源码重新打包，使外人下载的制品与源码给出同一答案
+  （同一批 7 个攻击样本：旧 `1.0.0` tgz 拒判 0/7 → `1.0.1` 与源码一致 5/7）。
+- README 下载链接、`package.json` 版本同步指向 `v1.0.1`。
+
+### Added
+- `R-SEC-24`（编码载荷 / base64 注入）进入 `CRIT_IDS`：`SKILL.md` 中 base64 片段解码后再判，
+  命中即 CRITICAL 封顶 49/D、`exit 2`；`EVIDENCE_RULES` 补规则号映射；
+  `safety_cap()` 改为点名命中的规则，不再把任何 critical 笼统报成「凭证外泄」。
+- `scan` 在目录缺 `SKILL.md` 时打印「口径提示」三行：说明这是口径差异、不是安全结论，
+  退出码不变。回归用例 `tests/test_subject_scope_notice.py`。
+- `docs/CROSSRUN-2026-11-21.md`：同批 7 样本 × 三方（源码 / 旧制品 / NVIDIA SkillSpector v2.12.0）
+  对照表与复跑命令；`docs/RELEASE-NOTES-1.0.1.md` 记录本版全部变化与已知分叉。
+
 ## [1.0.0] - 2026-11-04
 
 ### Added

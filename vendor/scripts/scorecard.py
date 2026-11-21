@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from evaluate import evaluate_skill, build_fix_plan  # noqa: E402
+from evaluate import evaluate_skill_result, build_fix_plan  # noqa: E402
 
 DIMS = ["结构完整性", "目录结构", "文档质量", "安全", "生态兼容性"]
 MAXS = {"结构完整性": 25, "目录结构": 15, "文档质量": 20, "安全": 25, "生态兼容性": 15}
@@ -45,7 +45,9 @@ def tri_state(path, findings):
 def collect(path):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        score, grade, dims, findings, warnings = evaluate_skill(os.path.abspath(path))
+        r = evaluate_skill_result(os.path.abspath(path))
+    score, grade = r["score"], r["grade"]
+    dims, findings, warnings = r["dims"], r["findings"], r["warnings"]
     plan = build_fix_plan(findings, warnings)
     return {"score": score, "grade": grade, "dims": dims, "findings": findings,
             "plan": plan, "tri": tri_state(os.path.abspath(path), findings)}

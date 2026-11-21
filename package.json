@@ -1,6 +1,6 @@
 {
   "name": "lgd-eval",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "LGD 技能评测引擎：五维评分 + 三律合规 + CI 门禁。评分口径与仓库内 Python 实现完全一致。",
   "keywords": [
     "ai-agent",

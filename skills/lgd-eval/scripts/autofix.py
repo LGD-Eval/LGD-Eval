@@ -20,7 +20,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from evaluate import evaluate_skill, build_fix_plan  # noqa: E402
+from evaluate import evaluate_skill_result, build_fix_plan  # noqa: E402
 
 MIT = """MIT License
 
@@ -335,7 +335,10 @@ def main():
 
     history = []
     for rnd in range(1, args.max_rounds + 1):
-        score, grade, dims, findings, warnings = evaluate_skill(root)
+        # 具名结果，不用位置解包：返回值一变长，这里就是下一个崩点。
+        r = evaluate_skill_result(root)
+        score, grade = r["score"], r["grade"]
+        dims, findings, warnings = r["dims"], r["findings"], r["warnings"]
         history.append((rnd, score, grade))
         print("  第 %d 轮评测  %d/100  %s" % (rnd, score, grade))
         if score >= args.target:
