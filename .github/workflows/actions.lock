@@ -7,6 +7,9 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-python@v7.1.0'
         - 'actions/upload-artifact@v7.0.2'
+    '.github/workflows/auto-eval.yml':
+        - 'LGD-Eval/lgd-gate@main'
+        - 'actions/checkout@v7.0.1'
     '.github/workflows/codeql.yml':
         - 'actions/checkout@v7.0.1'
         - 'github/codeql-action@v4.39.4'
@@ -31,6 +34,11 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/github-script@v9.0.0'
 dependencies:
+    'LGD-Eval/lgd-gate@main':
+        ref: 'main'
+        commit: 'sha1-b26e4eb212e8ab92e2ac47fe2563d55bbbae92ea'
+        owner_id: 342496394
+        repo_id: 1436123021
     'actions/checkout@v7.0.1':
         ref: 'v7.0.1'
         commit: 'sha1-3d3c42e5aac5ba805825da76410c181273ba90b1'
