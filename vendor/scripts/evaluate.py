@@ -53,7 +53,7 @@ def _rule_ids_for(findings):
     return ids
 
 
-CRIT_IDS = {"R-SEC-09", "R-SEC-10", "R-SEC-21", "R-SEC-22"}          # 已证实的凭证 / 环境变量外泄 / 隐形注入
+CRIT_IDS = {"R-SEC-09", "R-SEC-10", "R-SEC-21", "R-SEC-22", "R-SEC-24"}  # 已证实的凭证 / 环境变量外泄 / 隐形注入 / 编码载荷
 
 # 不可见字符区间：正则看不见它们，必须按码位扫（CSA 2026-03 的 Unicode Tags 注入）
 #
@@ -224,7 +224,15 @@ def safety_cap(findings):
 
     # 规则号判定
     if ids & CRIT_IDS:
-        return VETO_CRITICAL, "critical", "命中凭证外泄（读取后外发 / 跨文件传递）"
+        # 原因必须点名命中的规则，而不是笼统写"凭证外泄"：编码载荷、隐形字符
+        # 与凭证外泄的整改动作完全不同，写错原因会让整改走错方向。
+        _names = {"R-SEC-09": "凭证外泄", "R-SEC-10": "环境变量外泄",
+                  "R-SEC-21": "注入指令", "R-SEC-22": "隐形字符注入",
+                  "R-SEC-24": "编码载荷注入"}
+        _hit = sorted(ids & CRIT_IDS)
+        return (VETO_CRITICAL, "critical",
+                "命中 critical 规则：" + "、".join(
+                    "%s（%s）" % (r, _names.get(r, "")) for r in _hit))
     if "R-SEC-12" in ids and (ids & {"R-SEC-14", "R-SEC-15"}):
         # 隐瞒用户 + 读取/外泄凭证，等于在明说「别让人知道我在偷」
         return VETO_CRITICAL, "critical", "隐瞒用户且涉及凭证读取 / 外泄"
@@ -1652,6 +1660,10 @@ EVIDENCE_RULES = [
     ("命令注入风险", "R-SEC-03", "安全检查", "scripts/",
      "改用参数列表形式调用（shell=False），或对进入 shell 的变量做白名单校验",
      "重跑规则 R-SEC-03：不再出现 shell=True 即通过"),
+    ("编码载荷：base64", "R-SEC-24", "安全检查", "SKILL.md",
+     "删除 base64 包裹的指令块；需要承载二进制资源时改用独立文件并给哈希，"
+     "不要把可解码的指令放进文档",
+     "重跑规则 R-SEC-24：SKILL.md 内可解码出注入话术的 base64 块归零即通过"),
     ("不可见字符承载指令", "R-SEC-22", "安全检查", "SKILL.md",
      "删除文档内全部不可见字符（U+E0000–E007F Tags 块、零宽字符、不可见格式字符）；"
      "正常文案不需要它们，出现即视为隐藏指令通道",

@@ -23,8 +23,14 @@ ROOT = Path(__file__).resolve().parents[3]
 SRC = ROOT / "skills" / "lgd-eval" / "scripts" / "skillgate.py"
 VENDOR = ROOT / "vendor" / "scripts" / "skillgate.py"
 
-# 与 lgd-gate 仓正典同源，改动必须三处一起同步并更新此值
-PINNED_SHA256 = "62f5bf38bc99398d601be801b5e0f523c69e722f01ed62d4cf769f0acdc12de8"
+# 本值钉的是「本仓实际出货的这两个字节流」（skills 与 vendor），改规则时三处一起动：
+#   1) 改 skills/lgd-eval/scripts/skillgate.py
+#   2) 整文件复制到 vendor/scripts/skillgate.py
+#   3) 更新此值
+# 注意：LGD-Eval/lgd-gate 仓里另有一份 72KB 的部署副本（供 GitHub Action / hook 用），
+# 与这份 254KB 的规则全集不是同一条脉络，sha 不可互比；两边是否合并是待拍板事项，
+# 见 docs/RELEASE-NOTES-1.0.1.md「已知分叉」。
+PINNED_SHA256 = "f5a4667852347743d976e5f6828d2b749452a71517a64d81b0e4109941c7423a"
 
 
 def _sha(p: Path) -> str:
