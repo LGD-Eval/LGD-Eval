@@ -5,6 +5,10 @@ name: Auto Eval (skills/lgd-eval)
 # 门禁语义：低于 90 分（A+ 线）直接让 job 变红，不会再「绿着但分数掉了」。
 
 on:
+  pull_request:
+    paths:
+      - 'skills/lgd-eval/**'
+      - '.github/workflows/auto-eval.yml'
   push:
     branches: [main]
     paths:
@@ -24,6 +28,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # CI-5（待办）：引擎当前引用浮动 @main；供应链加固应锁定到已核验 SHA/tag。
+      # 远端可访问核验前不填哈希。
       - id: lgd
         uses: LGD-Eval/lgd-gate@main
         with:

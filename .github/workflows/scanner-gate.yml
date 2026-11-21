@@ -15,24 +15,35 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
+      # CI-4（待办，未擅自改）：当前从浮动 main 拉取 scanner.py；供应链加固应锁定到
+      # 已核验的 40 位 commit SHA（或发布 tag）。远端 main 当前 SHA 本机无法联网核验，
+      # 待可访问远端后补 pin，不得凭记忆填写哈希。
       - name: fetch scanner v0.3.0
         run: curl -fsSL https://raw.githubusercontent.com/LGD-Eval/skill-audit/main/scanner.py -o scanner.py
       - name: scanner self-test (PASS gate / 自检门禁)
         run: python scanner.py --self-test
       - name: scan repository (health report / 全仓体检)
-        run: python scanner.py --target . --json > /tmp/scan.json || true
+        # CI-3 修复：不再 `|| true` 吞掉扫描器非零退出；扫描失败必须让 job 变红。
+        run: python scanner.py --target . --json > /tmp/scan.json
       - name: post scan summary / 体检摘要
         run: |
           python - <<'EOF'
-          import json
+          import json, sys
           try:
-            d = json.load(open('/tmp/scan.json'))
+              d = json.load(open('/tmp/scan.json'))
           except Exception:
-            print('scan report unavailable / 体检报告不可用'); raise SystemExit
+              # 报告不可用不得当作通过：退出 1（此前 SystemExit 为 0，静默放行）。
+              print('scan report unavailable / 体检报告不可用')
+              sys.exit(1)
           s = d.get('summary', {})
-          print('findings: P0=%s P1=%s P2=%s P3=%s (raw=%s)' % (s.get('P0',0), s.get('P1',0), s.get('P2',0), s.get('P3',0), len(d.get('findings', []))))
+          p0 = s.get('P0', 0)
+          print('findings: P0=%s P1=%s P2=%s P3=%s (raw=%s)' % (p0, s.get('P1',0), s.get('P2',0), s.get('P3',0), len(d.get('findings', []))))
           for f in d.get('findings', [])[:10]:
-            print('- [%s] %s @ %s:%s (%s)' % (f['level'], f['rule'], f['file'], f['line'], f['reason']))
+              print('- [%s] %s @ %s:%s (%s)' % (f['level'], f['rule'], f['file'], f['line'], f['reason']))
+          # P0（阻断级）命中即门禁失败；P1 仅摘要展示，阈值策略待对齐后再加。
+          if p0:
+              print('gate BLOCKED: %s P0 finding(s)' % p0)
+              sys.exit(1)
           EOF
       - name: upload scan artifact / 体检工件
         uses: actions/upload-artifact@v7
