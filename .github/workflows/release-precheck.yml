@@ -1,0 +1,53 @@
+name: release-precheck
+
+# CI-8 修复（本地准备，未推送）：sign-release 此前只对已发布资产签名，签名前无
+# 构建 / 测试 / 一致性校验。本工作流在打标签（发布前）先跑：
+#   1. pytest 全量单测；2. vendor 双侧逐字节 parity；3. 评测器自身基准；
+#   4. npm pack 产物内容一致性：包内 vendor/scripts 必须与源码逐字节一致。
+# 发布流程应要求本 precheck 绿后再创建 release；签名工作流不替代本门禁。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  precheck:
+    name: build/test/consistency pre-release gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pytest
+        run: python -m pip install --quiet pytest
+      - name: pytest
+        run: python -m pytest tests -q
+      - name: vendor parity
+        run: python tests/test_copy_parity.py
+      - name: self-accuracy benchmark
+        run: python skills/lgd-eval/scripts/accuracy_benchmark.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Pack tarball and verify contents
+        run: |
+          set -e
+          npm pack --silent
+          TGZ=$(ls lgd-eval-*.tgz | head -n1)
+          mkdir -p /tmp/pkg
+          tar -xzf "$TGZ" -C /tmp/pkg
+          # 包内 vendor/scripts 必须与源码 vendor/scripts 逐字节一致
+          diff -r vendor/scripts /tmp/pkg/package/vendor/scripts
+          # 入口与必备元数据必须在包内
+          test -f /tmp/pkg/package/bin/lgd-eval.js
+          test -f /tmp/pkg/package/package.json
+          test -f /tmp/pkg/package/README.md
+          test -f /tmp/pkg/package/LICENSE
+          echo "pack consistency OK: $TGZ"
