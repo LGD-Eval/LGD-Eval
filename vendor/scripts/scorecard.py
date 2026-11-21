@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from evaluate import evaluate_skill, build_fix_plan  # noqa: E402
+from authz import authorize  # noqa: E402
 
 DIMS = ["结构完整性", "目录结构", "文档质量", "安全", "生态兼容性"]
 MAXS = {"结构完整性": 25, "目录结构": 15, "文档质量": 20, "安全": 25, "生态兼容性": 15}
@@ -45,10 +46,21 @@ def tri_state(path, findings):
 def collect(path):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        score, grade, dims, findings, warnings = evaluate_skill(os.path.abspath(path))
+        score, grade, dims, findings, warnings, veto_info = evaluate_skill(os.path.abspath(path))
     plan = build_fix_plan(findings, warnings)
+    abspath = os.path.abspath(path)
+    evidence = {
+        "registered": os.path.exists(os.path.join(abspath, "README.md")) and
+                       os.path.exists(os.path.join(abspath, "CHANGELOG.md")),
+        "evidenced": os.path.isdir(os.path.join(abspath, "examples")) or
+                      os.path.isdir(os.path.join(abspath, "tests")),
+        "gated": not any(any(k in f for k in DANGER) for f in findings),
+    }
+    authz = authorize(score=score, grade=grade, veto_info=veto_info,
+                      evidence=evidence, verdict_present=score is not None)
     return {"score": score, "grade": grade, "dims": dims, "findings": findings,
-            "plan": plan, "tri": tri_state(os.path.abspath(path), findings)}
+            "plan": plan, "tri": tri_state(abspath, findings),
+            "evidence": evidence, "authorization": authz}
 
 
 def render(name, r, ts):
@@ -61,6 +73,12 @@ def render(name, r, ts):
     L.append("| 总分 | 等级 |")
     L.append("|---|---|")
     L.append("| **%d/100** | **%s** |\n" % (r["score"], r["grade"]))
+    az = r.get("authorization") or {"state": "UNKNOWN", "reason": "未提供授权结论。"}
+    L.append("## 授权结论（独立于分数）\n")
+    L.append("| 授权状态 | 判定依据 |")
+    L.append("|---|---|")
+    L.append("| **%s** | %s |\n" % (az["state"], az["reason"]))
+    L.append("> 分数是五维数值度量；授权是独立的放行/拒绝决定，二者分别得出，分数高不自动授予权限。\n")
     L.append("## 五维明细\n")
     L.append("| 维度 | 得分 | 满分 |")
     L.append("|---|---|---|")
