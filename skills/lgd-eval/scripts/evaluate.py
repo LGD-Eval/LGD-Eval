@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 LGD-Gate: Independent Skill Evaluation
 ========================================
@@ -69,6 +69,9 @@ def safety_cap(findings):
     if "R-SEC-12" in ids and (ids & {"R-SEC-14", "R-SEC-15"}):
         # 隐瞒用户 + 读取/外泄凭证，等于在明说「别让人知道我在偷」
         return VETO_CRITICAL, "critical", "隐瞒用户且涉及凭证读取 / 外泄"
+    # 未备案的豁免注释 = 企图关闭检查：与命中规则无关，独立封顶（任何 skill 都能只写一行注释）
+    if any("未备案的规则豁免注释" in f for f in findings):
+        return VETO_HIGH, "high", "未备案的规则豁免注释（试图关闭检查）"
     if ids & HIGH_IDS:
         return VETO_HIGH, "high", "命中凭证暴露 / 命令执行 / 越权指令"
 
@@ -80,7 +83,7 @@ def safety_cap(findings):
         for k in ("凭证文件读取后网络外发", "跨文件凭证外泄", "同文件污点"):
             if k in joined:
                 return VETO_CRITICAL, "critical", "命中文凭外泄类问题"
-        high_keys = ("硬编码凭证", "shell=True", "命令注入", "动态执行", "os.system",
+        high_keys = ("硬编码凭证", "shell=True", "命令注入", "动态执行", "os.system", "规则豁免注释",
                      "child_process.exec", "new Function")
         if any(k in joined for k in high_keys):
             return VETO_HIGH, "high", "命中凭证暴露 / 命令执行类问题"
@@ -104,6 +107,13 @@ def evaluate_skill(skill_path):
         print("=" * 70)
         sys.exit(1)
     
+    # 主体完整性前置：没有 SKILL.md 的对象不是"技能"，也就无所谓评分。
+    # 原来的行为是照常算分（空目录 67/C），等于用分数给一个不存在的对象背书。
+    if not os.path.exists(os.path.join(skill_path, "SKILL.md")):
+        print("  ❌ INVALID SUBJECT: 缺少 SKILL.md，不可评测（不给分）")
+        print("  result=INCONCLUSIVE  reason=invalid_subject")
+        sys.exit(2)
+
     print("=" * 70)
     print("  🏛️  LGD-Gate 独立第三方评测报告")
     print("=" * 70)
@@ -317,6 +327,22 @@ def evaluate_skill(skill_path):
     SENSITIVE_PATH_RE = re.compile(
         r"(\.ssh|\.aws|\.env\b|\.npmrc|\.git-credentials|id_rsa|credential|secret|token|password|凭证|私钥)",
         re.IGNORECASE)
+    # F1：单项凭证环境变量。原实现只认「整份 os.environ 打包外发」，
+    # 于是 os.environ.get("GITHUB_TOKEN") 读后 POST 是干净的——这是被实测证实的绕过。
+    CRED_ENV_KEY_RE = re.compile(
+        r"(TOKEN|API_KEY|APIKEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY|ACCESS_KEY"
+        r"|_KEY$|_SK$|GITHUB_|GITLAB_|OPENAI_|ANTHROPIC_|AWS_|AZURE_|HF_TOKEN|NPM_TOKEN)",
+        re.IGNORECASE)
+    # 常规服务端点：把凭证发给"它本来该去的地方"不算外泄，算需要人工确认的用法
+    BENIGN_ENDPOINT_RE = re.compile(
+        r"https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0"
+        r"|api\.openai\.com|api\.anthropic\.com|api\.github\.com|github\.com"
+        r"|pypi\.org|files\.pythonhosted\.org|huggingface\.co|api\.huggingface\.co"
+        r"|[a-z0-9.-]+\.googleapis\.com|[a-z0-9.-]+\.amazonaws\.com"
+        r"|[a-z0-9.-]+\.azure\.com|[a-z0-9.-]+\.openai\.com"
+        r"|[a-z0-9.-]+\.anthropic\.com|[a-z0-9.-]+\.cloudflare\.com)",
+        re.IGNORECASE)
+    URL_ANY_RE = re.compile(r"https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+", re.IGNORECASE)
     NET_SINK_MODULES = ("requests", "urllib", "httpx", "socket", "smtplib", "aiohttp")
     NET_SINK_METHODS = ("post", "put", "patch", "send", "sendall", "sendmail", "urlopen")
 
@@ -384,7 +410,7 @@ def evaluate_skill(skill_path):
             head, tail = (d.split(".")[0], d.split(".")[-1])
             if head in NET_SINK_MODULES and tail in NET_SINK_METHODS:
                 sinks.append((ln, d))
-            if d in ("open", "os.open") and n.args:
+            if d in ("open", "os.open", "os.getenv", "os.environ.get") and n.args:
                 # 真实代码几乎不会写 open("~/.aws/credentials")，
                 # 而是 open(os.path.expanduser("..."))——这里要把常量从调用里挖出来
                 def _const_str(node):
@@ -405,12 +431,49 @@ def evaluate_skill(skill_path):
                     return None
 
                 p = _const_str(n.args[0])
-                if p and SENSITIVE_PATH_RE.search(p):
+                if d in ("os.getenv", "os.environ.get"):
+                    # F1：单项凭证环境变量 = 污染源（不再当作"正常配置读取"放过）
+                    if p and CRED_ENV_KEY_RE.search(p):
+                        sources.append((ln, "读取凭证环境变量 %s" % p))
+                elif p and SENSITIVE_PATH_RE.search(p):
                     sources.append((ln, "读取敏感文件 %s" % p))
         return sources, sinks, imports
 
+    # F2：豁免备案。`.lgd/allowlist.json` 形如
+    # {"entries": [{"rule": "R-SEC-07", "file": "scripts/main.py",
+    #               "text_sha256": "<该行去空白后的 sha256>", "reason": "...", "reviewer": "..."}]}
+    # 判定三要素：规则号 + 文件 + 该行内容指纹；CRITICAL 类规则永不可豁免。
+    allow_entries, allow_note = [], ""
+    _allow_file = os.path.join(skill_path, ".lgd", "allowlist.json")
+    if os.path.exists(_allow_file):
+        try:
+            with open(_allow_file, "r", encoding="utf-8") as f:
+                _al = json.load(f)
+            allow_entries = [e for e in (_al.get("entries") or []) if isinstance(e, dict)]
+        except (OSError, ValueError):
+            allow_entries = []
+            print("  ⚠️ .lgd/allowlist.json 无法解析，按「无豁免」处理")
+
+    def _line_fp(s):
+        return hashlib.sha256(s.strip().encode("utf-8")).hexdigest()
+
+    def _allowed(rid, rel_path, line_text):
+        if rid in CRIT_IDS:
+            return False        # 凭证外泄类永不豁免
+        fp = _line_fp(line_text)
+        for e in allow_entries:
+            if (str(e.get("rule")) == rid and str(e.get("file")) == rel_path
+                    and str(e.get("text_sha256")) == fp and str(e.get("reason") or "").strip()):
+                return True
+        return False
+
+    unallowlisted_ignore = []
+    safe_suppressions = []
+    ignore_marks = []        # 全文预登记：(文件, 行号, 行文本)
+
     taint = {}
     env_bulk = {}
+    foreign_host = {}
     # 只认「整份」环境变量导出；单项 os.environ["KEY"] 是正常配置读取，不报。
     # 这是 Mitiga 类样本最爱的偷渡方式：把全部变量（含云厂商密钥）打包发走。
     ENV_BULK_RE = re.compile(
@@ -565,14 +628,32 @@ def evaluate_skill(skill_path):
     # 但 tests/fixtures 这类"检测夹具"是评测输入而非被测技能本体，排除，
     # 否则任何自带回归用例的技能都会被自己的用例拖垮分数。
     scan_targets = []
+    # F3：默认只跳过工具/缓存目录。原先连带跳过 samples / demo / benchmarks /
+    # corpus / fixtures，等于给攻击者一个"把载荷放进 samples/ 就隐身"的通道（已实测）。
     skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv",
-                 ".idea", ".vscode", "dist", "build", "site-packages",
-                 "fixtures", "testdata", "__snapshots__",
-                 # 故意制作的攻击样本目录：评测器自己的 benchmark/demo 素材，
-                 # 不计入被测技能本体，否则「自带样本」会把安全维度扣到 0
-                 "_demo", "demo", "samples", "benchmarks", "corpus"}
+                 ".idea", ".vscode", "dist", "build", "site-packages"}
+    # 唯一的例外通道：被测方用 .lgd/scope.json 声明"这是评测夹具"，并给出目录指纹。
+    declared_fixtures, declared_note = set(), ""
+    scope_file = os.path.join(skill_path, ".lgd", "scope.json")
+    if os.path.exists(scope_file):
+        try:
+            with open(scope_file, "r", encoding="utf-8") as f:
+                _scope = json.load(f)
+            _dirs = _scope.get("fixture_dirs") or []
+            if isinstance(_dirs, list):
+                declared_fixtures = {str(x).strip("/").replace(os.sep, "/") for x in _dirs}
+                if declared_fixtures:
+                    declared_note = ("声明跳过目录：%s（声明本身不构成安全性证据）"
+                                     % ", ".join(sorted(declared_fixtures)))
+                    print("  ⚠️ %s" % declared_note)
+                    warnings.append(declared_note)
+        except (OSError, ValueError):
+            print("  ⚠️ .lgd/scope.json 无法解析，按「全部扫描」处理")
     for dirpath, dirnames, filenames in os.walk(skill_path):
-        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        _rel_dir = os.path.relpath(dirpath, skill_path).replace(os.sep, "/")
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs
+                       and (("%s/%s" % (_rel_dir, d).strip("./") if _rel_dir != "." else d)
+                            not in declared_fixtures)]
         for fn in sorted(filenames):
             e = os.path.splitext(fn)[1].lower()
             # shell / PowerShell 也是技能里最常见的"便利安装"载体，
@@ -580,6 +661,11 @@ def evaluate_skill(skill_path):
             if e in (".py", ".js", ".ts", ".mjs", ".cjs",
                      ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd"):
                 scan_targets.append(os.path.join(dirpath, fn))
+
+    if not scan_targets:
+        print("  ⚠️ INCONCLUSIVE: 该对象没有任何可执行脚本，安全维度无从判定")
+        print("  result=INCONCLUSIVE  reason=no_executable_surface")
+        sys.exit(2)
 
     for script_path in scan_targets:
         script_file = os.path.relpath(script_path, skill_path).replace(os.sep, "/")
@@ -592,6 +678,12 @@ def evaluate_skill(skill_path):
         except (OSError, UnicodeDecodeError):
             continue
         code_lines = code.splitlines()
+        for _ln0, _txt0 in enumerate(code_lines, 1):
+            if ("skillgate: ignore" in _txt0) or ("lgd: ignore" in _txt0):
+                ignore_marks.append((script_file, _ln0, _txt0))
+        _urls = URL_ANY_RE.findall(code)
+        foreign_host[script_file] = bool(_urls) and any(
+            not BENIGN_ENDPOINT_RE.match(u) for u in _urls)
         if ext == ".py":
             taint[script_file] = _taint_info(code)
             # 注释里写到 dict(os.environ) 是在讲解规则，不算行为
@@ -610,8 +702,14 @@ def evaluate_skill(skill_path):
             for m in re.finditer(pat, target):
                 line_no = code[:m.start()].count("\n") + 1
                 hit_line = code_lines[line_no - 1] if line_no - 1 < len(code_lines) else ""
-                if "skillgate: ignore" in hit_line:
+                _ign = ("skillgate: ignore" in hit_line) or ("lgd: ignore" in hit_line)
+                if _ign and _allowed(rid, script_file, hit_line):
+                    safe_suppressions.append("%s:%d: %s（备案豁免）" % (script_file, line_no, rid))
                     continue
+                if _ign:
+                    # 注释不能关掉检查：未备案的豁免企图本身是一条发现
+                    if (script_file, line_no) not in unallowlisted_ignore:
+                        unallowlisted_ignore.append((script_file, line_no))
                 msg = "%s:%d: %s" % (script_file, line_no, rule_name)
                 if msg not in security_issues:
                     security_issues.append(msg)
@@ -621,8 +719,12 @@ def evaluate_skill(skill_path):
             continue
         for rid, rule_name, line_no, points in _ast_security(code):
             hit_line = code_lines[line_no - 1] if line_no - 1 < len(code_lines) else ""
-            if "skillgate: ignore" in hit_line:
+            _ign = ("skillgate: ignore" in hit_line) or ("lgd: ignore" in hit_line)
+            if _ign and _allowed(rid, script_file, hit_line):
+                safe_suppressions.append("%s:%d: %s（备案豁免）" % (script_file, line_no, rid))
                 continue
+            if _ign and (script_file, line_no) not in unallowlisted_ignore:
+                unallowlisted_ignore.append((script_file, line_no))
             # 同一文件同一行同一类别已由正则报过，不重复扣分
             kw = rule_name.split("（")[0]
             if any(x.startswith("%s:%d" % (script_file, line_no)) and kw in x
@@ -647,15 +749,26 @@ def evaluate_skill(skill_path):
             score -= 10
 
     # ---- 同文件污点：先读敏感文件，后网络外发 ----
+    # 分级（patch2）：目标是否为本该去的地方，决定"否决"还是"人工确认"
+    soft_caps = []
+    security_notes = []
     for fname_, (srcs, snks, _im) in sorted(taint.items()):
         if srcs and snks:
             l_src = min(l for l, _ in srcs)
             l_sink = min(l for l, _ in snks)
             if l_sink >= l_src:
-                msg = "%s:%d: 凭证文件读取后网络外发（同文件污点）" % (fname_, l_sink)
-                if msg not in security_issues:
-                    security_issues.append(msg)
-                    score -= 8
+                if foreign_host.get(fname_):
+                    msg = "%s:%d: 凭证文件读取后网络外发（同文件污点）" % (fname_, l_sink)
+                    if msg not in security_issues:
+                        security_issues.append(msg)
+                        score -= 8
+                else:
+                    msg = ("%s:%d: 读取凭证后外发到常规服务端点（正常用法，登记备查）"
+                           % (fname_, l_sink))
+                    if msg not in security_notes:
+                        security_notes.append(msg)
+                        warnings.append(msg)
+                        soft_caps.append("凭证读取后外发（端点常规）→ 最高 A")
 
     # ---- 跨文件污点：A 读凭证，B 引用 A 之后外发 ----
     for a, (a_src, _a_sink, _a_imp) in sorted(taint.items()):
@@ -680,12 +793,19 @@ def evaluate_skill(skill_path):
         except OSError:
             md_text = ""
         md_lines = md_text.splitlines()
+        for _ln1, _txt1 in enumerate(md_lines, 1):
+            if ("skillgate: ignore" in _txt1) or ("lgd: ignore" in _txt1):
+                ignore_marks.append(("SKILL.md", _ln1, _txt1))
         for rid, rule_name, pat, points in TEXT_SEC_RULES:
             for m in re.finditer(pat, md_text, re.IGNORECASE):
                 line_no = md_text[:m.start()].count("\n") + 1
                 hit_line = md_lines[line_no - 1] if line_no - 1 < len(md_lines) else ""
-                if "lgd: ignore" in hit_line or "skillgate: ignore" in hit_line:
+                _ign = ("lgd: ignore" in hit_line) or ("skillgate: ignore" in hit_line)
+                if _ign and _allowed(rid, "SKILL.md", hit_line):
+                    safe_suppressions.append("SKILL.md:%d: %s（备案豁免）" % (line_no, rid))
                     continue
+                if _ign and ("SKILL.md", line_no) not in unallowlisted_ignore:
+                    unallowlisted_ignore.append(("SKILL.md", line_no))
                 msg = "SKILL.md:%d: %s" % (line_no, rule_name)
                 if msg not in security_issues:
                     security_issues.append(msg)
@@ -721,6 +841,33 @@ def evaluate_skill(skill_path):
         if dep_count > 50:
             warnings.append("package.json 依赖 %d 个，建议收敛攻击面" % dep_count)
 
+    # G2 结算：逐行核对全文登记过的 ignore 注释是否有备案（不再依赖"该行命中规则"）
+    for _mf, _ml, _mt in ignore_marks:
+        _fp2 = _line_fp(_mt)
+        _ok = False
+        for _e in allow_entries:
+            if (str(_e.get("file")) == _mf and str(_e.get("text_sha256")) == _fp2
+                    and str(_e.get("reason") or "").strip()
+                    and str(_e.get("rule")) not in CRIT_IDS):
+                _ok = True
+                break
+        if _ok:
+            safe_suppressions.append("%s:%d: 备案豁免（整行）" % (_mf, _ml))
+        elif (_mf, _ml) not in unallowlisted_ignore:
+            unallowlisted_ignore.append((_mf, _ml))
+
+    # F2 结算：未备案的豁免注释 = 企图关闭检查，按高危处理（8 分 + 封顶）
+    for _f, _l in unallowlisted_ignore:
+        _msg = "%s:%d: 未备案的规则豁免注释（试图关闭检查）" % (_f, _l)
+        if _msg not in security_issues:
+            security_issues.append(_msg)
+            score -= 8
+    if safe_suppressions:
+        print("  ℹ️ 备案豁免 %d 条（已记录，不隐藏）：%s"
+              % (len(safe_suppressions), "; ".join(safe_suppressions[:6]))
+              + (" ..." if len(safe_suppressions) > 6 else ""))
+        # 有备案豁免时最高只能到 A，不能 A+
+        score = min(score, 89)
     if security_issues:
         for issue in security_issues:
             print(f"  ❌ {issue}")
@@ -775,6 +922,12 @@ def evaluate_skill(skill_path):
     veto_cap, veto_level, veto_reason = safety_cap(findings)
     if score > veto_cap:
         score = veto_cap
+    if soft_caps:
+        # 需要人工确认的使用方式：不允许 A+，最高 A
+        if score > VETO_MEDIUM:
+            score = VETO_MEDIUM
+        if not veto_level:
+            veto_level, veto_reason = "medium", "; ".join(sorted(set(soft_caps)))
 
     print("=" * 70)
     
