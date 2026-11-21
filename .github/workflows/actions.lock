@@ -8,20 +8,22 @@ workflows:
         - 'actions/setup-python@v7.1.0'
         - 'actions/upload-artifact@v7.0.2'
     '.github/workflows/auto-eval.yml':
+        - 'LGD-Eval/lgd-gate@833b5bb2f1fc3beb95a980fdfa6b80aa779cacae'
         - 'actions/checkout@v7.0.1'
-        - 'lgd-eval/lgd-gate@833b5bb2f1fc3beb95a980fdfa6b80aa779cacae'
     '.github/workflows/codeql.yml':
         - 'actions/checkout@v7.0.1'
-        - 'github/codeql-action@v4.39.4'
+        - 'github/codeql-action@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea'
     '.github/workflows/issue-triage.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/github-script@v9.0.0'
-    '.github/workflows/lgd-ci.yml': []
+    '.github/workflows/lgd-ci.yml':
+        - 'LGD-AI/lgd-ci@1d53939f8a0bdcb65086a6184d1bdb833dc3ffab'
     '.github/workflows/pr-review.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/github-script@v9.0.0'
     '.github/workflows/sbom.yml':
         - 'actions/checkout@v7.0.1'
+        - 'anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610'
         - 'anchore/sbom-action@v0.24.0'
     '.github/workflows/scanner-gate.yml':
         - 'actions/checkout@v7.0.1'
@@ -33,6 +35,16 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/github-script@v9.0.0'
 dependencies:
+    'LGD-AI/lgd-ci@1d53939f8a0bdcb65086a6184d1bdb833dc3ffab':
+        ref: '1d53939f8a0bdcb65086a6184d1bdb833dc3ffab'
+        commit: 'sha1-1d53939f8a0bdcb65086a6184d1bdb833dc3ffab'
+        owner_id: 354497758
+        repo_id: 1466320774
+    'LGD-Eval/lgd-gate@833b5bb2f1fc3beb95a980fdfa6b80aa779cacae':
+        ref: '833b5bb2f1fc3beb95a980fdfa6b80aa779cacae'
+        commit: 'sha1-833b5bb2f1fc3beb95a980fdfa6b80aa779cacae'
+        owner_id: 342496394
+        repo_id: 1436123021
     'actions/checkout@v7.0.1':
         ref: 'v7.0.1'
         commit: 'sha1-3d3c42e5aac5ba805825da76410c181273ba90b1'
@@ -53,28 +65,21 @@ dependencies:
         commit: 'sha1-cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         owner_id: 44036562
         repo_id: 192625955
+    'anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610':
+        ref: 'e22c389904149dbc22b58101806040fa8d37a610'
+        commit: 'sha1-e22c389904149dbc22b58101806040fa8d37a610'
+        owner_id: 16208487
+        repo_id: 399925381
     'anchore/sbom-action@v0.24.0':
         ref: 'v0.24.0'
         commit: 'sha1-e22c389904149dbc22b58101806040fa8d37a610'
         owner_id: 16208487
         repo_id: 399925381
-    'github/codeql-action@v3':
-        ref: 'v3'
-        commit: 'sha1-d2aacf54c2fbc910db8d7ec338fdb54ea48c692d'
-        owner_id: 9919
-        repo_id: 259445878
-    'github/codeql-action@v4.39.4':
-        ref: 'v4.39.4'
+    'github/codeql-action@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea':
+        ref: '1bd86f2fdb4b86187fa4059f16f31a3202acc9ea'
         commit: 'sha1-1bd86f2fdb4b86187fa4059f16f31a3202acc9ea'
         owner_id: 9919
         repo_id: 259445878
-    'lgd-eval/lgd-gate@833b5bb2f1fc3beb95a980fdfa6b80aa779cacae':
-        ref: 'main'
-        commit: 'sha1-833b5bb2f1fc3beb95a980fdfa6b80aa779cacae'
-        owner_id: 342496394
-        repo_id: 1436123021
-        uses:
-            - 'github/codeql-action@v3'
     'sigstore/cosign-installer@v3.9.1':
         ref: 'v3.9.1'
         commit: 'sha1-398d4b0eeef1380460a10c8013a76f728fb906ac'
