@@ -19,6 +19,8 @@ import subprocess
 import urllib.request
 from datetime import datetime, timezone
 
+import evidence_grade
+
 
 # ============================================================
 # 安全否决（safety veto）
@@ -1221,7 +1223,8 @@ def _git_commit(root):
     return None
 
 
-def build_attestation(root, score, grade, dims, evidence, veto=None, runtime=None):
+def build_attestation(root, score, grade, dims, evidence, veto=None, runtime=None,
+                      ev_grade=None):
     """生成可复现的评测证明。fingerprint 只取自被测内容，不含路径与时间。"""
     payload = {
         "object": {"score": score, "grade": grade},
@@ -1242,6 +1245,8 @@ def build_attestation(root, score, grade, dims, evidence, veto=None, runtime=Non
         "note": "tree_sha256 是整棵树 + 目录结构的哈希；改动任何一个字节都会变，可用于 pin（锁定'跑的就是你审的'）",
     }
     evaluated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # 证据等级默认保守记 E1（作者本机）；CI/第三方证据到位后由调用方上浮。
+    grade_info = ev_grade or evidence_grade.grade_evidence(author_local=True)
     failure_reason = ""
     if veto and veto.get("applied"):
         failure_reason = str(veto.get("reason", ""))
@@ -1259,6 +1264,7 @@ def build_attestation(root, score, grade, dims, evidence, veto=None, runtime=Non
         "safety_veto": veto if veto else {"applied": False},
         "runtime_sandbox": runtime or {"available": False, "backend": None,
                                         "note": "未探测隔离后端；运行时证据缺席，结论仅基于静态分析"},
+        "evidence_grade": grade_info,
         "failure_reason": failure_reason,
         "inputs": inputs,
         "evidence": {

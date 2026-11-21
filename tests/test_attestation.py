@@ -52,6 +52,10 @@ class AttestationFieldsTest(unittest.TestCase):
         # 运行时沙箱可用性必须显式记录，不得静默当作已隔离
         self.assertIn("runtime_sandbox", att)
         self.assertIn("available", att["runtime_sandbox"])
+        # 证据等级：本机默认 E1，不构成独立验证
+        self.assertIn("evidence_grade", att)
+        self.assertEqual(att["evidence_grade"]["level"], "E1")
+        self.assertFalse(att["evidence_grade"]["independent"])
         # 失败原因：无否决时为空
         self.assertEqual(att["failure_reason"], "")
         # 指纹与树哈希仍在
