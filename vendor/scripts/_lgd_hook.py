@@ -28,6 +28,19 @@ def _write(rec):
         with open(_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except OSError:
+        # 日志写不进去时退到 stderr，不能静默丢弃审计记录。
+        try:
+            import sys
+            sys.stderr.write("[lgd-audit] write failed: %s\n" % rec.get("event", "?"))
+        except Exception:
+            pass
+
+
+def _write_error(hook, exc):
+    """钩子自身异常必须留痕（hook_error），不得被当成'无行为'。"""
+    try:
+        _write({"event": "hook_error", "hook": hook, "err": repr(exc)[:160]})
+    except Exception:
         pass
 
 
@@ -41,8 +54,8 @@ def install():
             p = str(file)
             if mode and any(c in mode for c in "r+") and any(k in p.lower() for k in SENSITIVE_HINTS):
                 _write({"event": "read_sensitive", "path": p})
-        except Exception:
-            pass
+        except Exception as e:
+            _write_error("open", e)
         return handle
 
     builtins.open = open_hook
@@ -52,8 +65,8 @@ def install():
     def gai_hook(host, *a, **kw):
         try:
             _write({"event": "dns", "host": str(host), "len": len(str(host))})
-        except Exception:
-            pass
+        except Exception as e:
+            _write_error("dns", e)
         return orig_gai(host, *a, **kw)
 
     socket.getaddrinfo = gai_hook
@@ -63,8 +76,8 @@ def install():
     def connect_hook(self, addr):
         try:
             _write({"event": "connect", "addr": str(addr)})
-        except Exception:
-            pass
+        except Exception as e:
+            _write_error("connect", e)
         return orig_connect(self, addr)
 
     socket.socket.connect = connect_hook
@@ -76,8 +89,8 @@ def install():
             try:
                 _write({"event": "spawn",
                         "args": args if isinstance(args, str) else [str(x) for x in args]})
-            except Exception:
-                pass
+            except Exception as e:
+                _write_error("spawn", e)
             super().__init__(args, *a, **kw)
 
     subprocess.Popen = _Popen

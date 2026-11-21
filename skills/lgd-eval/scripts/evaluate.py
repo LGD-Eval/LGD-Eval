@@ -1367,7 +1367,12 @@ def _hook(event, args):
             if sz > 200:
                 _w({"ev": "exec_big", "size": sz})
     except Exception:
-        pass
+        # 钩子自身异常必须留痕，不得被当成"无行为"；二次写日志失败则静默兜底。
+        try:
+            _w({"ev": "hook_error", "event": event,
+                "err": repr(sys.exc_info()[1])[:160]})
+        except Exception:
+            pass
     finally:
         _BUSY[0] = False
 
