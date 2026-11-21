@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import authorization as az  # noqa: E402
+import authz as az  # noqa: E402
 
 NOW = datetime.datetime(2026, 11, 19, 9, 0, tzinfo=datetime.timezone.utc)
 DIGEST = "sha256:aaaa"
