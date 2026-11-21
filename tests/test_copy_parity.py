@@ -9,6 +9,10 @@
 `tests/known_divergence.txt`（一行一个路径，`#` 开头为注释）。
 本测试的作用是：**新增的任何一处分叉都会被立刻拦下**，已登记的分叉肉眼可见。
 
+镜像范围：仅两侧顶层 `*.py`（随技能包分发的运行时/评测脚本）。
+`scripts/gate/` 子目录是仓库级发布门禁工具（引用核查/外人实跑/看板/推送门禁），
+不随被评测技能包分发，按设计单侧存在，不纳入本双侧 parity 比对。
+
 跑法：python tests/test_copy_parity.py
 """
 import hashlib, pathlib, sys

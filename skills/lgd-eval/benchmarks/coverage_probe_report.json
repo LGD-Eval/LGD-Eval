@@ -1,0 +1,232 @@
+{
+  "probe_schema": "lgd-eval-coverage-probe/1.0",
+  "evidence_level": "E1",
+  "note": "合成夹具本机探针；非硬基准、非独立验证；不代表真实场景。",
+  "summary": {
+    "total": 8,
+    "security_surfaced": 5,
+    "not_security_surfaced": 3
+  },
+  "cases": [
+    {
+      "id": "probe-pickle-deserialize",
+      "rule_id": "R-SEC-06",
+      "pattern": "pickle.loads 反序列化",
+      "expect_risk": "high",
+      "actual": "GRANTED",
+      "score": 82,
+      "grade": "A",
+      "veto_level": "",
+      "findings_count": 4,
+      "findings": [
+        "缺少使用场景说明",
+        "缺少使用方法说明",
+        "缺少示例",
+        "scripts/probe.py:3: 不安全反序列化（pickle / marshal / yaml.load）"
+      ],
+      "security_findings": [
+        "scripts/probe.py:3: 不安全反序列化（pickle / marshal / yaml.load）"
+      ],
+      "security_surfaced": true,
+      "latency_ms": 8.44,
+      "infra_error": false,
+      "infra_error_note": ""
+    },
+    {
+      "id": "probe-marshal-deserialize",
+      "rule_id": "R-SEC-06",
+      "pattern": "marshal.loads 反序列化",
+      "expect_risk": "high",
+      "actual": "GRANTED",
+      "score": 82,
+      "grade": "A",
+      "veto_level": "",
+      "findings_count": 4,
+      "findings": [
+        "缺少使用场景说明",
+        "缺少使用方法说明",
+        "缺少示例",
+        "scripts/probe.py:3: 不安全反序列化（pickle / marshal / yaml.load）"
+      ],
+      "security_findings": [
+        "scripts/probe.py:3: 不安全反序列化（pickle / marshal / yaml.load）"
+      ],
+      "security_surfaced": true,
+      "latency_ms": 3.34,
+      "infra_error": false,
+      "infra_error_note": ""
+    },
+    {
+      "id": "probe-yaml-unsafe-load",
+      "rule_id": "R-SEC-06",
+      "pattern": "yaml.load 非安全加载",
+      "expect_risk": "medium",
+      "actual": "GRANTED",
+      "score": 82,
+      "grade": "A",
+      "veto_level": "",
+      "findings_count": 4,
+      "findings": [
+        "缺少使用场景说明",
+        "缺少使用方法说明",
+        "缺少示例",
+        "scripts/probe.py:3: 不安全反序列化（pickle / marshal / yaml.load）"
+      ],
+      "security_findings": [
+        "scripts/probe.py:3: 不安全反序列化（pickle / marshal / yaml.load）"
+      ],
+      "security_surfaced": true,
+      "latency_ms": 3.12,
+      "infra_error": false,
+      "infra_error_note": ""
+    },
+    {
+      "id": "probe-rmtree-delete",
+      "rule_id": "R-SEC-07",
+      "pattern": "shutil.rmtree 递归删除",
+      "expect_risk": "medium",
+      "actual": "GRANTED",
+      "score": 83,
+      "grade": "A",
+      "veto_level": "",
+      "findings_count": 4,
+      "findings": [
+        "缺少使用场景说明",
+        "缺少使用方法说明",
+        "缺少示例",
+        "scripts/probe.py:3: 危险递归删除（shutil.rmtree）"
+      ],
+      "security_findings": [
+        "scripts/probe.py:3: 危险递归删除（shutil.rmtree）"
+      ],
+      "security_surfaced": true,
+      "latency_ms": 3.35,
+      "infra_error": false,
+      "infra_error_note": ""
+    },
+    {
+      "id": "probe-conceal-review",
+      "rule_id": "R-SEC-12",
+      "pattern": "隐瞒审核步骤话术",
+      "expect_risk": "high",
+      "actual": "GRANTED",
+      "score": 87,
+      "grade": "A",
+      "veto_level": "",
+      "findings_count": 3,
+      "findings": [
+        "缺少使用场景说明",
+        "缺少使用方法说明",
+        "缺少示例"
+      ],
+      "security_findings": [],
+      "security_surfaced": false,
+      "latency_ms": 2.85,
+      "infra_error": false,
+      "infra_error_note": ""
+    },
+    {
+      "id": "probe-bypass-review",
+      "rule_id": "R-SEC-13",
+      "pattern": "绕过审核话术",
+      "expect_risk": "high",
+      "actual": "GRANTED",
+      "score": 87,
+      "grade": "A",
+      "veto_level": "",
+      "findings_count": 3,
+      "findings": [
+        "缺少使用场景说明",
+        "缺少使用方法说明",
+        "缺少示例"
+      ],
+      "security_findings": [],
+      "security_surfaced": false,
+      "latency_ms": 2.82,
+      "infra_error": false,
+      "infra_error_note": ""
+    },
+    {
+      "id": "probe-proxy-base-url",
+      "rule_id": "R-SEC-20",
+      "pattern": "代理/基址改写到外部主机",
+      "expect_risk": "high",
+      "actual": "GRANTED",
+      "score": 83,
+      "grade": "A",
+      "veto_level": "",
+      "findings_count": 4,
+      "findings": [
+        "缺少使用场景说明",
+        "缺少使用方法说明",
+        "缺少示例",
+        "scripts/probe.py:1: 代理被指向外部主机（流量可能被截获）"
+      ],
+      "security_findings": [
+        "scripts/probe.py:1: 代理被指向外部主机（流量可能被截获）"
+      ],
+      "security_surfaced": true,
+      "latency_ms": 3.06,
+      "infra_error": false,
+      "infra_error_note": ""
+    },
+    {
+      "id": "probe-js-delete",
+      "rule_id": "JS-DELETE",
+      "pattern": "Node 文件删除类 API",
+      "expect_risk": "medium",
+      "actual": "GRANTED",
+      "score": 87,
+      "grade": "A",
+      "veto_level": "",
+      "findings_count": 3,
+      "findings": [
+        "缺少使用场景说明",
+        "缺少使用方法说明",
+        "缺少示例"
+      ],
+      "security_findings": [],
+      "security_surfaced": false,
+      "latency_ms": 2.99,
+      "infra_error": false,
+      "infra_error_note": ""
+    }
+  ],
+  "methodology_gaps": [
+    {
+      "gap": "pass^k 重复运行稳定性",
+      "status": "NOT_IMPLEMENTED",
+      "note": "每例单次运行，未重复 k 次统计稳定通过率；合成夹具结果不代表可复现稳定性。"
+    },
+    {
+      "gap": "成本/资源留痕",
+      "status": "NOT_IMPLEMENTED",
+      "note": "未采集 token、CPU、内存、耗时成本；现有 latency 仅墙钟毫秒。"
+    },
+    {
+      "gap": "Assurance Gap 分析",
+      "status": "NOT_IMPLEMENTED",
+      "note": "未对照宣称能力与已验证证据计算保证差距；E1 自测不等于 E3/E4 独立验证。"
+    },
+    {
+      "gap": "良性样本量过小",
+      "status": "PARTIAL",
+      "note": "硬基准良性对照 n=5，FPR 95% CI 上界 0.4345；小样本过拒率不可外推。"
+    },
+    {
+      "gap": "样本均为合成夹具",
+      "status": "PARTIAL",
+      "note": "无真实世界技能/工件样本；F1=1.0 仅限当前夹具集。"
+    },
+    {
+      "gap": "R-RT 运行时规则",
+      "status": "NOT_EVALUATED_STATIC",
+      "note": "运行时 DNS/连接/子进程观测需沙箱；本机无 docker/unshare，静态基准无法覆盖。"
+    },
+    {
+      "gap": "Linux 容器隔离实测",
+      "status": "NOT_VERIFIED",
+      "note": "网络/文件/进程隔离阻断效果须在 Linux CI 容器实测；本机仅 Python 层观测钩子。"
+    }
+  ]
+}
