@@ -65,6 +65,24 @@ class AccuracyBenchmark(unittest.TestCase):
         self.assertEqual(r["actual"], authz.NOT_GRANTED)
         self.assertEqual(r["veto_level"], "critical")
 
+    def test_eval_exec_and_os_system_blocked_high(self):
+        for cid in ("eval-exec-high", "os-system-high"):
+            r = self.by_id[cid]
+            self.assertEqual(r["actual"], authz.NOT_GRANTED, cid)
+            self.assertEqual(r["veto_level"], "high", cid)
+
+    def test_environ_bulk_blocked_critical(self):
+        r = self.by_id["environ-bulk-critical"]
+        self.assertEqual(r["actual"], authz.NOT_GRANTED)
+        self.assertEqual(r["veto_level"], "critical")
+
+    def test_base_url_blocked_by_score_threshold(self):
+        # R-SEC-19 当前未封顶；证据齐备、无否决，但分数低于阈值仍拒绝。
+        r = self.by_id["base-url-below-threshold"]
+        self.assertEqual(r["actual"], authz.NOT_GRANTED)
+        self.assertEqual(r["veto_level"], "")
+        self.assertLess(r["score"], authz.DEFAULT_GRANT_THRESHOLD)
+
 
 if __name__ == "__main__":
     unittest.main()
