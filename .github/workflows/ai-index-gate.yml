@@ -25,6 +25,7 @@ jobs:
           python scanner.py --self-test
           python gate.py --regression
           python demo.py
+          python holdout_all.py
       - name: 门禁 — 仓库文档不得留 P0（降噪与裁决器必须成对）
         run: |
           set +e
