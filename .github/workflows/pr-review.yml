@@ -32,7 +32,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch'
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@v7.0.1  # v7
         with:
           fetch-depth: 0
 
@@ -58,7 +58,7 @@ jobs:
         continue-on-error: true
         env:
           AUDIT_JSON: ${{ steps.audit.outputs.result }}
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
+        uses: actions/github-script@v9.0.0  # v9
         with:
           script: |
             let data = { errors: [], issues: [] };
@@ -91,7 +91,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        uses: actions/checkout@v7.0.1  # v7
 
       - name: Run audit self-test
         run: python3 .github/scripts/pr-audit.py --self-test
