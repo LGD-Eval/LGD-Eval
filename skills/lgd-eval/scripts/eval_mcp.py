@@ -29,6 +29,37 @@ DANGER = [
 ]
 
 
+def _strict_pkg(path):
+    """严格解析 package.json：畸形/重复键留 note，不静默回退空对象。
+
+    返回 ``(obj, note)``；note 为空串表示可解析且无重复键。
+    """
+    try:
+        raw = open(path, "r", encoding="utf-8").read()
+    except OSError as e:
+        return {}, "package.json 读取失败（%s）" % str(e)[:60]
+    dups = []
+
+    def _hook(pairs):
+        seen, out = set(), {}
+        for k, v in pairs:
+            if k in seen:
+                dups.append(k)
+            seen.add(k)
+            out[k] = v
+        return out
+
+    try:
+        obj = json.loads(raw, object_pairs_hook=_hook)
+    except ValueError as e:
+        return {}, "package.json 畸形，解析失败（%s）；钩子/依赖未审计" % str(e)[:60]
+    if not isinstance(obj, dict):
+        return {}, "package.json 顶层非对象"
+    if dups:
+        return obj, "package.json 重复成员键 %s（last-wins）" % ",".join(sorted(set(dups)))
+    return obj, ""
+
+
 def read_all(root):
     """拼接源码文本（限 .js/.ts/.py/.json/.md）。"""
     buf = []
@@ -95,10 +126,9 @@ def score_runnable(root):
     notes = []
     pkg = os.path.join(root, "package.json")
     if os.path.isfile(pkg):
-        try:
-            j = json.load(open(pkg, "r", encoding="utf-8"))
-        except Exception:
-            j = {}
+        j, pkg_note = _strict_pkg(pkg)
+        if pkg_note:
+            notes.append(pkg_note)
         if j.get("name"):
             score += 4
         if j.get("version"):
@@ -152,10 +182,9 @@ def score_eco(root):
     pkg = os.path.join(root, "package.json")
     j = {}
     if os.path.isfile(pkg):
-        try:
-            j = json.load(open(pkg, "r", encoding="utf-8"))
-        except Exception:
-            j = {}
+        j, pkg_note = _strict_pkg(pkg)
+        if pkg_note:
+            notes.append(pkg_note)
     if j.get("license"):
         score += 5
         notes.append("有 license")

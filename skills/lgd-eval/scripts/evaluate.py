@@ -43,6 +43,47 @@ ENGINE_VERSION = "1.1.0"
 RULE_VERSION = "3.1.3"   # 与 skillgate.rule_version 对齐；规则改动须升版本
 
 
+def _strict_load_json(path):
+    """严格解析清单 JSON，fail-closed 留痕。
+
+    返回 ``(obj, issues)``：
+      * 畸形 / 顶层非对象 → 返回 ``{}``，issues 记录解析失败，安装钩子与依赖不得被当作已审计；
+      * 重复成员键 → 按 last-wins 取解析结果，但 issues 列出重复键（首个成员被丢弃，未被审计）。
+
+    与 uibc-core verify.py S11 口径一致：解析失败 must-fail 留痕，不静默回退空对象。
+    本函数只负责暴露问题，不自行改判授权级别。
+    """
+    issues = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = f.read()
+    except OSError as e:
+        return {}, ["清单 JSON 读取失败（%s）；安装钩子/依赖未被审计" % str(e)[:60]]
+
+    dups = []
+
+    def _hook(pairs):
+        seen = set()
+        out = {}
+        for k, v in pairs:
+            if k in seen:
+                dups.append(k)
+            seen.add(k)
+            out[k] = v
+        return out
+
+    try:
+        obj = json.loads(raw, object_pairs_hook=_hook)
+    except ValueError as e:
+        return {}, ["清单 JSON 畸形，解析失败（%s）；安装钩子/依赖未被审计" % str(e)[:60]]
+    if not isinstance(obj, dict):
+        return {}, ["清单 JSON 顶层非对象；未被审计"]
+    if dups:
+        issues.append("清单 JSON 重复成员键 %s（last-wins，首个成员未被审计）"
+                      % ",".join(sorted(set(dups))))
+    return obj, issues
+
+
 def _rule_ids_for(findings):
     """把文本 finding 映射成规则号。与 build_evidence 用同一张表、同一匹配顺序，
     保证「封顶判据」和「报告里的规则号」永远说的是同一件事。"""
@@ -700,11 +741,11 @@ def evaluate_skill(skill_path):
     # ---- Node 包脚本审计：postinstall 是 npm 供应链投毒最常见的落点 ----
     pkg_json = os.path.join(skill_path, "package.json")
     if os.path.isfile(pkg_json):
-        try:
-            with open(pkg_json, "r", encoding="utf-8") as f:
-                pkg = json.load(f)
-        except (OSError, ValueError):
-            pkg = {}
+        pkg, pkg_json_issues = _strict_load_json(pkg_json)
+        for iss in pkg_json_issues:
+            if iss not in security_issues:
+                security_issues.append(iss)
+            warnings.append(iss)
         pkg_scripts = pkg.get("scripts") or {}
         for hook in ("preinstall", "install", "postinstall", "prepare"):
             body = pkg_scripts.get(hook)
