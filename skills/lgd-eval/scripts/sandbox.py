@@ -27,12 +27,22 @@ BOOT = (
     "runpy.run_path(sys.argv[0], run_name='__main__')\n"
 )
 
-# 代理会把沙箱内所有流量改道，审计目标就不再是程序真实意图
-PROXY_VARS = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
-              "all_proxy", "ALL_PROXY", "ftp_proxy", "FTP_PROXY", "no_proxy", "NO_PROXY")
+# 最小允许环境变量白名单：沙箱子进程只拿到运行 Python 所需的最小变量，
+# 不继承父进程的令牌 / 密钥 / 凭证类环境（如 GH_TOKEN、OPENAI_API_KEY、AWS_* 等）。
+# 代理变量也不在白名单内，天然被剔除，避免流量被改道后审计失真。
+ENV_ALLOWLIST = frozenset({
+    "PATH", "PYTHONPATH", "LANG", "LC_ALL", "PYTHONIOENCODING",
+    "TEMP", "TMP", "TMPDIR", "SYSTEMROOT", "SYSTEMDRIVE", "PATHEXT",
+    "HOME", "USERPROFILE",
+})
 
 # 保留域名：永远解析不到真实主机，样本不会真的把数据送出去
 SAFE_SUFFIX = (".example.com", ".example.org", ".test", ".invalid", "localhost")
+
+
+def _clean_env():
+    """按最小白名单构造子进程环境；白名单外的变量一律不传入。"""
+    return {k: os.environ[k] for k in ENV_ALLOWLIST if k in os.environ}
 
 
 def _pick_entry(path):
@@ -78,7 +88,7 @@ def run(target, timeout=10):
     if not entry:
         return {"error": "没有找到可执行的 .py 入口"}
     log = tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl").name
-    env = {k: v for k, v in os.environ.items() if k not in PROXY_VARS}
+    env = _clean_env()
     env["LGD_AUDIT_LOG"] = log
     env["PYTHONPATH"] = HERE + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     try:

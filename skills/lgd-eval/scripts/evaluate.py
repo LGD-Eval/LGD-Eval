@@ -1351,18 +1351,29 @@ def sandbox_backend():
     return None
 
 
+# 最小允许环境变量白名单：沙箱子进程不继承父进程令牌 / 密钥 / 凭证类环境。
+ENV_ALLOWLIST = frozenset({
+    "PATH", "PYTHONPATH", "LANG", "LC_ALL", "PYTHONIOENCODING",
+    "TEMP", "TMP", "TMPDIR", "SYSTEMROOT", "SYSTEMDRIVE", "PATHEXT",
+    "HOME", "USERPROFILE",
+})
+
+
+def _clean_env():
+    """按最小白名单构造子进程环境；白名单外的变量一律不传入。"""
+    return {k: os.environ[k] for k in ENV_ALLOWLIST if k in os.environ}
+
+
 def _sandbox_one(backend, tree, script, timeout):
     rel = os.path.relpath(script, tree).replace("\\", "/")
     logp = os.path.join(tree, "_audit_%s.jsonl"
                         % hashlib.sha256(rel.encode()).hexdigest()[:8])
     if os.path.exists(logp):
         os.remove(logp)
-    env = dict(os.environ)
+    env = _clean_env()
     env["LGD_AUDIT_LOG"] = logp
     env["HOME"] = tree
-    for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
-              "all_proxy", "ALL_PROXY", "ftp_proxy", "FTP_PROXY", "PYTHONHOME"):
-        env.pop(k, None)
+    env.pop("PYTHONHOME", None)
     if backend == "unshare":
         env["PYTHONPATH"] = tree
         cmd = ["unshare", "--user", "--map-root-user", "--net", "--pid", "--fork",
