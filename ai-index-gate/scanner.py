@@ -197,8 +197,12 @@ RULES.update(_pack("obfus", "LLM01/A10", {
         re.compile(r"\?\?\?\?\?|\ufffd|锟斤拷"),
     ], "level": "P1", "reason": "乱码/编码损坏：可能掩盖投毒内容或破坏可信度"},
     "unicode_confusion": {"pattern": [
-        re.compile(r"(?i)([a-z]*[ɡаеос][a-z]*)"),
-    ], "level": "P2", "reason": "Unicode 同形字混淆（视觉近似 ASCII 异体字母）"},
+        # 2026-11-21 精度修复：原式 `[a-z]*[ɡаеос][a-z]*` 会把纯西里尔词里的单个字母
+        # （"Русский" 的 с）单独算成一次命中，导致多语言 README 的语言切换徽章被判 P2。
+        # 同形字攻击的实质是**同一 token 内 ASCII 与同形字母混写**（pаypal / іgnоrе），
+        # 因此要求命中串两侧至少一侧含 ASCII 字母；纯外语词不再命中。
+        re.compile(r"(?i)\b(?=[\w]*[ɡаеос])(?=[\w]*[a-z])[\w]+\b"),
+    ], "level": "P2", "reason": "Unicode 同形字混淆（视觉近似 ASCII 异体字母，同 token 混写）"},
     "html_entity_instr": {"pattern": [
         re.compile(r"(?i)(&(?:#x?[0-9a-fA-F]+|amp|lt|gt|quot|#\d+);\s*(?:ignore|instruction|follow|disregard|prompt))"),
     ], "level": "P2", "reason": "HTML 实体编码指令（混淆绕过）"},

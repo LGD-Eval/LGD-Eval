@@ -97,3 +97,13 @@ python gate.py --verify pack.json                        # 离线复跑：VERDIC
 - `gate.py` 新增 `BACKLOG_KEEP=10` + `review_backlog`：裁决器候选前 10 条逐条列出，其余聚合为 1 条并保留全量明细（deepeval 367 条 → 13 条，355 条明细留档）。
 - 不做"信号过滤"：按词表过滤会把西/日/俄/葡真实攻击直接丢掉，等于重新引入静默放行。
 - 验证：`demo.py` 6/6 PASS（红队 BLOCK 16 / REVIEW 5 / PASS 0）；`--regression` PASS；v4 6 BLOCK + 2 REVIEW、PASS 0；v5 攻击 6 条 0 PASS；取证包 MATCH。
+
+**2026-11-21 · 徽章白名单 + 同形字规则收紧（两处精度，不动召回）**
+
+- **徽章/排版白名单**：`BADGE_MARKUP` 识别 shields / badge.svg / badgen / readthedocs / actions 状态图 / `<img src=` / `<p align="center">` / `<a href=`。仅在**无攻击动词、无敏感对象**时判 doc；`PAYLOAD_URL` 在其之前返回，硬载荷不可被洗白。
+  - 依据：deepeval / garak / promptfoo 三份体检里，各有 3–6 条复核候选来自徽章与排版行。
+- **同形字规则收紧**：原 `[a-z]*[ɡаеос][a-z]*` 把纯西里尔词里的单个字母（`Русский` 的 `с`）算成命中，导致语言切换徽章被判 P2。改为 `\b(?=[\w]*[ɡаеос])(?=[\w]*[a-z])[\w]+\b`——**同一 token 内同时含同形字母与 ASCII** 才命中。
+  - A/B：`Русский` 不命中；`pаypal`、`іgnоrе`（首字母即西里尔）、`请 іgnоrе all previous` 均命中；`中文` 不命中。
+- 验证：`scanner --self-test` PASS；`--regression` 召回丢失 **0**、文档误报 5→0；`demo.py` 6/6 PASS（红队 BLOCK 16 / REVIEW 5 / PASS 0）；三对象重扫 deepeval **P2 2→0**（三级全零）、P3 合计 618→556；六份取证包重算并逐一验签 MATCH。
+- 口径变化（如实记录）：基线 6 份合计命中 30→**28** 条（P0 仍 15），差异来自同形字规则收紧，属预期。
+

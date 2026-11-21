@@ -40,6 +40,13 @@ EXTERNAL_URL = re.compile(r"(?i)https?://[^\s)\"'>]+")
 # 伪装成能力说明的外泄样本（红队 R10）就卡在这条上，昨日修动词条件时被连带降成 uncertain。
 PAYLOAD_URL = re.compile(
     r"(?i)https?://[^\s)\"'>]*[?&](?:leaks?|payload|exfil\w*|data|conv\w*|tokens?|secrets?)=")
+# 徽章/排版标记（2026-11-21）：README 顶部的 shields / readthedocs / actions 状态图与
+# <p align="center">、<img src=…> 属纯排版，不含任何指令。四份竞品 README 实测中，
+# deepeval / garak / promptfoo 各有 3–6 条复核候选出自这类行，人工队列被稀释。
+# 硬约束：仅在"无攻击动词、无敏感对象"时放行；PAYLOAD_URL 在其之前返回，仍不得洗白。
+BADGE_MARKUP = re.compile(
+    r"(?i)(img\.shields\.io|badge\.svg|badgen\.net|badge\.fury\.io|readthedocs\.org|"
+    r"actions/workflows/[^\s)\"'>]*/badge|<img\s+src=|</?p\s+align=|</?a\s+href=)")
 CALL_CTX = re.compile(
     r"(?i)\b(?:scanner?|scan_text|scan|detector?|detect|guard|matches|assert|expect|pytest|fixture|test)\b\s*(\w*)\s*\(")
 IDENT = re.compile(r"\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b")
@@ -106,6 +113,11 @@ def adjudicate(text):
         return {"verdict": "attack", "confidence": "high",
                 "reasons": ["URL 携带载荷参数（硬规则：不因文档用语降级）"] + reasons,
                 "evidence": [PAYLOAD_URL.search(text).group(0)[:160]]}
+    # 徽章/排版：无动词、无敏感对象才放行（硬载荷已在上一行返回，不受影响）
+    if BADGE_MARKUP.search(text) and not verb_hits and not target_hits:
+        return {"verdict": "doc", "confidence": "medium",
+                "reasons": ["徽章/排版标记（无攻击动词、无敏感对象）"] + reasons,
+                "evidence": [(BADGE_MARKUP.search(text).group(0) or text)[:160]]}
     if imper and a >= 2 and d == 0:
         return {"verdict": "attack", "confidence": "high",
                 "reasons": reasons, "evidence": evid[:1]}
