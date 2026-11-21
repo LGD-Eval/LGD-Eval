@@ -26,7 +26,8 @@ import io
 import os
 import shutil
 import tempfile
-from typing import Any, Dict, List
+import time
+from typing import Any, Dict, List, Optional
 
 import authz
 from evaluate import evaluate_skill
@@ -246,12 +247,28 @@ CASES: List[Dict[str, Any]] = [
 
 
 def run_case(case: Dict[str, Any], root: str) -> Dict[str, Any]:
-    """在 root 下生成样本并跑评测，返回评测器实际结论。"""
+    """在 root 下生成样本并跑评测，返回评测器实际结论。
+
+    可观测性留痕（不改变判定口径）：
+      * ``latency_ms``：本例外墙到评测返回的墙钟耗时；
+      * ``infra_error``：评测器自身抛异常（环境/基础设施错误，而非被评测对象结论）；
+        异常按 fail-closed 记 UNKNOWN，不计为通过，``infra_error_note`` 留异常类型与摘要。
+    """
     case_dir = os.path.join(root, case["id"])
     case["build"](case_dir)
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        score, grade, dims, findings, warnings, veto = evaluate_skill(case_dir)
+    t0 = time.perf_counter()
+    infra_error = False
+    infra_error_note = ""
+    score: Optional[Any] = None
+    grade = findings = warnings = veto = None
+    try:
+        with contextlib.redirect_stdout(buf):
+            score, grade, dims, findings, warnings, veto = evaluate_skill(case_dir)
+    except Exception as e:  # noqa: BLE001 —— 基准层捕获基础设施异常并留痕，不上抛吞掉
+        infra_error = True
+        infra_error_note = "%s: %s" % (type(e).__name__, str(e)[:120])
+    latency_ms = round((time.perf_counter() - t0) * 1000, 2)
     evidence = {
         "registered": os.path.exists(os.path.join(case_dir, "README.md")) and
                        os.path.exists(os.path.join(case_dir, "CHANGELOG.md")),
@@ -266,9 +283,12 @@ def run_case(case: Dict[str, Any], root: str) -> Dict[str, Any]:
         "actual": decision["state"],
         "score": score,
         "grade": grade,
-        "veto_level": (veto or {}).get("level", ""),
+        "veto_level": (veto or {}).get("level", "") if veto else "",
         "findings": findings,
-        "match": decision["state"] == case["expect"],
+        "match": decision["state"] == case["expect"] and not infra_error,
+        "latency_ms": latency_ms,
+        "infra_error": infra_error,
+        "infra_error_note": infra_error_note,
     }
 
 
@@ -318,6 +338,13 @@ def summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     matrix = {"TP": tp, "FP": fp, "FN": fn, "TN": tn, "excluded": excluded}
     prf = _prf(tp, fp, fn)
+    infra_ids = [r["id"] for r in rows if r.get("infra_error")]
+    lats = [r["latency_ms"] for r in rows if r.get("latency_ms") is not None]
+    latency = {
+        "mean": round(sum(lats) / len(lats), 2) if lats else None,
+        "max": round(max(lats), 2) if lats else None,
+        "count": len(lats),
+    }
     return {
         "total": total,
         "matched": matched,
@@ -325,6 +352,9 @@ def summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "all_match": matched == total,
         "confusion": matrix,
         **prf,
+        "infra_errors": len(infra_ids),
+        "infra_error_ids": infra_ids,
+        "latency_ms": latency,
         "rows": rows,
     }
 
@@ -341,7 +371,11 @@ def main() -> int:
     print("confusion: TP=%d FP=%d FN=%d TN=%d excluded=%d" %
           (m["TP"], m["FP"], m["FN"], m["TN"], len(m["excluded"])))
     print("precision=%s recall=%s f1=%s" % (s["precision"], s["recall"], s["f1"]))
-    return 0 if s["all_match"] else 1
+    lat = s["latency_ms"]
+    print("latency mean=%sms max=%sms (n=%d)" % (lat["mean"], lat["max"], lat["count"]))
+    if s["infra_errors"]:
+        print("infra errors: %s" % ", ".join(s["infra_error_ids"]))
+    return 0 if s["all_match"] and not s["infra_errors"] else 1
 
 
 if __name__ == "__main__":

@@ -114,6 +114,18 @@ class AccuracyBenchmark(unittest.TestCase):
         self.assertEqual(r["actual"], authz.NOT_GRANTED)
         self.assertEqual(r["veto_level"], "high")
 
+    def test_latency_and_infra_error_observability(self):
+        # 每例都留墙钟耗时；干净基线无基础设施异常；汇总给出 mean/max。
+        for r in self.rows:
+            self.assertIsInstance(r["latency_ms"], float)
+            self.assertGreaterEqual(r["latency_ms"], 0)
+            self.assertFalse(r["infra_error"], r["id"])
+        self.assertEqual(self.summary["infra_errors"], 0)
+        self.assertEqual(self.summary["infra_error_ids"], [])
+        self.assertIsNotNone(self.summary["latency_ms"]["mean"])
+        self.assertIsNotNone(self.summary["latency_ms"]["max"])
+        self.assertEqual(self.summary["latency_ms"]["count"], len(self.rows))
+
 
 if __name__ == "__main__":
     unittest.main()
