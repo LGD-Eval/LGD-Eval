@@ -100,6 +100,11 @@ class AccuracyBenchmark(unittest.TestCase):
             self.assertEqual(r["actual"], authz.NOT_GRANTED, cid)
             self.assertEqual(r["veto_level"], "high", cid)
 
+    def test_rebuild_payload_blocked_high(self):
+        r = self.by_id["rebuild-payload-high"]
+        self.assertEqual(r["actual"], authz.NOT_GRANTED)
+        self.assertEqual(r["veto_level"], "high")
+
 
 if __name__ == "__main__":
     unittest.main()
