@@ -114,6 +114,31 @@ class AccuracyBenchmark(unittest.TestCase):
         self.assertEqual(r["actual"], authz.NOT_GRANTED)
         self.assertEqual(r["veto_level"], "high")
 
+    def test_infra_error_is_fail_closed(self):
+        # 评测器自身抛异常：必须记 infra_error、UNKNOWN、不计通过，并留异常摘要。
+        import shutil
+        import tempfile
+        orig = accuracy_benchmark.evaluate_skill
+
+        def _boom(_dir):
+            raise RuntimeError("simulated infra failure")
+
+        case = {"id": "infra-boom", "build": lambda _d: None, "expect": authz.GRANTED}
+        tmp = tempfile.mkdtemp()
+        try:
+            accuracy_benchmark.evaluate_skill = _boom
+            try:
+                r = accuracy_benchmark.run_case(case, tmp)
+            finally:
+                accuracy_benchmark.evaluate_skill = orig
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertTrue(r["infra_error"])
+        self.assertEqual(r["actual"], authz.UNKNOWN)
+        self.assertFalse(r["match"])
+        self.assertIn("RuntimeError", r["infra_error_note"])
+        self.assertIsInstance(r["latency_ms"], float)
+
     def test_latency_and_infra_error_observability(self):
         # 每例都留墙钟耗时；干净基线无基础设施异常；汇总给出 mean/max。
         for r in self.rows:
