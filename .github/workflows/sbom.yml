@@ -23,4 +23,4 @@ jobs:
           artifact-name: sbom.cyclonedx.json
       - name: Attach to release
         if: github.event_name == 'release'
-        uses: anchore/sbom-action/publish-sbom@e22c389904149dbc22b58101806040fa8d37a610  # v0
+        uses: anchore/sbom-action/publish-sbom@v0.24.0  # v0

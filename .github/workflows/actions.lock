@@ -7,16 +7,14 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-python@v7.1.0'
         - 'actions/upload-artifact@v7.0.2'
-    '.github/workflows/auto-eval.yml':
-        - 'actions/checkout@v7.0.1'
-        - 'lgd-eval/lgd-gate@833b5bb2f1fc3beb95a980fdfa6b80aa779cacae'
     '.github/workflows/codeql.yml':
         - 'actions/checkout@v7.0.1'
         - 'github/codeql-action@v4.39.4'
     '.github/workflows/issue-triage.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/github-script@v9.0.0'
-    '.github/workflows/lgd-ci.yml': []
+    '.github/workflows/lgd-ci.yml':
+        []
     '.github/workflows/pr-review.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/github-script@v9.0.0'
@@ -58,23 +56,11 @@ dependencies:
         commit: 'sha1-e22c389904149dbc22b58101806040fa8d37a610'
         owner_id: 16208487
         repo_id: 399925381
-    'github/codeql-action@v3':
-        ref: 'v3'
-        commit: 'sha1-d2aacf54c2fbc910db8d7ec338fdb54ea48c692d'
-        owner_id: 9919
-        repo_id: 259445878
     'github/codeql-action@v4.39.4':
         ref: 'v4.39.4'
         commit: 'sha1-1bd86f2fdb4b86187fa4059f16f31a3202acc9ea'
         owner_id: 9919
         repo_id: 259445878
-    'lgd-eval/lgd-gate@833b5bb2f1fc3beb95a980fdfa6b80aa779cacae':
-        ref: 'main'
-        commit: 'sha1-833b5bb2f1fc3beb95a980fdfa6b80aa779cacae'
-        owner_id: 342496394
-        repo_id: 1436123021
-        uses:
-            - 'github/codeql-action@v3'
     'sigstore/cosign-installer@v3.9.1':
         ref: 'v3.9.1'
         commit: 'sha1-398d4b0eeef1380460a10c8013a76f728fb906ac'
