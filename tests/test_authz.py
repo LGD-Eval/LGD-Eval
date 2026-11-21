@@ -80,6 +80,22 @@ class AuthzStateMachine(unittest.TestCase):
         self.assertNotEqual(out["state"], authz.GRANTED)
         self.assertTrue(out["separation"])
 
+    def test_blocked_when_prerequisite_unavailable(self):
+        out = authz.authorize(score=90, grade="A", evidence=FULL_EVIDENCE,
+                              blocked=True, blocked_reason="无 docker/unshare 后端")
+        self.assertEqual(out["state"], authz.BLOCKED)
+        self.assertIn("后端", out["reason"])
+
+    def test_blocked_precedes_unknown(self):
+        out = authz.authorize(score=None, verdict_present=False,
+                              blocked=True, blocked_reason="环境不可用")
+        self.assertEqual(out["state"], authz.BLOCKED)
+
+    def test_not_applicable_with_reason(self):
+        out = authz.authorize(score=88, grade="A", evidence=FULL_EVIDENCE,
+                              applicable=False, napplicable_reason="纯文档技能无可执行代码")
+        self.assertEqual(out["state"], authz.NOT_APPLICABLE)
+
     def test_blocking_veto_classification(self):
         self.assertTrue(authz.is_blocking_veto({"applied": True, "level": "critical"}))
         self.assertTrue(authz.is_blocking_veto({"applied": True, "level": "high"}))

@@ -17,6 +17,7 @@ import tempfile
 import hashlib
 import subprocess
 import urllib.request
+from datetime import datetime, timezone
 
 
 # ============================================================
@@ -35,6 +36,9 @@ import urllib.request
 VETO_CRITICAL = 49   # 强制落到 L3（每次调用确认）以下
 VETO_HIGH = 69       # 最高 C
 VETO_MEDIUM = 89     # 最高 A
+
+ENGINE_VERSION = "1.1.0"
+RULE_VERSION = "3.1.3"   # 与 skillgate.rule_version 对齐；规则改动须升版本
 
 
 def _rule_ids_for(findings):
@@ -1205,6 +1209,18 @@ def _tree_hashes(root):
     return files, "sha256:" + tree
 
 
+def _git_commit(root):
+    """尽力读取被测目录所属 git 仓的 HEAD SHA；非仓 / 无 git / 超时返回 None，不伪造。"""
+    try:
+        out = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"],
+                             capture_output=True, text=True, timeout=5)
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
 def build_attestation(root, score, grade, dims, evidence, veto=None):
     """生成可复现的评测证明。fingerprint 只取自被测内容，不含路径与时间。"""
     payload = {
@@ -1225,16 +1241,31 @@ def build_attestation(root, score, grade, dims, evidence, veto=None):
         "tree_sha256": tree,
         "note": "tree_sha256 是整棵树 + 目录结构的哈希；改动任何一个字节都会变，可用于 pin（锁定'跑的就是你审的'）",
     }
+    evaluated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    failure_reason = ""
+    if veto and veto.get("applied"):
+        failure_reason = str(veto.get("reason", ""))
     return {
         "framework": "LGD 三律 · 有籍(可追溯) / 有证(可验证) / 有门禁(可阻断)",
-        "engine_version": "1.1.0",
+        "engine_version": ENGINE_VERSION,
+        "rule_version": RULE_VERSION,
+        "evaluated_at": evaluated_at,
+        "target_commit": _git_commit(root),
         "score": score,
         "grade": grade,
         "dims": payload["dims"],
         "findings": payload["findings"],
         "fingerprint": "sha256:" + fp,
         "safety_veto": veto if veto else {"applied": False},
+        "failure_reason": failure_reason,
         "inputs": inputs,
+        "evidence": {
+            "format": "lgd-attestation/1",
+            "location": None,  # 由调用方回填证据包/日志存放位置
+            "reverify_allowed": True,
+        },
+        "red_lines": "评测结果不等于安全保证；登记不等于授权；公开展示不等于官方认证；第三方提交不等于独立验证。",
+        "stale_policy": "证据绑定被测版本与规则版本；版本变更或证据过期须重新评测（自动过期/撤销机制待建）。",
         "reproduce": "python evaluate.py <同一路径> --evidence-json out.json  # 应得到完全相同的 fingerprint 与 tree_sha256",
     }
 

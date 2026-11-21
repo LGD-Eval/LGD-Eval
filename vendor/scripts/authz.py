@@ -13,16 +13,18 @@
 本模块不修改分数，也不从分数反推授权；授权只依据显式传入的封顶结论、
 证据完整性与阈值规则判定。
 
-状态枚举（与对外口径一致，禁止引入第五种口语态）：
+状态枚举（与对外口径一致，禁止引入口语态）：
 
-* ``GRANTED``      —— 证据齐备、无阻断性安全否决、分数达到阈值，可放行。
-* ``NOT_GRANTED``  —— 存在阻断性安全否决，或分数未达阈值，拒绝放行。
-* ``INCOMPLETE``   —— 评测跑了，但证据不足（缺档案 / 缺证据样本），无法下授权结论。
-* ``UNKNOWN``      —— 评测器没有给出可采信结论（未运行 / 无分数 / 异常），不得猜测。
+* ``GRANTED``        —— 证据齐备、无阻断性安全否决、分数达到阈值，可放行。
+* ``NOT_GRANTED``    —— 存在阻断性安全否决，或分数未达阈值，拒绝放行。
+* ``INCOMPLETE``     —— 评测跑了，但证据不足（缺档案 / 缺证据样本），无法下授权结论。
+* ``UNKNOWN``        —— 评测器没有给出可采信结论（未运行 / 无分数 / 异常），不得猜测。
+* ``NOT_APPLICABLE`` —— 经合理说明本项不适用；须显式说明理由，不得用于掩盖失败。
+* ``BLOCKED``        —— 被前置条件阻断（如隔离后端不可用、缺运行环境），当前不能判定。
 
 判定顺序（fail-closed，先卡死最不确定 / 最危险的一档）：
-``UNKNOWN`` → ``NOT_GRANTED``（安全否决）→ ``INCOMPLETE``（证据缺口）
-→ ``NOT_GRANTED``（分数不足）→ ``GRANTED``。
+``BLOCKED`` → ``UNKNOWN`` → ``NOT_APPLICABLE`` → ``NOT_GRANTED``（安全否决）
+→ ``INCOMPLETE``（证据缺口）→ ``NOT_GRANTED``（分数不足）→ ``GRANTED``。
 """
 
 from __future__ import annotations
@@ -33,6 +35,8 @@ GRANTED = "GRANTED"
 NOT_GRANTED = "NOT_GRANTED"
 INCOMPLETE = "INCOMPLETE"
 UNKNOWN = "UNKNOWN"
+NOT_APPLICABLE = "NOT_APPLICABLE"
+BLOCKED = "BLOCKED"
 
 #: 安全否决中必须直接拒绝授权的级别（与 evaluate.safety_cap 对齐）。
 _BLOCKING_VETO_LEVELS = {"critical", "high"}
@@ -58,6 +62,10 @@ def authorize(
     evidence: Optional[Mapping[str, bool]] = None,
     verdict_present: bool = True,
     grant_threshold: int = DEFAULT_GRANT_THRESHOLD,
+    blocked: bool = False,
+    applicable: bool = True,
+    blocked_reason: str = "",
+    napplicable_reason: str = "",
 ) -> dict:
     """给出独立于分数的授权结论。
 
@@ -93,11 +101,34 @@ def authorize(
         "分数不自动授予权限，授权也不回写分数；二者按各自规则分别得出。"
     )
 
+    # 0. 前置条件阻断（隔离后端不可用 / 缺运行环境）→ 明确 BLOCKED，
+    #    不得静默降级为安全执行。
+    if blocked:
+        return {
+            "state": BLOCKED,
+            "reason": blocked_reason or "前置条件未满足，当前不能判定授权。",
+            "score": score,
+            "grade": grade,
+            "threshold": grant_threshold,
+            "separation": separation,
+        }
+
     # 1. 评测器没有给出可采信结论 → 不得猜测。
     if not verdict_present or score is None:
         return {
             "state": UNKNOWN,
             "reason": "评测器未产出可采信结论（未运行 / 无分数 / 异常），无法判定授权。",
+            "score": score,
+            "grade": grade,
+            "threshold": grant_threshold,
+            "separation": separation,
+        }
+
+    # 1b. 经合理说明不适用 → NOT_APPLICABLE（须显式理由，不得用于掩盖失败）。
+    if not applicable:
+        return {
+            "state": NOT_APPLICABLE,
+            "reason": napplicable_reason or "本项经说明不适用。",
             "score": score,
             "grade": grade,
             "threshold": grant_threshold,
