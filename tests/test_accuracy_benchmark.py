@@ -83,6 +83,17 @@ class AccuracyBenchmark(unittest.TestCase):
         self.assertEqual(r["veto_level"], "")
         self.assertLess(r["score"], authz.DEFAULT_GRANT_THRESHOLD)
 
+    def test_postinstall_download_blocked_critical(self):
+        r = self.by_id["postinstall-download-critical"]
+        self.assertEqual(r["actual"], authz.NOT_GRANTED)
+        self.assertEqual(r["veto_level"], "critical")
+
+    def test_node_dynamic_code_blocked_high(self):
+        for cid in ("child-process-js-high", "new-function-js-high"):
+            r = self.by_id[cid]
+            self.assertEqual(r["actual"], authz.NOT_GRANTED, cid)
+            self.assertEqual(r["veto_level"], "high", cid)
+
 
 if __name__ == "__main__":
     unittest.main()

