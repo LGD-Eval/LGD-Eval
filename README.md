@@ -13,14 +13,41 @@ AI Agent 技能评测引擎。给任意技能目录打一个 0–100 的 Trust S
 ## 一行跑
 
 ```bash
+# 方式 A（今天就能用）：从 Release 下 tgz，解包后运行 —— 这条路线已实测通过
+#   https://github.com/LGD-Eval/lgd-gate/releases/download/v1.0.0/lgd-eval-1.0.0.tgz
+# 方式 B（尚未发布）：npx lgd-eval —— 该包还没有发布到 npm registry，
+#   现在请求 registry 的 `lgd-eval` 包元数据，返回 404，所以这条命令暂时会失败。
 npx lgd-eval ./my-skill
 ```
+
+> 诚实说明：`package.json` 里声明了 `name: lgd-eval` / `bin: lgd-eval`，但**没有发布**。
+> 在没有发布之前跑 `npx` 会去 registry 拉一个不存在的包——所以我们把「能用的那条」写在前面。
+> 发布属于对外动作，需要作者单独批准。
 
 ## 卡住不合格的 PR
 
 ```bash
 npx lgd-eval ./my-skill --fail-under 90 --fix-json fix-plan.json
 ```
+
+（同上：该命令依赖已发布的 npm 包。tgz 路线里用 `bin/lgd-eval.js` 直接运行即可。）
+
+## 用 tgz 装完之后怎么跑（外人最常卡在这）
+
+解包后你手上是一个 `package/` 目录，里面**没有 node_modules**，所以 `npx` 那条在这里跑不了。
+**下面三条都在 tgz 所在的那层目录执行（不是 `package/` 里面）**：
+
+```bash
+# 在 tgz 所在目录（解包后出现 package/ 的那一层）
+tar -xzf lgd-eval-<版本>.tgz
+node package/bin/lgd-eval.js --version
+# 把 ./my-skill 换成你自己的技能目录
+node package/bin/lgd-eval.js ./my-skill
+```
+
+- 需要本机有 **Python 3**：`bin/lgd-eval.js` 只做启动器，打分在包内 `vendor/scripts/evaluate.py`；
+- 分数 < 90 想直接卡 CI：`node package/bin/lgd-eval.js ./my-skill --fail-under 90`（退出码 1）；
+- 看五维雷达：`node package/bin/lgd-eval.js ./my-skill --ascii`。
 
 - 分数 < 90 → 退出码 1，CI 直接红
 - `fix-plan.json` 里每一项都是「缺口 → 整改动作 → 可判定验收」，AI 或人改完再跑一次即闭环
@@ -43,18 +70,24 @@ LGD 三律
   L3 有门禁（有检查）    ✅
 ```
 
-## 分数决定权限
+## 评测与授权分离（分数不签发权限）
 
-评测的终点不是一个数字，是一个权限决定：
+评测的终点是一个**风险结论**，不是一个权限决定。分数用来排优先级，授权必须另外授予：
 
-| 分数 | 档位 | 建议 |
+| 分数 | 风险档位（参考） | authorization_status |
 |---|---|---|
-| ≥ 96 | L0 | 免审批直接执行 |
-| 81–95 | L1 | 一次性确认（60 rpm） |
-| 51–80 | L2 | 人工复核（30 rpm） |
-| 31–50 | L3 | 每次强制确认，建议先过沙箱 |
-| 11–30 | L4 | 隔离只读 |
-| ≤ 10 | L5 | 拒绝执行 |
+| ≥ 96 | T0 风险极低 | NOT_GRANTED |
+| 81–95 | T1 风险低 | NOT_GRANTED |
+| 51–80 | T2 风险中等 | NOT_GRANTED |
+| 31–50 | T3 风险较高 | NOT_GRANTED |
+| 11–30 | T4 风险高 | NOT_GRANTED |
+| ≤ 10 | T5 风险极高 | NOT_GRANTED |
+
+`authorization_status` 默认恒为 `NOT_GRANTED`，同时出现在终端输出与 `--evidence-json` 里。要变成 `GRANTED`，只能由维护者或无关联第三方**单独书面授予**——评测引擎本身没有这个能力，代码里也没有这条路径。风险高的档位建议走沙箱与人工复核，但那是建议，不是豁免。
+
+**三件事不要混：分数、档位、门禁。** `action.yml` 的默认门槛是 **90**，它是一个 CI 拦截值：低于 90 分 CI 失败。档位是**描述**（“81–95 属 T1 风险低”），门禁是**拦截**（“不到 90 就拦”），授权是**签发**（恒为 `NOT_GRANTED`）。因此 `T1` 的技能在默认门禁下仍会被拦——这不是矛盾，是两个不同的问题：档位回答“有多危险”，门禁回答“这次让不让过”。要放行 81–89 分的对象，须显式调低门槛并自行承担后果；门槛低于 49（安全否决封顶线）必须禁止，否则被否决的技能会被放行。校准数据显示默认 90 会拦掉 6 份干净技能里的 5 份，原因见 `docs/CALIBRATION.md` §5。
+
+评测来源也必须可区分：`--provenance self|automated|third_party`，默认 `self`（维护者自评）。自评与 CI 自动跑都不构成第三方复核，对外不得称第三方认证。
 
 同一个引擎在 GitHub Actions 里直接可用：
 

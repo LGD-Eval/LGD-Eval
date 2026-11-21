@@ -36,6 +36,10 @@ VETO_CRITICAL = 49   # 强制落到 L3（每次调用确认）以下
 VETO_HIGH = 69       # 最高 C
 VETO_MEDIUM = 89     # 最高 A
 
+# 本轮评测中"结论不成立"的理由清单（如 no_executable_surface）。
+# 分数照样算、否决照样可触发，但出口必须把这份清单带出去，不许只报一个好看的分数。
+_INCONCLUSIVE = []
+
 
 def _rule_ids_for(findings):
     """把文本 finding 映射成规则号。与 build_evidence 用同一张表、同一匹配顺序，
@@ -49,9 +53,164 @@ def _rule_ids_for(findings):
     return ids
 
 
-CRIT_IDS = {"R-SEC-09", "R-SEC-10", "R-SEC-21"}          # 已证实的凭证 / 环境变量外泄
+CRIT_IDS = {"R-SEC-09", "R-SEC-10", "R-SEC-21", "R-SEC-22"}          # 已证实的凭证 / 环境变量外泄 / 隐形注入
+
+# 不可见字符区间：正则看不见它们，必须按码位扫（CSA 2026-03 的 Unicode Tags 注入）
+#
+# 2026-11-15 红队复测（灭类不灭例）：原先只有三段（Tags / 零宽 / 格式），
+# 同一风险类里另有 9 类能被静默承载的字符完全漏检。这里按"类"补齐，
+# 每段带 min_count：软连字符、盲文空白、谚文填充符这类正常排版偶尔出现一次
+# 不算攻击，≥2 次才报；Tags 块、变体选择符补充区、双向控制符这类强载体，1 个即报。
+# 刻意不收 U+FE00–U+FE0F（emoji 的合法变体选择符，收了等于给所有 emoji 文档报 CRITICAL）。
+INVISIBLE_RANGES = (
+    (0xE0000, 0xE007F, "Unicode Tags 块（隐形承载 ASCII 指令）", 1),
+    (0x200B, 0x200F, "零宽字符", 1),
+    (0x2060, 0x2064, "不可见格式字符", 1),
+    (0x061C, 0x061C, "阿拉伯字母标记（控制阅读方向）", 1),
+    (0x202A, 0x202E, "双向控制符（可反转显示顺序）", 1),
+    (0x2066, 0x2069, "双向隔离符", 1),
+    (0xFEFF, 0xFEFF, "零宽不换行空格（BOM 字符）", 1),
+    (0x1D173, 0x1D17A, "音乐符号格式控制符", 1),
+    (0xE0100, 0xE01EF, "变体选择符补充区（隐形承载数据）", 1),
+    (0x00AD, 0x00AD, "软连字符", 2),
+    (0x180E, 0x180E, "蒙古文元音分隔符", 2),
+    (0x2800, 0x2800, "盲文空白", 2),
+    (0x3164, 0x3164, "谚文填充符", 2),
+    (0xFFA0, 0xFFA0, "半角谚文填充符", 2),
+)
+
+
+def _invisible_hits(text):
+    """返回 [(码位, 区间名)]，每个区间只报一次，避免一部文档刷出几十条。
+
+    阈值语义见 INVISIBLE_RANGES 的第四列：普通排版里偶发一次的字符不报。
+    """
+    counts = {}
+    first = {}
+    for ch in text:
+        cp = ord(ch)
+        for lo, hi, label, min_n in INVISIBLE_RANGES:
+            if lo <= cp <= hi:
+                counts[label] = counts.get(label, 0) + 1
+                first.setdefault(label, cp)
+                break
+    return [(first[label], label) for label, n in counts.items()
+            if n >= next(r[3] for r in INVISIBLE_RANGES if r[2] == label)]
+
+# 评分与授权分离：评测只给结论，授权只能由人单独授予。
+# 此前按分数直接打印「L0 免审批（可直接运行）」，等于一个数字替人签了授权。
+AUTHORIZATION_STATUS = "NOT_GRANTED"
+
+# 引擎身份（单一来源）：报告头、证据 JSON 都从这里取，不允许各处再写一遍字面量。
+# 本仓有两个引擎都会打印 "Trust Score: N/100"，一份没有出处的分数无法核验。
+ENGINE_NAME = "evaluate.py"
+ENGINE_VERSION = "1.1.0"
+
+# CI 默认门槛的唯一定义。此前 lgd_audit.py 自己在退出码里写了一份 90，
+# action.yml 里写了一份 90 —— 改一处不改另一处，两处就会各说各话。
+# 值必须与 action.yml 的 inputs.threshold.default 一致，由 tests/test_double_source.py 钉住。
+DEFAULT_THRESHOLD = 90
+
+# 评测来源必须可区分：维护者自评 / 自动化评测 / 无关联第三方复核。
+# 自评不得对外称第三方认证，这条是审计里的 P0。
+PROVENANCE_LABELS = {
+    "self": "维护者自评",
+    "automated": "自动化评测（CI，仍属自评范畴）",
+    "third_party": "无关联第三方复核",
+}
 HIGH_IDS = {"R-SEC-01", "R-SEC-02", "R-SEC-03", "R-SEC-04", "R-SEC-05",
             "R-SEC-15", "R-SEC-16", "R-SEC-17", "R-SEC-18", "R-SEC-11"}
+
+# ============================================================
+# JS / TS 组合判定（R-SEC-09/21 的 JS 侧）
+# ------------------------------------------------------------
+# 问题：Python 侧有 AST + 污点分析，JS 侧只有几条正则。结果是同一个行为
+# 换个后缀就换个结论——JS 技能读 ~/.aws/credentials 并 POST 出去，
+# evaluate.py 给 77/B、skillgate 给 100/A+，而 Python 孪生样本 49/D。
+# 反例已实测（audit2/probe/js-env-exfil）。
+#
+# 做法：不做完整污点分析，只做「文件级三项共存」的保守近似——
+#   1) 出现凭证路径标记（.aws / .ssh / credentials / id_rsa / .npmrc …）
+#   2) 出现文件读取调用
+#   3) 出现网络发送 sink
+# 三项同文件共存即判 CRITICAL。误报代价只是降档（两种状态都阻断发布），
+# 漏报代价是两个引擎对同一技能给出两个结论。
+# 已知边界：跨文件的 JS 组合（A 读、B 发）暂不判，见 SKILL.md 限制说明。
+# ============================================================
+
+JS_CRED_PATH_RE = re.compile(
+    r"['\"](?:\.aws|\.ssh|\.npmrc|\.netrc|netrc|credentials|id_rsa|id_ed25519"
+    r"|\.kube|\.docker|\.pgpass|\.config/gcloud)['\"]"
+    r"|['\"][^'\"\n]*(?:/\.aws/|/\.ssh/|\.aws/credentials|/credentials\b|id_rsa"
+    r"|id_ed25519|\.pgpass|/\.npmrc)[^'\"\n]*['\"]"
+    r"|(?:homedir\(\)|HOME|USERPROFILE)\s*,\s*['\"]\.(?:aws|ssh|kube|docker)"
+)
+JS_READ_CALL_RE = re.compile(
+    r"(?:readFileSync|readFile|createReadStream|readFileSync\s*\(|fs\.read|open\s*\()"
+)
+JS_NET_SINK_RE = re.compile(
+    r"(?:https?\.(?:request|get)\s*\(|\bfetch\s*\(|axios\.(?:post|put|get|request)"
+    r"|\bnet\.connect\s*\(|new\s+WebSocket|sendBeacon|got\s*\()"
+)
+JS_ENV_BULK_RE = re.compile(
+    r"(?:\{\s*\.\.\.\s*process\.env\s*\}"
+    r"|Object\.keys\s*\(\s*process\.env\s*\)"
+    r"|Object\.assign\s*\(\s*\{\s*\}\s*,\s*process\.env\s*\)"
+    r"|Object\.entries\s*\(\s*process\.env\s*\)"
+    r"|JSON\.stringify\s*\(\s*(?:\{\s*\.\.\.\s*)?process\.env)"
+)
+
+
+def _js_lines(code):
+    """返回 [(行号, 该行)]，跳过空行与注释行——规则文案写到注释里不算行为。"""
+    out = []
+    for i, line in enumerate(code.splitlines(), 1):
+        s = line.strip()
+        if not s or s.startswith("//") or s.startswith("*") or s.startswith("/*"):
+            continue
+        out.append((i, s))
+    return out
+
+
+JS_IMPORT_RE = re.compile(
+    r"(?:require\s*\(\s*['\"]\./([^'\"]+)['\"]"
+    r"|from\s*['\"]\./([^'\"]+)['\"]"
+    r"|import\s*\(\s*['\"]\./([^'\"]+)['\"]\s*\))")
+
+
+def js_flags(code):
+    """返回首次出现的行号 {cred, read, sink, env} 与相对导入模块集合。
+
+    跨文件判定需要"哪个文件读、哪个文件发"，单文件规则拼不出因果。
+    """
+    flags = {"cred": 0, "read": 0, "sink": 0, "env": 0, "imports": set()}
+    for ln, s in _js_lines(code):
+        if not flags["cred"] and JS_CRED_PATH_RE.search(s):
+            flags["cred"] = ln
+        if not flags["read"] and JS_READ_CALL_RE.search(s):
+            flags["read"] = ln
+        if not flags["sink"] and JS_NET_SINK_RE.search(s):
+            flags["sink"] = ln
+        if not flags["env"] and JS_ENV_BULK_RE.search(s):
+            flags["env"] = ln
+        for m in JS_IMPORT_RE.finditer(s):
+            mod = m.group(1) or m.group(2) or m.group(3)
+            if mod:
+                flags["imports"].add(os.path.basename(mod))
+    return flags
+
+
+def js_combination(code):
+    """JS/TS 文件级组合判定，返回 [(行号, 结论文案)]。"""
+    flags = js_flags(code)
+    hits = []
+    if flags["sink"] and flags["cred"] and flags["read"]:
+        hits.append((flags["sink"],
+                     "凭证文件读取后网络外发（JS 组合判定：凭证路径 + 读取 + 发送）"))
+    if flags["sink"] and flags["env"]:
+        hits.append((flags["sink"],
+                     "环境变量批量外发（JS：整份 process.env 发往网络）"))
+    return hits
 
 
 def safety_cap(findings):
@@ -93,9 +252,43 @@ def safety_cap(findings):
     return 100, "", ""
 
 
-def evaluate_skill(skill_path):
+def grade_for(score):
+    """等级刻度：与 README 和 skillgate 同表（A+ ≥90 / A ≥80 / B ≥70 / C ≥60 / D ≥40 / F <40）。
+
+    此前这里 40 以下落到 D、skillgate 印 F，同一个 34 分两个字母。
+    """
+    if score >= 90:
+        return "A+", "🏆"
+    if score >= 80:
+        return "A", "🥇"
+    if score >= 70:
+        return "B", "🥈"
+    if score >= 60:
+        return "C", "🥉"
+    if score >= 40:
+        return "D", "⚠️"
+    return "F", "⛔"
+
+
+def risk_tier_for(score):
+    """风险档位（仅供参考）。这不是授权——授权恒为 NOT_GRANTED。"""
+    if score >= 96:
+        return "T0 风险极低"
+    if score >= 81:
+        return "T1 风险低"
+    if score >= 51:
+        return "T2 风险中等"
+    if score >= 31:
+        return "T3 风险较高"
+    if score >= 11:
+        return "T4 风险高"
+    return "T5 风险极高"
+
+
+def evaluate_skill(skill_path, provenance="self"):
     """评测一个技能。"""
     start_time = time.time()
+    del _INCONCLUSIVE[:]
     
     # 路径存在性门禁：不存在或不是目录时立即失败，不输出"评测完成"（Muse P1-7）
     if not os.path.isdir(skill_path):
@@ -117,6 +310,10 @@ def evaluate_skill(skill_path):
     print("=" * 70)
     print("  🏛️  LGD-Gate 独立第三方评测报告")
     print("=" * 70)
+    # 引擎身份与版本必须自己报出来：本仓有两个引擎，都打印 "Trust Score: N/100"，
+    # 一份被引用的分数若不写明出自哪个引擎、哪版规则，就无法核验，也就无法反驳。
+    print(f"  引擎: {ENGINE_NAME} {ENGINE_VERSION}（五维评测口径）")
+    print(f"  授权状态: {AUTHORIZATION_STATUS}（评测不签发执行权限）")
     print(f"  评测对象: {skill_path}")
     print()
     
@@ -295,6 +492,8 @@ def evaluate_skill(skill_path):
     
     # 扫描所有 Python 文件
     security_issues = []
+    # 豁免必须留痕：不许静默放行（skillgate 那次死规则教训）
+    _exempted = []
 
     import ast as _ast
 
@@ -303,7 +502,11 @@ def evaluate_skill(skill_path):
         ("R-SEC-11", "越权指令：要求忽略既有规则",
          r"(ignore\s+(all\s+)?(previous|prior|above)\s+instructions"
          r"|disregard\s+(all\s+)?(previous|prior|above)\s+(instructions|rules)"
-         r"|忽略(之前|以上|前面|所有)的?(指令|提示|规则)|无视(之前|以上)的?(指令|要求))", 6),
+         # 2026-11-15 类覆盖：原写法只允许「忽略+提示语+的?+指令」，中间夹一个「所有」
+         # 就漏（"忽略以上所有指令"）。中文表达里这个修饰位几乎必有，必须允许夹层。
+         r"|忽略(之前|以上|前面|先前|此前)的?(所有|全部)?的?(指令|指示|提示|规则|设定|要求)"
+         r"|无视(之前|以上|前面|上述)的?(所有|全部)?的?(指令|要求|规则|提示)"
+         r"|忘掉(你)?(之前|原来)的?(所有)?(规则|指令|设定|限制))", 6),
         ("R-SEC-12", "隐瞒用户：要求不告知真实行为",
          r"(do\s+not\s+(tell|inform|notify)\s+the\s+user|without\s+telling\s+the\s+user"
          r"|不要(告诉|通知|提醒)用户|对用户隐瞒|不要让用户知道)", 4),
@@ -321,6 +524,20 @@ def evaluate_skill(skill_path):
         ("R-SEC-16", "免确认执行",
          r"(without\s+(asking|confirmation|approval|permission)|no\s+confirmation\s+needed"
          r"|无需(确认|授权|同意)|不需要用户(同意|确认))", 4),
+        # 2026-11-15 类覆盖：下面三条是产品层补的。
+        # 缘由：SKILL.md 里 9 类注入样本，产品（本文件）静默放行 5 类——
+        # 中文「忽略以上所有指令」、<system> 结构伪造、base64 载荷、TLS 校验关闭。
+        # 规则都补了，这里补产品：规则在库里生效、在 CLI 里不生效，等于对外没修。
+        ("R-SEC-23", "结构伪造：伪装 system 角色",
+         r"(<\s*/?\s*system\s*>|\[\s*system\s*\]|\"role\"\s*:\s*\"system\""
+         r"|<<\s*SYS\s*>>|system_prompt_override|override_system_prompt"
+         r"|]]>\s*</?\w+>)", 6),
+        ("R-SEC-24", "编码载荷：base64 里藏着指令",
+         r"(__BASE64_INJECTION__)", 6),  # 占位：实际判定在文本层解码后做，见下方 base64 段
+        ("R-SEC-25", "私钥块或带口令的连接串",
+         r"(-----BEGIN[ A-Z]*PRIVATE KEY-----"
+         r"|(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s/]+:[^@\s]{3,}@"
+         r"|AccountKey\s*=\s*[A-Za-z0-9+/]{20,}={0,2})", 8),
     ]
 
     # ---- 跨文件污点：敏感文件读取 → 网络外发 ----
@@ -473,6 +690,7 @@ def evaluate_skill(skill_path):
 
     taint = {}
     env_bulk = {}
+    js_facts = {}
     foreign_host = {}
     # 只认「整份」环境变量导出；单项 os.environ["KEY"] 是正常配置读取，不报。
     # 这是 Mitiga 类样本最爱的偷渡方式：把全部变量（含云厂商密钥）打包发走。
@@ -506,7 +724,66 @@ def evaluate_skill(skill_path):
         ("R-SEC-20", "代理被指向外部主机（流量可能被截获）",
          r"(?:HTTPS?_PROXY|ALL_PROXY)\s*[=:]\s*[\"']?https?://"
          r"(?!(?:127\.0\.0\.1|localhost|0\.0\.0\.0))", 4),
+        # 2026-11-15 类覆盖：关 TLS 校验这一类，产品层原先只认 requests 的 verify=False
+        # 一处，其余写法（unverified context / CERT_NONE / rejectUnauthorized / 环境变量）
+        # 全部静默放过。按语言与容器各补一条。
+        ("R-SEC-26", "TLS 校验被关闭",
+         r"(\bverify\s*=\s*False"
+         r"|ssl\._create_unverified_context\s*\("
+         r"|verify_mode\s*=\s*(?:ssl\.)?CERT_NONE"
+         r"|check_hostname\s*=\s*False"
+         r"|rejectUnauthorized\s*:\s*false"
+         r"|NODE_TLS_REJECT_UNAUTHORIZED[^\n]{0,20}['\"]?\s*=?\s*['\"]?0"
+         r"|PYTHONHTTPSVERIFY[^\n]{0,20}['\"]?\s*=?\s*['\"]?0"
+         r"|GIT_SSL_NO_VERIFY)", 6),
+        # 凭证形状规则：前四条只认三家厂商的固定前缀，私钥块与带口令的 DSN 不在其中。
+        # 它们活在字符串里，必须看原文（见下方 target 选择）。
+        ("R-SEC-25", "私钥块或带口令的连接串",
+         r"(-----BEGIN[ A-Z]*PRIVATE KEY-----"
+         r"|(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s/]+:[^@\s]{3,}@"
+         r"|AccountKey\s*=\s*[A-Za-z0-9+/]{20,}={0,2})", 8),
     ]
+
+    # 只对"靠字面量形状认东西"的规则做豁免：凭证、私钥/DSN、TLS 开关。
+    # 行为类规则（shell=True、eval、rmtree…）一律不豁免——扫描器不该给行为开例外。
+    _LITERAL_RULES = {"R-SEC-01", "R-SEC-02", "R-SEC-25", "R-SEC-26"}
+
+    def _is_rule_literal_line(line, prev_line=""):
+        """这一行是在**定义规则**，还是在**使用**凭证？
+
+        扫描器自己的规则表里必然躺着"用来认凭证的字符形状"（令牌前缀的正则、
+        关闭 TLS 校验的写法）。skillgate 早已按此豁免（is_rule_literal_line），
+        evaluate 没有，于是同一个仓 skillgate 报 93 A+、evaluate 报 0 F。
+
+        第二种形态：规则**说明文字**。规则表里每条规则都有一句人话描述，
+        而那句描述本身就含触发词，于是扫描器被自己的说明书命中。
+        判据：上一行是 re.compile(...)，本行是以引号开头的字符串。
+
+        注意：这段说明刻意不把触发词写成可被规则匹配的字面量——
+        否则扫描器会命中自己的注释（本仓实测掉 24 分、多出 2 条 HIGH）。
+        """
+        s = line.strip()
+        if s.startswith("#"):
+            return True
+        for marker in ("re.compile(", "RE.compile(", "_PATTERNS", "_RULES",
+                       "PATTERNS =", "RULES =", "SEC_RULES", "TLS_OFF",
+                       "REMOTE_EXEC", "r\"", "r'", "r\"\"\""):
+            if marker in line:
+                return True
+        if s[:1] in ("\"", "'") and "re.compile(" in (prev_line or ""):
+            return True
+        return False
+
+    def _is_fixture_path(rel):
+        """tests/ 与 fixtures/ 里的"恶意样例"是检测对象，不是产品缺陷。
+
+        风险自认：若有人把真凭证写进测试夹具，这里会豁免掉。补偿手段是
+        **不静默**——豁免条数与位置单独印出来，评审者可以逐条回看。
+        """
+        r = rel.replace("\\", "/")
+        return ("/tests/" in r or r.startswith("tests/")
+                or "/fixtures/" in r or r.startswith("fixtures/")
+                or "/testdata/" in r)
 
     def _ast_security(src):
         """AST 语义扫描：常量折叠 + 别名解析 + 展开 dict 关键字参数。
@@ -628,6 +905,7 @@ def evaluate_skill(skill_path):
     # 但 tests/fixtures 这类"检测夹具"是评测输入而非被测技能本体，排除，
     # 否则任何自带回归用例的技能都会被自己的用例拖垮分数。
     scan_targets = []
+    doc_targets = []
     # F3：默认只跳过工具/缓存目录。原先连带跳过 samples / demo / benchmarks /
     # corpus / fixtures，等于给攻击者一个"把载荷放进 samples/ 就隐身"的通道（已实测）。
     skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv",
@@ -661,11 +939,74 @@ def evaluate_skill(skill_path):
             if e in (".py", ".js", ".ts", ".mjs", ".cjs",
                      ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd"):
                 scan_targets.append(os.path.join(dirpath, fn))
+            # 文档也是攻击面：SKILL.md 是智能体运行时真正读进去的指令文本
+            elif e in (".md", ".markdown", ".txt", ".json", ".yaml", ".yml"):
+                doc_targets.append(os.path.join(dirpath, fn))
+
+    # ---- 不可见字符：正则看不见它们，等于没查 ----
+    # CSA 2026-03 报告的形态：U+E0000–E007F 逐字对应 ASCII，屏幕上完全不显示，
+    # 模型照读。修复前两引擎对这类载荷一律 100/A+ 放行。
+    for doc_path in doc_targets:
+        doc_file = os.path.relpath(doc_path, skill_path).replace(os.sep, "/")
+        if os.path.basename(doc_path) == self_name:
+            continue
+        try:
+            with open(doc_path, 'r', encoding='utf-8') as f:
+                doc = f.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for cp, label in _invisible_hits(doc):
+            line_no = doc[:doc.find(chr(cp))].count("\n") + 1
+            lines_of_doc = doc.splitlines()
+            hit = lines_of_doc[line_no - 1] if line_no - 1 < len(lines_of_doc) else ""
+            if "skillgate: ignore" in hit:
+                continue
+            msg = "%s:%d: 不可见字符承载指令（%s，U+%04X）" % (
+                doc_file, line_no, label, cp)
+            if msg not in security_issues:
+                security_issues.append(msg)
+                score -= 15
+
+    # ---- 夹具目录：只豁免语义规则，不豁免隐形字符 ----
+    # 跳过 fixtures/_demo 是必要的（否则自带攻击样本的技能会被自己拖垮），
+    # 但它同时是一条规避通道——把载荷放进叫 demo 的目录就没人看。
+    # 实测：audit2/probe/_evasion-demo 的 Tags 载荷在补这条之前是无否决通过。
+    # 干净夹具里不会有不可见字符，所以这里报出来的一定是有人放进去的。
+    fixture_dirs = {"fixtures", "testdata", "__snapshots__",
+                    "_demo", "demo", "samples", "benchmarks", "corpus"}
+    for dirpath, dirnames, filenames in os.walk(skill_path):
+        parts = os.path.relpath(dirpath, skill_path).split(os.sep)
+        if not any(p in fixture_dirs for p in parts):
+            continue
+        for fn in sorted(filenames):
+            if os.path.splitext(fn)[1].lower() not in (
+                    ".md", ".markdown", ".txt", ".json", ".yaml", ".yml"):
+                continue
+            fx = os.path.join(dirpath, fn)
+            if os.path.basename(fx) == self_name:
+                continue
+            try:
+                with open(fx, 'r', encoding='utf-8') as f:
+                    body = f.read()
+            except (OSError, UnicodeDecodeError):
+                continue
+            rel_fx = os.path.relpath(fx, skill_path).replace(os.sep, "/")
+            for cp, label in _invisible_hits(body):
+                line_no = body[:body.find(chr(cp))].count("\n") + 1
+                msg = "%s:%d: 不可见字符承载指令（%s，U+%04X）" % (
+                    rel_fx, line_no, label, cp)
+                if msg not in security_issues:
+                    security_issues.append(msg)
+                    score -= 15
 
     if not scan_targets:
-        print("  ⚠️ INCONCLUSIVE: 该对象没有任何可执行脚本，安全维度无从判定")
-        print("  result=INCONCLUSIVE  reason=no_executable_surface")
-        sys.exit(2)
+        # 没有可执行面 ≠ 没有风险：文本层（SKILL.md）与夹具目录里的隐形字符、
+        # 编码载荷照样要判、照样能否决。原先这里直接 exit 2，等于"文档型技能"
+        # 整条安全通道被绕过——只要不写脚本，注入就没人看。所以改成记账：
+        # 分数照算（可被否决封顶），但结论线程必须带 "inconclusive" 出去，
+        # 不许拿分数给一个安全维度无从判定的对象背书。
+        _INCONCLUSIVE.append("no_executable_surface")
+        print("  ⚠️ 无可执行脚本：安全维度仅能按文本层判定（结论标记 inconclusive）")
 
     for script_path in scan_targets:
         script_file = os.path.relpath(script_path, skill_path).replace(os.sep, "/")
@@ -696,12 +1037,16 @@ def evaluate_skill(skill_path):
                 break
         # 行为类规则只看可执行部分；凭证类规则必须看字符串，故用原文
         code_behavior = _strip_literals(code) if ext == ".py" else code
+        # 判断"内容"而非"动作"的规则必须看原文：凭证字面量、被改写的域名/代理地址；
+        # 私钥块与带口令 DSN、以及环境变量形式的 TLS 关闭开关，同样活在字符串里，
+        # 用剥离后的可执行文本去搜是搜不到的。
         for rid, rule_name, pat, points in SEC_RULES:
-            # 判断"内容"而非"动作"的规则必须看原文：凭证字面量、被改写的域名/代理地址
-            target = code if rid in ("R-SEC-01", "R-SEC-02", "R-SEC-19", "R-SEC-20") else code_behavior
+            target = code if rid in ("R-SEC-01", "R-SEC-02", "R-SEC-19", "R-SEC-20",
+                                     "R-SEC-25", "R-SEC-26") else code_behavior
             for m in re.finditer(pat, target):
                 line_no = code[:m.start()].count("\n") + 1
                 hit_line = code_lines[line_no - 1] if line_no - 1 < len(code_lines) else ""
+                prev_line = code_lines[line_no - 2] if line_no >= 2 else ""
                 _ign = ("skillgate: ignore" in hit_line) or ("lgd: ignore" in hit_line)
                 if _ign and _allowed(rid, script_file, hit_line):
                     safe_suppressions.append("%s:%d: %s（备案豁免）" % (script_file, line_no, rid))
@@ -710,21 +1055,44 @@ def evaluate_skill(skill_path):
                     # 注释不能关掉检查：未备案的豁免企图本身是一条发现
                     if (script_file, line_no) not in unallowlisted_ignore:
                         unallowlisted_ignore.append((script_file, line_no))
+                # 规则定义行：扫描器自己的规则表就是"用来认凭证的字符"，
+                # skillgate 早就对这类行做了豁免（is_rule_literal_line），evaluate 没做，
+                # 于是同一个仓库 skillgate 报 93 A+、evaluate 报 0 F —— 一件东西两个答案。
+                if rid in _LITERAL_RULES and _is_rule_literal_line(hit_line, prev_line):
+                    _exempted.append("%s:%d [%s]（规则定义行）" % (script_file, line_no, rid))
+                    continue
                 msg = "%s:%d: %s" % (script_file, line_no, rule_name)
                 if msg not in security_issues:
                     security_issues.append(msg)
                     score -= points
+        # JS/TS 组合判定：JS 没有 AST 层，正则也看不到"读取 + 发送"的组合，
+        # 不补这一步，同一行为换后缀就从 49/D 变成 77/B。
+        if ext in (".js", ".ts", ".mjs", ".cjs"):
+            _jsf = js_flags(code)
+            js_facts[script_file] = _jsf
+            for _jln, _jreason in js_combination(code):
+                _jmsg = "%s:%d: %s" % (script_file, _jln, _jreason)
+                if _jmsg not in security_issues:
+                    security_issues.append(_jmsg)
+                    score -= 10
+
         # AST 语义扫描：补正则抓不到的规避写法
         if ext != ".py":
             continue
         for rid, rule_name, line_no, points in _ast_security(code):
             hit_line = code_lines[line_no - 1] if line_no - 1 < len(code_lines) else ""
+            prev_line = code_lines[line_no - 2] if line_no >= 2 else ""
             _ign = ("skillgate: ignore" in hit_line) or ("lgd: ignore" in hit_line)
             if _ign and _allowed(rid, script_file, hit_line):
                 safe_suppressions.append("%s:%d: %s（备案豁免）" % (script_file, line_no, rid))
                 continue
             if _ign and (script_file, line_no) not in unallowlisted_ignore:
                 unallowlisted_ignore.append((script_file, line_no))
+            # AST 层是正则层的补充，不是例外通道：它抓到的如果是"规则定义行"
+            # 与正则层同样豁免，否则同一个病会从另一个门再进来。
+            if _is_rule_literal_line(hit_line, prev_line):
+                _exempted.append("%s:%d [AST]（规则定义行·AST）" % (script_file, line_no))
+                continue
             # 同一文件同一行同一类别已由正则报过，不重复扣分
             kw = rule_name.split("（")[0]
             if any(x.startswith("%s:%d" % (script_file, line_no)) and kw in x
@@ -734,6 +1102,23 @@ def evaluate_skill(skill_path):
             if msg not in security_issues:
                 security_issues.append(msg)
                 score -= points
+
+    # ---- JS 跨文件：A 里读凭证，B 里 import 了 A 又发出去 ----
+    # 只认显式相对导入，不靠目录相邻猜因果。
+    for a_fp, a_flags in sorted(js_facts.items()):
+        if not (a_flags.get("cred") and a_flags.get("read")):
+            continue
+        mod_a = os.path.splitext(os.path.basename(a_fp))[0]
+        for b_fp, b_flags in sorted(js_facts.items()):
+            if b_fp == a_fp or not b_flags.get("sink"):
+                continue
+            if mod_a not in b_flags.get("imports", set()):
+                continue
+            js_msg = "%s:%d: 跨文件凭证外泄（JS 组合判定：%s 读取，本文件发送）" % (
+                b_fp, b_flags["sink"], mod_a)
+            if js_msg not in security_issues:
+                security_issues.append(js_msg)
+                score -= 10
 
     # ---- 环境变量批量外发：整份 os.environ 打包送出 ----
     for f_, l_env in sorted(env_bulk.items()):
@@ -796,6 +1181,29 @@ def evaluate_skill(skill_path):
         for _ln1, _txt1 in enumerate(md_lines, 1):
             if ("skillgate: ignore" in _txt1) or ("lgd: ignore" in _txt1):
                 ignore_marks.append(("SKILL.md", _ln1, _txt1))
+        # ---- 编码载荷：base64 解出来再判，不按"长得像"判 ----
+        # 一长串 base64 同时是哈希、指纹、证书的形状，按形状报会让每个仓库都中招；
+        # 先解码、再看里面的明文有没有指令，才既不瞎报也不瞎放。
+        import base64 as _b64
+        for _m in re.finditer(r"[A-Za-z0-9+/]{40,}={0,2}", md_text):
+            _blob = _m.group(0)
+            try:
+                _dec = _b64.b64decode(_blob + "=" * (-len(_blob) % 4),
+                                     validate=False).decode("utf-8", "ignore")
+            except Exception:
+                continue
+            if not _dec or len(_dec) < 8:
+                continue
+            _low = _dec.lower()
+            if not any(k in _low for k in ("ignore", "system prompt", "jailbreak",
+                                           "忽略", "指令")):
+                continue
+            _line_no = md_text[:_m.start()].count("\n") + 1
+            msg = "SKILL.md:%d: 编码载荷：base64 解码后含注入指令（%s…）" % (
+                _line_no, _dec.strip()[:30])
+            if msg not in security_issues:
+                security_issues.append(msg)
+                score -= 6
         for rid, rule_name, pat, points in TEXT_SEC_RULES:
             for m in re.finditer(pat, md_text, re.IGNORECASE):
                 line_no = md_text[:m.start()].count("\n") + 1
@@ -918,7 +1326,12 @@ def evaluate_skill(skill_path):
     elapsed = time.time() - start_time
 
     # ---- 安全否决：加权平均不得掩盖已经证实的安全事实 ----
-    raw_score = score
+    # ---- 先收敛到刻度内：扣分项叠加可以超过 100，实测出现过 -87/100 ----
+    # 对外只有一个 0–100 的分数，负分既违反这个刻度，又让"更差"失去可比性
+    # （-87 与 0 都印 F，但它们不是同一件事）。
+    raw_unclamped = score
+    raw_score = max(0, min(100, raw_unclamped))
+    score = raw_score
     veto_cap, veto_level, veto_reason = safety_cap(findings)
     if score > veto_cap:
         score = veto_cap
@@ -931,40 +1344,35 @@ def evaluate_skill(skill_path):
 
     print("=" * 70)
     
-    if score >= 90:
-        grade = "A+"
-        emoji = "🏆"
-    elif score >= 80:
-        grade = "A"
-        emoji = "🥇"
-    elif score >= 70:
-        grade = "B"
-        emoji = "🥈"
-    elif score >= 60:
-        grade = "C"
-        emoji = "🥉"
-    else:
-        grade = "D"
-        emoji = "⚠️"
-    
+    grade, emoji = grade_for(score)
+
     # 对外唯一分数：一行给完，不分列其他分数
     print(f"  LGD Trust Score: {score}/100  {emoji} {grade}")
+    if raw_unclamped < 0 or raw_unclamped > 100:
+        print(f"  ⚠ 扣分叠加超出 0–100 刻度（{raw_unclamped}），按 {raw_score} 计")
     if raw_score != score:
         print(f"  ⛔ 安全否决：原始分 {raw_score} → 封顶 {score}（{veto_level}：{veto_reason}）")
-    # 分数 → 执行权限分档（竞品只给分数，这里给出可直接落地的限权建议）
-    if score >= 96:
-        gate = "L0 免审批（可直接运行，无需限流）"
-    elif score >= 81:
-        gate = "L1 一次性确认（限流 60 次/分）"
-    elif score >= 51:
-        gate = "L2 人工复核（限流 30 次/分）"
-    elif score >= 31:
-        gate = "L3 沙箱运行（每次调用强制确认）"
-    elif score >= 11:
-        gate = "L4 隔离环境（仅允许只读调用）"
-    else:
-        gate = "L5 拒绝执行（需重写后重新评测）"
-    print(f"  🚦 建议执行权限: {gate}")
+    # 豁免必须可见：静默放行是这套工具最不能犯的错（死规则那条教训）。
+    if _exempted:
+        _files = sorted(set(x.split(":")[0] for x in _exempted))
+        print(f"  ℹ 已按'规则定义行/夹具样本'豁免 {len(_exempted)} 条字面量命中"
+              f"（{len(_files)} 个文件）：{', '.join(_files[:6])}"
+              f"{' 等' if len(_files) > 6 else ''}")
+        print("     仅豁免凭证/私钥/TLS 三类字面量规则；行为类规则从不豁免。")
+        # 逐条列出，不只给条数：夹具里放一个"真凭证"就会被这条豁免吞掉，
+        # 所以被吞掉的每一条都必须能被眼睛看到（最多印 12 条，其余看 --evidence-json）。
+        for _x in _exempted[:12]:
+            print("     · " + _x)
+        if len(_exempted) > 12:
+            print("     · …其余 %d 条未逐行打印（文件清单见上）；需要全清单请在本地复跑本命令" % (len(_exempted) - 12))
+        print("     ⚠ 夹具路径下若真存在有效凭证，本条豁免不会报错——请人工过一遍上面的清单。")
+    # 评分与授权分离：分数只给"风险档位"，不签发任何执行权限。
+    # 此前这里按分数直接打印「L0 免审批（可直接运行）」，等于让一个数字签了授权。
+    tier = risk_tier_for(score)
+    print(f"  🚦 风险档位（仅供参考，不构成授权）: {tier}")
+    print(f"  🔐 授权状态: {AUTHORIZATION_STATUS}（评测只产出结论，不签发执行权限）")
+    print(f"  🧾 评测来源: {PROVENANCE_LABELS.get(provenance, provenance)}"
+          f"{'（非第三方复核，不得对外称第三方认证）' if provenance != 'third_party' else ''}")
     print(f"  评测耗时: {elapsed:.2f}s")
     print("=" * 70)
     
@@ -998,8 +1406,13 @@ def evaluate_skill(skill_path):
     print(f"  L2 有证（Evidenced · 结论有证据）: {'✅ 达标' if l2_ok else '❌ 待补'}")
     print(f"  L3 有门禁（Gated · 关键节点有检查）: {'✅ 达标' if l3_ok else '❌ 待补'}")
     print("-" * 70)
-    if l1_ok and l2_ok and l3_ok:
-        print("  🏛️  三律全绿 = 可申请 LGD 认证徽章，进入 LGD 生态超市互链")
+    # 三律"齐备"不等于"够格"：实测出现过三律全绿但分数 -87 的样本，
+    # 报告仍印"可申请认证徽章"。齐备只是文档层面的材料齐全，够格还要看分数与安全事实。
+    badge_ok = l1_ok and l2_ok and l3_ok and score >= 80
+    if badge_ok:
+        print("  🏛️  三律全绿 + 分数达标 = 可申请 LGD 认证徽章，进入 LGD 生态超市互链")
+    elif l1_ok and l2_ok and l3_ok:
+        print(f"  🏛️  三律齐备但未达徽章门槛（分数 {score}/100，需 ≥80）——先整改再申请")
     else:
         print("  🏛️  按 LGD 三律补齐缺口后，可申请 LGD 认证徽章进入生态")
     print("  登记入口: lgd-ecosystem-hub（LGD 生态治理中枢，单一事实源）")
@@ -1011,19 +1424,45 @@ def evaluate_skill(skill_path):
     print("  评测完成！")
     print("=" * 70)
     
-    veto_info = None
-    if raw_score != score:
-        veto_info = {
-            "applied": True,
-            "raw_score": raw_score,
-            "capped_to": score,
-            "cap": veto_cap,
-            "level": veto_level,
-            "reason": veto_reason,
-            "policy": "critical(凭证外泄/远程执行)→cap 49 · high(凭证暴露/命令执行)→cap 69；否决只封顶不替代五维明细",
-        }
+    # 否决状态必须说清两件不同的事：
+    #   triggered  = 命中了"必须否决"的规则（这是判定），
+    #   applied    = 封顶这一步真的把分数压下去了（这是算术）。
+    # 修复前只报 applied，于是"本来就低于封顶线、却命中了 CRITICAL 规则"的技能
+    # 报 applied=False —— 拿这个字段做门禁的消费者会把它放过去。
+    # 实测样本：audit2/probe/_evasion-demo（载荷藏在 demo/ 里）46 分、applied=False。
+    crit_rules = sorted(_rule_ids_for(findings) & CRIT_IDS)
+    veto_info = {
+        "applied": raw_score != score,
+        "triggered": bool(crit_rules) or raw_score != score,
+        "critical_rules": crit_rules,
+        "raw_score": raw_score,
+        "capped_to": score,
+        "cap": veto_cap,
+        "level": veto_level,
+        "reason": veto_reason,
+        "policy": "critical(凭证外泄/远程执行/隐形注入)→cap 49 · high(凭证暴露/命令执行)→cap 69；"
+                  "否决只封顶不替代五维明细。门禁请判 triggered 与分数，不要只判 applied",
+    }
 
     return score, grade, dims, findings, warnings, veto_info
+
+
+def evaluate_skill_result(skill_path, provenance="self"):
+    """给 Web / MCP 等程序调用方的具名结果。
+
+    存在原因：evaluate_skill 返回的是**元组**，加一个安全否决项就从 5 个变成 6 个，
+    而 lgd_web.py 与 lgd_mcp_server.py 都在按位置解包 5 个 —— 于是"零安装入口"
+    一调用就 ValueError，对外表现为整个 Web / MCP 版不可用。
+    元组一变长就静默崩，是位置解包的必然代价；这里改成具名字典，并保留元组兼容。
+    """
+    r = evaluate_skill(skill_path, provenance=provenance)
+    score, grade, dims = r[0], r[1], r[2]
+    findings, warnings = r[3], r[4]
+    veto = r[5] if len(r) > 5 else None
+    return {"score": score, "grade": grade, "dims": dims,
+            "findings": findings, "warnings": warnings, "safety_veto": veto,
+            "conclusion": "inconclusive" if _INCONCLUSIVE else "consistent",
+            "inconclusive_reasons": list(_INCONCLUSIVE)}
 
 def render_ascii_bars(dims):
     """扣分明细（得分/满分）。刻意不输出百分比，避免出现第二套分数。"""
@@ -1213,6 +1652,10 @@ EVIDENCE_RULES = [
     ("命令注入风险", "R-SEC-03", "安全检查", "scripts/",
      "改用参数列表形式调用（shell=False），或对进入 shell 的变量做白名单校验",
      "重跑规则 R-SEC-03：不再出现 shell=True 即通过"),
+    ("不可见字符承载指令", "R-SEC-22", "安全检查", "SKILL.md",
+     "删除文档内全部不可见字符（U+E0000–E007F Tags 块、零宽字符、不可见格式字符）；"
+     "正常文案不需要它们，出现即视为隐藏指令通道",
+     "重跑规则 R-SEC-22：文档内不可见格式字符归零即通过"),
     ("动态执行", "R-SEC-04", "安全检查", "scripts/",
      "用显式分支替代 eval/exec；确需动态执行时限定受控白名单并留审计日志",
      "重跑规则 R-SEC-04：eval/exec 不再接受外部输入即通过"),
@@ -1358,7 +1801,7 @@ def _tree_hashes(root):
     return files, "sha256:" + tree
 
 
-def build_attestation(root, score, grade, dims, evidence, veto=None):
+def build_attestation(root, score, grade, dims, evidence, veto=None, provenance="self"):
     """生成可复现的评测证明。fingerprint 只取自被测内容，不含路径与时间。"""
     payload = {
         "object": {"score": score, "grade": grade},
@@ -1380,13 +1823,27 @@ def build_attestation(root, score, grade, dims, evidence, veto=None):
     }
     return {
         "framework": "LGD 三律 · 有籍(可追溯) / 有证(可验证) / 有门禁(可阻断)",
-        "engine_version": "1.1.0",
+        "engine": ENGINE_NAME,
+        "engine_version": ENGINE_VERSION,
         "score": score,
         "grade": grade,
+        # 结论线程：分数之外必须说明"这个分数管不管用"。
+        # inconclusive_reasons 非空 ⇒ 安全维度无从判定，分数不得当作通过证据。
+        "conclusion": "inconclusive" if _INCONCLUSIVE else "consistent",
+        "inconclusive_reasons": list(_INCONCLUSIVE),
+        "conclusion_note": ("无安全信号可判定：请按 human/third-party review 结论处理，"
+                            "不要把分数当作通过证据") if _INCONCLUSIVE else "",
+        # 评测与授权分离，且来源可区分：这两项是要给下游（CI / 注册表 / 人工复核）看的，
+        # 不能只存在终端输出里，否则换个人读 JSON 就又把分数当成了通行证。
+        "authorization_status": AUTHORIZATION_STATUS,
+        "authorization_note": "评测不签发执行权限；如需授权，须由维护者/无关联第三方另行书面授予",
+        "evaluation_provenance": provenance,
+        "provenance_label": PROVENANCE_LABELS.get(provenance, provenance),
         "dims": payload["dims"],
         "findings": payload["findings"],
         "fingerprint": "sha256:" + fp,
-        "safety_veto": veto if veto else {"applied": False},
+        "safety_veto": veto if veto else {"applied": False, "triggered": False,
+                                          "critical_rules": []},
         "inputs": inputs,
         "reproduce": "python evaluate.py <同一路径> --evidence-json out.json  # 应得到完全相同的 fingerprint 与 tree_sha256",
     }
@@ -1504,18 +1961,34 @@ def sandbox_backend():
     return None
 
 
+def _sbox_env(tree, logp):
+    """沙箱子进程环境：白名单，而不是 dict(os.environ)。
+
+    被测脚本是**未经审查的第三方代码**。把宿主全量环境传进去，等于把本机凭证
+    （AWS / GitHub / 模型 API key）递到它手上，它读 env 再外发就能拿走。
+    这段此前只存在于 lgd-gate 的副本里，正典这份漏了——两份评估器互相缺对方的一处修正。
+    """
+    allow = ("PATH", "TMP", "TEMP", "TMPDIR", "LANG", "LC_ALL", "LANGUAGE",
+             "SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "PATHEXT", "WINDIR",
+             "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
+             "PYTHONIOENCODING", "PYTHONUTF8", "TERM")
+    env = {k: os.environ[k] for k in allow if k in os.environ}
+    for k in list(env):
+        if any(t in k.upper() for t in ("KEY", "TOKEN", "SECRET", "PASSWORD",
+                                        "PASSWD", "CREDENTIAL", "AUTH", "PRIVATE")):
+            env.pop(k, None)
+    env["LGD_AUDIT_LOG"] = logp
+    env["HOME"] = tree
+    return env
+
+
 def _sandbox_one(backend, tree, script, timeout):
     rel = os.path.relpath(script, tree).replace("\\", "/")
     logp = os.path.join(tree, "_audit_%s.jsonl"
                         % hashlib.sha256(rel.encode()).hexdigest()[:8])
     if os.path.exists(logp):
         os.remove(logp)
-    env = dict(os.environ)
-    env["LGD_AUDIT_LOG"] = logp
-    env["HOME"] = tree
-    for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
-              "all_proxy", "ALL_PROXY", "ftp_proxy", "FTP_PROXY", "PYTHONHOME"):
-        env.pop(k, None)
+    env = _sbox_env(tree, logp)
     if backend == "unshare":
         env["PYTHONPATH"] = tree
         cmd = ["unshare", "--user", "--map-root-user", "--net", "--pid", "--fork",
@@ -1656,6 +2129,10 @@ if __name__ == "__main__":
                     help="在终端打印证据链：规则 → 文件:行 → 证据 → 整改 → 复验")
     ap.add_argument("--fail-under", type=int, default=0, metavar="N",
                     help="门禁模式：分数低于 N 时以退出码 1 结束，可直接用于 CI 卡 PR")
+    ap.add_argument("--provenance", choices=["self", "automated", "third_party"],
+                    default="self",
+                    help="评测来源声明：self=维护者自评（默认）、automated=CI 自动跑、"
+                         "third_party=无关联第三方复核。自评不会被标成第三方认证。")
     ap.add_argument("--sarif", metavar="PATH",
                     help="输出 SARIF 2.1.0（GitHub Code Scanning 可直接消费）")
     ap.add_argument("--llm-review", action="store_true",
@@ -1692,7 +2169,12 @@ if __name__ == "__main__":
         print("ℹ️ 单文件模式：已按标准技能目录包装评测（%s）" % os.path.basename(args.skill_path))
         print("   仅能评文本质量；结构/目录维度会因缺 LICENSE、README、scripts/ 扣分。完整评测请传目录。")
 
-    score, grade, dims, findings, warnings, veto_info = evaluate_skill(target)
+    # 具名结果。原先是 6 元位置解包——evaluate_skill 再加第 7 个返回项，
+    # CLI 就会 ValueErr，而 CLI 是零安装入口的第一条路。
+    _r = evaluate_skill_result(target, provenance=args.provenance)
+    score, grade, dims = _r["score"], _r["grade"], _r["dims"]
+    findings, warnings = _r["findings"], _r["warnings"]
+    veto_info = _r["safety_veto"]
 
     
     if args.ascii:
@@ -1712,7 +2194,8 @@ if __name__ == "__main__":
 
     if args.evidence_json or args.detail or args.sarif or args.llm_review:
         evidence = build_evidence(target, findings, warnings)
-        att = build_attestation(target, score, grade, dims, evidence, veto_info)
+        att = build_attestation(target, score, grade, dims, evidence, veto_info,
+                                provenance=args.provenance)
 
         if args.evidence_json:
             with open(args.evidence_json, 'w', encoding='utf-8', newline='\n') as f:
@@ -1784,3 +2267,11 @@ if __name__ == "__main__":
             sys.exit(1)
         print()
         print(f"  ✅ 门禁通过：{score} ≥ {args.fail_under}")
+
+    if _INCONCLUSIVE:
+        # 结论不成立的评测，即使分数好看也不能给 0：消费方会把它当通过证据。
+        print()
+        print("  ⚠️ INCONCLUSIVE: %s" % ", ".join(_INCONCLUSIVE))
+        print("  result=INCONCLUSIVE  reason=%s（分数仅作参考，不得当作通过证据）"
+              % _INCONCLUSIVE[0])
+        sys.exit(2)
