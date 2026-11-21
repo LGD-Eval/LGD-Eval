@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import math
 import os
 import shutil
 import tempfile
@@ -350,6 +351,25 @@ def _prf(tp: int, fp: int, fn: int) -> Dict[str, Any]:
     }
 
 
+def _wilson(k: int, n: int, z: float = 1.96) -> Dict[str, Any]:
+    """二项比例 Wilson 95% 区间（小样本防过度外推）。
+
+    n=0 时三项均为 None，不给空区间。返回 point/lo/hi/n，四舍五入到 4 位。
+    """
+    if n == 0:
+        return {"point": None, "lo": None, "hi": None, "n": 0}
+    p = k / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return {
+        "point": round(p, 4),
+        "lo": round(max(0.0, center - half), 4),
+        "hi": round(min(1.0, center + half), 4),
+        "n": n,
+    }
+
+
 def summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     total = len(rows)
     matched = sum(1 for r in rows if r["match"])
@@ -376,6 +396,12 @@ def summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     matrix = {"TP": tp, "FP": fp, "FN": fn, "TN": tn, "excluded": excluded}
     prf = _prf(tp, fp, fn)
+    # 小样本 95% Wilson 区间：点估计不可外推，区间下界/上界一并公开。
+    ci = {
+        "precision": _wilson(tp, tp + fp),
+        "recall": _wilson(tp, tp + fn),
+        "fpr": _wilson(fp, fp + tn),
+    }
     infra_ids = [r["id"] for r in rows if r.get("infra_error")]
     lats = [r["latency_ms"] for r in rows if r.get("latency_ms") is not None]
     latency = {
@@ -390,6 +416,7 @@ def summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "all_match": matched == total,
         "confusion": matrix,
         **prf,
+        "ci": ci,
         "infra_errors": len(infra_ids),
         "infra_error_ids": infra_ids,
         "latency_ms": latency,
@@ -409,6 +436,8 @@ def main() -> int:
     print("confusion: TP=%d FP=%d FN=%d TN=%d excluded=%d" %
           (m["TP"], m["FP"], m["FN"], m["TN"], len(m["excluded"])))
     print("precision=%s recall=%s f1=%s" % (s["precision"], s["recall"], s["f1"]))
+    for name, c in s["ci"].items():
+        print("CI95 %-10s [%s, %s] (n=%d)" % (name, c["lo"], c["hi"], c["n"]))
     lat = s["latency_ms"]
     print("latency mean=%sms max=%sms (n=%d)" % (lat["mean"], lat["max"], lat["count"]))
     if s["infra_errors"]:

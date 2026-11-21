@@ -139,6 +139,20 @@ class AccuracyBenchmark(unittest.TestCase):
         self.assertIn("RuntimeError", r["infra_error_note"])
         self.assertIsInstance(r["latency_ms"], float)
 
+    def test_wilson_ci_brackets_point_estimate(self):
+        ci = self.summary["ci"]
+        for name in ("precision", "recall", "fpr"):
+            c = ci[name]
+            self.assertIsNotNone(c["point"])
+            self.assertLessEqual(c["lo"], c["point"] + 1e-9)
+            self.assertGreaterEqual(c["hi"], c["point"] - 1e-9)
+            self.assertGreaterEqual(c["lo"], 0.0)
+            self.assertLessEqual(c["hi"], 1.0)
+        self.assertEqual(ci["recall"]["n"], 14)
+        self.assertEqual(ci["fpr"]["n"], 5)
+        # 小样本 0/5 的 FPR 点估计为 0，但上界必须 >0，不得把 0 误读为真实零误报。
+        self.assertGreater(ci["fpr"]["hi"], 0.0)
+
     def test_latency_and_infra_error_observability(self):
         # 每例都留墙钟耗时；干净基线无基础设施异常；汇总给出 mean/max。
         for r in self.rows:
