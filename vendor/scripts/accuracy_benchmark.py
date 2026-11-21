@@ -280,14 +280,51 @@ def evaluate_cases() -> List[Dict[str, Any]]:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _prf(tp: int, fp: int, fn: int) -> Dict[str, Any]:
+    precision = tp / (tp + fp) if (tp + fp) else None
+    recall = tp / (tp + fn) if (tp + fn) else None
+    f1 = (2 * precision * recall / (precision + recall)
+          if precision is not None and recall is not None and (precision + recall) else None)
+    return {
+        "precision": round(precision, 4) if precision is not None else None,
+        "recall": round(recall, 4) if recall is not None else None,
+        "f1": round(f1, 4) if f1 is not None else None,
+    }
+
+
 def summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     total = len(rows)
     matched = sum(1 for r in rows if r["match"])
+
+    # 二分类安全判定：正类=应拒绝(NOT_GRANTED)，负类=应放行(GRANTED)。
+    # INCOMPLETE/UNKNOWN 属第三态，不计入二分类矩阵，单列排除避免拉偏指标。
+    risky = {authz.NOT_GRANTED}
+    safe = {authz.GRANTED}
+    tp = fp = fn = tn = 0
+    excluded: List[str] = []
+    for r in rows:
+        if r["expect"] in risky:
+            if r["actual"] in risky:
+                tp += 1
+            else:
+                fn += 1  # 漏报：高危被放行/未拒绝
+        elif r["expect"] in safe:
+            if r["actual"] in safe:
+                tn += 1
+            else:
+                fp += 1  # 误报：干净样本被否决
+        else:
+            excluded.append(r["id"])
+
+    matrix = {"TP": tp, "FP": fp, "FN": fn, "TN": tn, "excluded": excluded}
+    prf = _prf(tp, fp, fn)
     return {
         "total": total,
         "matched": matched,
         "accuracy": round(matched / total, 4) if total else 0.0,
         "all_match": matched == total,
+        "confusion": matrix,
+        **prf,
         "rows": rows,
     }
 
@@ -300,6 +337,10 @@ def main() -> int:
         print("[%s] %-24s expect=%-12s actual=%-12s score=%s veto=%s" %
               (flag, r["id"], r["expect"], r["actual"], r["score"], r["veto_level"]))
     print("\naccuracy = %d/%d = %.2f%%" % (s["matched"], s["total"], s["accuracy"] * 100))
+    m = s["confusion"]
+    print("confusion: TP=%d FP=%d FN=%d TN=%d excluded=%d" %
+          (m["TP"], m["FP"], m["FN"], m["TN"], len(m["excluded"])))
+    print("precision=%s recall=%s f1=%s" % (s["precision"], s["recall"], s["f1"]))
     return 0 if s["all_match"] else 1
 
 
