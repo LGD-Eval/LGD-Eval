@@ -49,6 +49,22 @@ class AccuracyBenchmark(unittest.TestCase):
         r = self.by_id["missing-evidence"]
         self.assertEqual(r["actual"], authz.INCOMPLETE)
 
+    def test_secret_and_injection_blocked_high(self):
+        for cid in ("hardcoded-secret-high", "prompt-injection-high"):
+            r = self.by_id[cid]
+            self.assertEqual(r["actual"], authz.NOT_GRANTED, cid)
+            self.assertEqual(r["veto_level"], "high", cid)
+
+    def test_benign_doc_control_not_false_positive(self):
+        r = self.by_id["benign-doc-control"]
+        self.assertEqual(r["actual"], authz.GRANTED)
+        self.assertEqual(r["veto_level"], "")
+
+    def test_cross_file_taint_blocked_critical(self):
+        r = self.by_id["cross-file-taint-critical"]
+        self.assertEqual(r["actual"], authz.NOT_GRANTED)
+        self.assertEqual(r["veto_level"], "critical")
+
 
 if __name__ == "__main__":
     unittest.main()

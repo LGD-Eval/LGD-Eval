@@ -661,7 +661,7 @@ def evaluate_skill(skill_path):
     for a, (a_src, _a_sink, _a_imp) in sorted(taint.items()):
         if not a_src:
             continue
-        mod_a = os.path.splitext(a)[0]
+        mod_a = os.path.splitext(os.path.basename(a))[0]
         for b, (_b_src, b_sink, b_imp) in sorted(taint.items()):
             if a == b or not b_sink:
                 continue
