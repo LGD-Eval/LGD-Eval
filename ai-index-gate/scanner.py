@@ -435,6 +435,98 @@ RULES.update(_pack("zh", "LLM01/A04/A05", {
     "zh_memory": {"pattern": [
         re.compile(r"(长期记忆|永久记忆|写入记忆|记住)[^。\n]{0,24}(以后|后续|未来|所有会话|每次对话)"),
     ], "level": "P1", "reason": "中文跨会话记忆持久化投毒"},
+    "zh_destroy_all_backup": {"pattern": [
+        re.compile(r"(清空|删除|抹掉|销毁|格式化)[^。\n]{0,25}(所有备份|全部备份|所有快照)"),
+        re.compile(r"(所有备份|全部备份)[^。\n]{0,20}(删除|清空|抹掉|销毁)"),
+    ], "level": "P1", "reason": "中文删除全部备份（不可恢复的破坏性操作）"},
+    "zh_no_confirm_exec": {"pattern": [
+        re.compile(r"(删除|清空|格式化|覆盖|执行|下单|转账)[^。\n]{0,24}"
+                   r"(不用|无需|不必|不需要)(?:等)?(?:我|用户)?(?:的)?(确认|审批|授权|同意)"),
+    ], "level": "P1", "reason": "中文要求跳过人类确认直接执行"},
+}))
+
+
+# --- 多语种投毒包（2026-11-22）：holdout_v5 西/日/俄/葡 6 条正则 0/6，补齐语言边界 ---
+# 设计原则：全部采用「双信号」共现（覆盖句式 + 敏感对象/外发地址/破坏对象），
+# 避免单词级翻译词表把安全文档里引用的攻击句式打成攻击。
+_ML_OVERRIDE = (
+    r"ignora|ignore|ignorar|olvida|olvidar|descarta|descarte|esqueça|esquecer|desconsidere|"
+    r"игнорируй|игнорировать|забудь|отбрось|"
+    r"無視|忘れ|破棄|"
+    r"ignoriere|vergiss|missachte|ignorez|oublie"
+)
+_ML_INSTR = (
+    r"instrucciones|indicaciones|órdenes|instruções|"
+    r"инструкц|указани|"
+    r"指示|命令|プロンプト|"
+    r"Anweisungen|Vorgaben|instructions|consignes"
+)
+_ML_SECRET = (
+    r"clave|contraseña|senha|chave|"
+    r"ключ|пароль|токен|системн|"
+    r"パスワード|APIキー|秘密鍵|システムプロンプト|"
+    r"Passwort|Schlüssel|Token|Systemprompt|clé|mot de passe|jeton|prompt système"
+)
+RULES.update(_pack("ml", "LLM01/A04/A05", {
+    "ml_override_secret": {"pattern": [
+        re.compile(r"(?i)(?:%s)[^.\n]{0,45}(?:%s)[^.\n]{0,60}(?:%s)"
+                   % (_ML_OVERRIDE, _ML_INSTR, _ML_SECRET)),
+        re.compile(r"(?i)(?:%s)[^。\n]{0,15}(?:%s)[^。\n]{0,50}(?:%s)"
+                   % (r"指示|命令|プロンプト", r"無視|忘れ|破棄", _ML_SECRET)),
+    ], "level": "P0", "reason": "多语种指令覆盖 + 凭证/系统提示词索取（西/日/俄/葡/德/法）"},
+    "ml_exfil_url": {"pattern": [
+        re.compile(r"(?i)(?:enviar|envíe|envie|reenvíe|reenvie|transfiera|transmita|mande|manda|"
+                   r"отправь|отправьте|перешли|перешлите|передай|"
+                   r"送信|転送|アップロード|送出|"
+                   r"versenden|weiterleiten|senden|"
+                   r"envoyez|transférez|transmettre)"
+                   r"[^.\n]{0,70}(?:historial|conversación|conversa|mensajes|mensagens|entrada|entradas|"
+                   r"input|историю|переписк|сообщени|данные|Verlauf|Gespräch|Eingaben|"
+                   r"historique|conversation|messages|saisie)"
+                   r"[^.\n]{0,50}(?:https?://|外部|extern|externe|外部サーバー)"),
+        re.compile(r"(?:この|その|あの)?(ツール|スキル|プラグイン|機能|コマンド)"
+                   r"[^。\n]{0,20}(呼ばれる|呼ばれた|実行される|実行された|使用される|使用された|起動され)"
+                   r"[^。\n]{0,40}(転送|送信|アップロード|外部|サーバー)"),
+        re.compile(r"(?i)(?:когда|если)\s+(?:этот|это|данный)\s+(?:инструмент|навык|плагин)"
+                   r"[^.\n]{0,20}(?:вызыва|запуска|использу)"
+                   r"[^.\n]{0,40}(?:пере(?:шли|дай|сыла)|отправ|загруз)"),
+    ], "level": "P0", "reason": "多语种数据外传到外部地址（含工具侧信道转发）"},
+    "ml_destructive_db": {"pattern": [
+        re.compile(r"(?i)(?:apague|apagar|elimine|eliminar|borre|borrar|destruya|destruir|"
+                   r"exclua|excluir|delete|удали|удалить|сотри|уничтожь|"
+                   r"lösche|löschen|supprimez|supprimer|effacez)"
+                   r"[^.\n]{0,45}(?:banco de dados|base de dados|base de datos|producción|produção|"
+                   r"производственн|базу данных|база данных|Datenbank|Produktion|"
+                   r"base de données|production)"),
+        re.compile(r"(?:データベース|本番環境|本番)[^。\n]{0,25}(?:削除|消去|消して|落と)"),
+        re.compile(r"(?i)(?:база данных|базу данных|прод)[^.\n]{0,25}(?:удали|сотри|уничтожь|дроп)"),
+    ], "level": "P1", "reason": "多语种破坏性数据操作（清库/删生产数据）"},
+    "ml_silent_no_confirm": {"pattern": [
+        re.compile(r"(?i)(?:sem|sem qualquer|sin|без|ohne|sans)\s+"
+                   r"(?:confirmação|confirmación|confirmar|подтвержд|Bestätigung|confirmation)"
+                   r"[^.\n]{0,40}(?:delete|apague|elimine|удали|削除|lösche|supprimez)"),
+        re.compile(r"(?i)(?:delete|apague|elimine|удали|削除|lösche|supprimez)"
+                   r"[^.\n]{0,45}(?:sem|sin|без|ohne|sans)\s+"
+                   r"(?:confirmação|confirmación|подтвержд|Bestätigung|confirmation)"),
+    ], "level": "P1", "reason": "多语种“无需确认即执行破坏性动作”"},
+    "ml_reveal_secret": {"pattern": [
+        re.compile(r"(?i)(?:gib|geben|zeige|zeigen|drucke|drucken|liefere|nenne)"
+                   r"[^.\n]{0,45}(?:API-?Schlüssel|Passwort|Token|Zugangsdaten|Umgebungsvariablen|Geheimnis)"),
+        re.compile(r"(?i)(?:affiche|affichez|montre|montrez|imprime|imprimer|révèle|révélez)"
+                   r"[^.\n]{0,45}(?:clé|mot de passe|jeton|variables d'environnement|secret)"),
+        re.compile(r"(?i)(?:muestra|muestre|imprime|imprima|enseña|exiba|mostre)"
+                   r"[^.\n]{0,45}(?:clave|contraseña|senha|chave|token|variables de entorno|variáveis de ambiente)"),
+        re.compile(r"(?:出力|表示|教えて|見せて|プリント)"
+                   r"[^。\n]{0,30}(?:APIキー|パスワード|トークン|環境変数|秘密鍵)"),
+        re.compile(r"(?i)(?:выведи|выведите|покажи|покажите|напечатай)"
+                   r"[^.\n]{0,40}(?:ключ|пароль|токен|переменн|секрет)"),
+    ], "level": "P0", "reason": "多语种凭证/环境变量索取（无覆盖句式亦可命中）"},
+    "ml_memory_persist": {"pattern": [
+        re.compile(r"(?i)(?:permanent|persistent|long[-\s]?term|постоянн|永久|permanente)\s*"
+                   r"(?:memory|memoria|memória|памят|記憶|memorie)"
+                   r"[^.\n]{0,70}(?:surviv|persist|remain|stay|sobreviv|bleib|оста|сохран)"),
+        re.compile(r"(?:记忆|記憶)[^。\n]{0,30}(?:永久|长期|长期保留|所有会话|之后所有)"),
+    ], "level": "P1", "reason": "多语种长期记忆持久化（跨会话存活指令）"},
 }))
 
 # --- 英文变体补丁（D3-4）：relay/mirror 类动词、直连 URL、超级用户、条件隐藏输出 ---
