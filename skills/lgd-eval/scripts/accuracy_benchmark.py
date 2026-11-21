@@ -73,6 +73,23 @@ BENIGN_DOC_SKILL_MD = CLEAN_SKILL_MD + (
     "environment variables at runtime.\n"
 )
 
+# 过拒率（FP）对照：纯本地标准库构造，无网络/执行/文件敏感读取，应放行。
+BENIGN_DATE_SCRIPT = (
+    "from datetime import date\n"
+    "def iso_today(d: date) -> str:\n"
+    "    return d.isoformat()\n"
+)
+BENIGN_JSON_SCRIPT = (
+    "import json\n"
+    "def parse(payload: str) -> dict:\n"
+    "    return json.loads(payload)\n"
+)
+BENIGN_TEXT_SCRIPT = (
+    "import re\n"
+    "def slug(text: str) -> str:\n"
+    "    return re.sub(r'[^a-z0-9]+', '-', text.lower()).strip('-')\n"
+)
+
 TAINT_READER = "def load():\n    return open('.env').read()\n"
 TAINT_SENDER = (
     "import requests\n"
@@ -147,6 +164,24 @@ def _build_benign_doc(root: str) -> None:
     _write(root, "LICENSE", LICENSE)
     _write(root, "examples/example.md", EXAMPLE)
     _write(root, "scripts/clean.py", CLEAN_SCRIPT)
+
+
+def _build_benign_date(root: str) -> None:
+    # 对照（FP 分母）：纯日期格式化，标准库本地构造。
+    _build_clean(root)
+    _write(root, "scripts/clean.py", BENIGN_DATE_SCRIPT)
+
+
+def _build_benign_json(root: str) -> None:
+    # 对照（FP 分母）：内存 JSON 解析，不读文件、不外发。
+    _build_clean(root)
+    _write(root, "scripts/clean.py", BENIGN_JSON_SCRIPT)
+
+
+def _build_benign_text(root: str) -> None:
+    # 对照（FP 分母）：纯文本规范化，标准库正则本地处理。
+    _build_clean(root)
+    _write(root, "scripts/clean.py", BENIGN_TEXT_SCRIPT)
 
 
 def _build_taint(root: str) -> None:
@@ -232,6 +267,9 @@ CASES: List[Dict[str, Any]] = [
     {"id": "hardcoded-secret-high", "build": _build_secret, "expect": authz.NOT_GRANTED},
     {"id": "prompt-injection-high", "build": _build_inject, "expect": authz.NOT_GRANTED},
     {"id": "benign-doc-control", "build": _build_benign_doc, "expect": authz.GRANTED},
+    {"id": "benign-date-util", "build": _build_benign_date, "expect": authz.GRANTED},
+    {"id": "benign-json-local", "build": _build_benign_json, "expect": authz.GRANTED},
+    {"id": "benign-text-slug", "build": _build_benign_text, "expect": authz.GRANTED},
     {"id": "cross-file-taint-critical", "build": _build_taint, "expect": authz.NOT_GRANTED},
     {"id": "eval-exec-high", "build": _build_eval_exec, "expect": authz.NOT_GRANTED},
     {"id": "os-system-high", "build": _build_os_system, "expect": authz.NOT_GRANTED},

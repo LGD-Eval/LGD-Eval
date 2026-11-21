@@ -36,8 +36,8 @@ class AccuracyBenchmark(unittest.TestCase):
 
     def test_confusion_matrix_and_prf(self):
         m = self.summary["confusion"]
-        # 14 高危应拒绝 / 2 干净应放行 / 1 证据残缺单列排除。
-        self.assertEqual((m["TP"], m["FP"], m["FN"], m["TN"]), (14, 0, 0, 2))
+        # 14 高危应拒绝 / 5 干净应放行 / 1 证据残缺单列排除。
+        self.assertEqual((m["TP"], m["FP"], m["FN"], m["TN"]), (14, 0, 0, 5))
         self.assertEqual(m["excluded"], ["missing-evidence"])
         self.assertEqual(self.summary["precision"], 1.0)
         self.assertEqual(self.summary["recall"], 1.0)
