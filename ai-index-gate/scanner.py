@@ -73,9 +73,11 @@ RULES.update(_pack("inject", "LLM01/A10", {
         re.compile(r"(?i)(ignore\s+all\s+previous\s+instructions|forget\s+everything)\s+(?:if|and|then|so)\s+.{0,80}?(?:print|say|tell|output)"),
     ], "level": "P1", "reason": "条件性双提示（conditional prompt injection）"},
     "jailbreak": {"pattern": [
-        re.compile(r"(?i)(jailbreak|do\s+anything\s+now|developer\s+mode|dan\s+mode|unaligned\s+mode)"),
+        re.compile(r"(?i)(do\s+anything\s+now|developer\s+mode|dan\s+mode|unaligned\s+mode|jailbroken)"),
+        re.compile(r"(?i)jailbreak(?:ing)?\s+(?:mode|prompt|the\s+(?:model|ai|assistant)|this\s+(?:ai|model))"),
+        re.compile(r"(?i)enable\s+(?:the\s+)?jailbreak"),
         re.compile(r"(?i)(bypass\s+(?:the\s+)?(?:safety|policy|guardrails?|filters?|restrictions))"),
-    ], "level": "P1", "reason": "越狱提示（jailbreak 关键词）"},
+    ], "level": "P1", "reason": "越狱提示（需与 mode/prompt/绕过语境共现，单词不再单独命中）"},
     "delimited_injection": {"pattern": [
         re.compile(r"(?i)(?:```|\"\"\"|###)\s*(?:system|developer|user)\s*[:：]"),
         re.compile(r"(?i)(?:<\|im_start\|>|\{\{system\}\}|\[system\])\s*[:：]"),
