@@ -1,0 +1,132 @@
+{
+  "total": 18,
+  "pass": 18,
+  "results": [
+    {
+      "id": "N01",
+      "desc": "score=100 且无 grant → NOT_GRANTED（评分不授予权限）",
+      "got": "NOT_GRANTED",
+      "want": "NOT_GRANTED",
+      "pass": true
+    },
+    {
+      "id": "N02",
+      "desc": "score=96 且无 grant → NOT_GRANTED",
+      "got": "NOT_GRANTED",
+      "want": "NOT_GRANTED",
+      "pass": true
+    },
+    {
+      "id": "N03",
+      "desc": "evaluation_status=UNKNOWN → UNKNOWN（不接受下游策略代判）",
+      "got": "UNKNOWN",
+      "want": "UNKNOWN",
+      "pass": true
+    },
+    {
+      "id": "N04",
+      "desc": "evaluation_status=INCOMPLETE → INCOMPLETE",
+      "got": "INCOMPLETE",
+      "want": "INCOMPLETE",
+      "pass": true
+    },
+    {
+      "id": "N05",
+      "desc": "score=None → INCOMPLETE",
+      "got": "INCOMPLETE",
+      "want": "INCOMPLETE",
+      "pass": true
+    },
+    {
+      "id": "N06",
+      "desc": "score=120 → INCOMPLETE",
+      "got": "INCOMPLETE",
+      "want": "INCOMPLETE",
+      "pass": true
+    },
+    {
+      "id": "N07",
+      "desc": "grant 缺 approved_by → NOT_GRANTED",
+      "got": "NOT_GRANTED",
+      "want": "NOT_GRANTED",
+      "pass": true
+    },
+    {
+      "id": "N08",
+      "desc": "grant 无 expires_at → NOT_GRANTED（fail-closed）",
+      "got": "NOT_GRANTED",
+      "want": "NOT_GRANTED",
+      "pass": true
+    },
+    {
+      "id": "N09",
+      "desc": "grant 已过期 → EXPIRED",
+      "got": "EXPIRED",
+      "want": "EXPIRED",
+      "pass": true
+    },
+    {
+      "id": "N10",
+      "desc": "grant 被撤销 → REVOKED",
+      "got": "REVOKED",
+      "want": "REVOKED",
+      "pass": true
+    },
+    {
+      "id": "N11",
+      "desc": "artifact_digest 不匹配 → NOT_GRANTED（授权不能跨产物复用）",
+      "got": "NOT_GRANTED",
+      "want": "NOT_GRANTED",
+      "pass": true
+    },
+    {
+      "id": "N12",
+      "desc": "artifact_digest 未提供 → NOT_GRANTED",
+      "got": "NOT_GRANTED",
+      "want": "NOT_GRANTED",
+      "pass": true
+    },
+    {
+      "id": "N13",
+      "desc": "请求 scope 超出授权 → NOT_GRANTED",
+      "got": "NOT_GRANTED",
+      "want": "NOT_GRANTED",
+      "pass": true
+    },
+    {
+      "id": "P01",
+      "desc": "score=20 + 合法 grant → GRANTED，且 exec_tier=L2",
+      "got": "('GRANTED', 'L2')",
+      "want": "('GRANTED', 'L2')",
+      "pass": true
+    },
+    {
+      "id": "P02",
+      "desc": "score=100 + 授权 L1 → exec_tier=L1（L0 永不可作为权限档）",
+      "got": "('GRANTED', 'L1', 'L0')",
+      "want": "('GRANTED', 'L1', 'L0')",
+      "pass": true
+    },
+    {
+      "id": "P03",
+      "desc": "请求 scope 为授权子集 → GRANTED",
+      "got": "GRANTED",
+      "want": "GRANTED",
+      "pass": true
+    },
+    {
+      "id": "P04",
+      "desc": "score=100 时 suggested_tier=L0（评分照常表达，但无权限含义）",
+      "got": "L0",
+      "want": "L0",
+      "pass": true
+    },
+    {
+      "id": "P05",
+      "desc": "grant 要求 exec_tier=L0 → NOT_GRANTED（L0 不可作为权限档）",
+      "got": "NOT_GRANTED",
+      "want": "NOT_GRANTED",
+      "pass": true
+    }
+  ]
+}

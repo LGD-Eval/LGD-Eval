@@ -1,0 +1,321 @@
+diff --git a/action.yml b/action.yml
+index 9260035..00c7998 100644
+--- a/action.yml
++++ b/action.yml
+@@ -7,6 +7,14 @@ branding:
+   color: 'teal'
+ 
+ inputs:
++  grant-file:
++    description: 'Optional path to an explicit authorization grant JSON. A score alone NEVER grants execution.'
++    required: false
++    default: ''
++  fail-on-not-granted:
++    description: 'Fail the step when authorization is NOT_GRANTED (default false: report only).'
++    required: false
++    default: 'false'
+   path:
+     description: 'Path to the skill directory to evaluate'
+     required: false
+@@ -42,8 +50,14 @@ inputs:
+ 
+ outputs:
+   score:
+-    description: 'Trust Score (0-100)'
++    description: 'Trust Score (0-100). Quality signal only — does not grant execution.'
+     value: ${{ steps.eval.outputs.score }}
++  authorization:
++    description: 'GRANTED / NOT_GRANTED / EXPIRED / REVOKED / UNKNOWN / INCOMPLETE. Defaults to NOT_GRANTED — a score never grants execution.'
++    value: ${{ steps.eval.outputs.authorization }}
++  exec-tier:
++    description: 'Execution tier actually authorized by an explicit grant; never L0.'
++    value: ${{ steps.eval.outputs.exec-tier }}
+   grade:
+     description: 'Grade (A+/A/B/C/D)'
+     value: ${{ steps.eval.outputs.grade }}
+@@ -83,7 +97,7 @@ runs:
+         else                           GRADE="D"
+         fi
+ 
+-        if   [ "$SCORE" -ge 96 ]; then TIER="L0"; SUGGEST="免审批直接执行"
++        if   [ "$SCORE" -ge 96 ]; then TIER="L0"; SUGGEST="最高评分档；不授予执行权限，执行需显式授权（见 authorization 输出）"
+         elif [ "$SCORE" -ge 81 ]; then TIER="L1"; SUGGEST="一次性确认后执行（60 rpm）"
+         elif [ "$SCORE" -ge 51 ]; then TIER="L2"; SUGGEST="人工复核后执行（30 rpm）"
+         elif [ "$SCORE" -ge 31 ]; then TIER="L3"; SUGGEST="每次强制确认，建议先过沙箱"
+@@ -91,6 +105,20 @@ runs:
+         else                           TIER="L5"; SUGGEST="拒绝执行"
+         fi
+ 
++        # —— Evaluation / Authorization 分离：分数只表达质量，不产生权限 ——
++        set +e
++        AUTHZ_LOG=$(python3 "${{ github.action_path }}/authorize.py" \
++          --score "$SCORE" \
++          --path "${{ inputs.path }}" \
++          --grant-file "${{ inputs.grant-file }}")
++        AUTHZ_RC=$?
++        set -e
++        echo "$AUTHZ_LOG"
++        AUTHZ=$(printf '%s\n' "$AUTHZ_LOG" | grep '^authorization=' | cut -d= -f2)
++        AUTHZ=${AUTHZ:-NOT_GRANTED}
++        EXEC_TIER=$(printf '%s\n' "$AUTHZ_LOG" | grep '^exec_tier=' | cut -d= -f2)
++        EXEC_TIER=${EXEC_TIER:-L5}
++
+         echo "score=$SCORE"     >> "$GITHUB_OUTPUT"
+         echo "grade=$GRADE"     >> "$GITHUB_OUTPUT"
+         echo "tier=$TIER"       >> "$GITHUB_OUTPUT"
+@@ -104,11 +132,18 @@ runs:
+           echo "| 分数 | $SCORE / 100 |"
+           echo "| 等级 | $GRADE |"
+           echo "| 建议执行档位 | **$TIER** — $SUGGEST |"
++          echo "| 授权结论 | **$AUTHZ**（exec_tier=$EXEC_TIER） |"
++          echo "| 说明 | 评分不等于授权；无显式 grant 时默认 NOT_GRANTED |"
+           echo "| 门槛 | ${{ inputs.threshold }} |"
+           echo ""
+           echo "评分口径与五维权重见 https://github.com/LGD-Eval/evaluation-evidence/blob/main/LEADERBOARD.md"
+         } >> "$GITHUB_STEP_SUMMARY"
+ 
++        if [ "${{ inputs.fail-on-not-granted }}" = "true" ] && [ "$AUTHZ" != "GRANTED" ]; then
++          echo "::error::authorization=$AUTHZ (score=$SCORE does not grant execution)"
++          exit 1
++        fi
++
+         exit $RC
+ 
+     - id: upload
+@@ -116,4 +151,4 @@ runs:
+       uses: github/codeql-action/upload-sarif@v3
+       with:
+         sarif_file: ${{ inputs.sarif }}
+-        category: lgd-skill-gate
++        category: lgd-skill-gate
+\ No newline at end of file
+diff --git a/authorization.py b/authorization.py
+new file mode 100644
+index 0000000..148d4cf
+--- /dev/null
++++ b/authorization.py
+@@ -0,0 +1,144 @@
++# -*- coding: utf-8 -*-
++"""Evaluation / Authorization 分离（LGD-Eval P0-2 候选补丁核心模块）。
++
++铁律：
++1. **评分永不授予执行权限**。score 只影响"建议档位"，不产生 authorization。
++2. **默认 NOT GRANTED**。没有显式、有界、可撤销的授权对象，一律拒绝。
++3. UNKNOWN / INCOMPLETE / 缺失证据 → fail-closed，不交给下游策略。
++4. 授权必须绑定：artifact 摘要、范围、批准人、有效期，缺一不可。
++5. 即便授权成立，执行档位也**封顶 L1**（L0 只是评分档，不是权限档）。
++
++纯函数、无网络、无文件 IO（除传入的 dict），可直接单测。
++"""
++import datetime
++from typing import Optional
++
++# 授权结论（正/负）
++GRANTED = "GRANTED"
++NOT_GRANTED = "NOT_GRANTED"
++EXPIRED = "EXPIRED"
++REVOKED = "REVOKED"
++UNKNOWN = "UNKNOWN"
++INCOMPLETE = "INCOMPLETE"
++
++NEGATIVE = {NOT_GRANTED, EXPIRED, REVOKED, UNKNOWN, INCOMPLETE}
++
++# 评分 → 建议档位（仅建议，不含权限语义）
++TIERS = [(96, "L0"), (81, "L1"), (51, "L2"), (31, "L3"), (11, "L4"), (0, "L5")]
++
++# 执行档位上限：授权成立也最多到 L1
++EXEC_CEILING = "L1"
++
++REQUIRED_GRANT_FIELDS = ("grant_id", "approved_by", "approved_at",
++                         "expires_at", "artifact_digest", "scope")
++
++
++def tier_for(score: int) -> str:
++    for lo, t in TIERS:
++        if score >= lo:
++            return t
++    return "L5"
++
++
++def _parse(dt) -> Optional[datetime.datetime]:
++    if not dt or not isinstance(dt, str):
++        return None
++    try:
++        return datetime.datetime.fromisoformat(dt.replace("Z", "+00:00"))
++    except ValueError:
++        return None
++
++
++def _now(now=None) -> datetime.datetime:
++    n = now or datetime.datetime.now(datetime.timezone.utc)
++    return n if n.tzinfo else n.replace(tzinfo=datetime.timezone.utc)
++
++
++def decide(score, evaluation_status="COMPLETE", grant=None,
++           artifact_digest=None, requested_scope=None,
++           revoked_grants=(), now=None) -> dict:
++    """返回授权结论。**任何路径都不会因为 score 高而放行。**
++
++    score: 0-100，可为 None（缺失）
++    evaluation_status: COMPLETE / INCOMPLETE / UNKNOWN / FAILED
++    grant: 授权对象 dict 或 None
++    """
++    now = _now(now)
++    reasons = []
++    suggested_tier = tier_for(int(score)) if isinstance(score, (int, float)) else "L5"
++
++    # ① 评测本身不可信 → fail-closed，连"建议档位"都不给权限含义
++    if evaluation_status not in ("COMPLETE",):
++        return _reject(UNKNOWN if evaluation_status == "UNKNOWN" else INCOMPLETE,
++                       f"evaluation_status={evaluation_status}", suggested_tier)
++    if score is None:
++        return _reject(INCOMPLETE, "score_missing", suggested_tier)
++    if not isinstance(score, (int, float)) or not (0 <= score <= 100):
++        return _reject(INCOMPLETE, "score_out_of_range", suggested_tier)
++
++    if grant is None:
++        # 关键：高分也不放行，只是"建议档位"更高
++        reasons.append(f"score={score} 仅用于建议档位 {suggested_tier}，不构成授权")
++        return _reject(NOT_GRANTED, "no_grant_object", suggested_tier, reasons)
++
++    # ② 授权对象完整性
++    missing = [f for f in REQUIRED_GRANT_FIELDS if not grant.get(f)]
++    if missing:
++        return _reject(NOT_GRANTED, "grant_missing_fields:" + ",".join(missing),
++                       suggested_tier, reasons)
++
++    gid = grant.get("grant_id")
++    if gid in set(revoked_grants):
++        return _reject(REVOKED, f"grant {gid} revoked", suggested_tier, reasons)
++
++    exp = _parse(grant.get("expires_at"))
++    if exp is None:
++        return _reject(NOT_GRANTED, "grant_expires_at_invalid", suggested_tier, reasons)
++    if exp <= now:
++        return _reject(EXPIRED, f"grant expired at {grant.get('expires_at')}",
++                       suggested_tier, reasons)
++
++    # ③ 绑定：摘要必须一致，范围必须是子集
++    if artifact_digest and grant.get("artifact_digest") != artifact_digest:
++        return _reject(NOT_GRANTED, "artifact_digest_mismatch", suggested_tier, reasons)
++    if not artifact_digest:
++        return _reject(NOT_GRANTED, "artifact_digest_unverifiable", suggested_tier, reasons)
++
++    gscope = set(grant.get("scope") or [])
++    if requested_scope:
++        extra = set(requested_scope) - gscope
++        if extra:
++            return _reject(NOT_GRANTED, "scope_exceeds_grant:" + ",".join(sorted(extra)),
++                           suggested_tier, reasons)
++
++    # ④ 授权成立：执行档位由**授权对象**决定，与 score 无关；且永不为 L0
++    exec_tier = grant.get("exec_tier") or "L1"
++    if exec_tier not in ("L1", "L2", "L3", "L4", "L5"):
++        return _reject(NOT_GRANTED, f"grant_exec_tier_invalid:{exec_tier}",
++                       suggested_tier, reasons)
++    if exec_tier == "L0":
++        return _reject(NOT_GRANTED, "grant_exec_tier_L0_not_allowed",
++                       suggested_tier, reasons)
++    reasons.append(f"grant {gid} by {grant.get('approved_by')} valid until {exp.isoformat()}")
++    reasons.append(f"exec_tier={exec_tier} 由授权决定；score={score} 仅建议 {suggested_tier}")
++    return {
++        "authorization": GRANTED,
++        "suggested_tier": suggested_tier,
++        "exec_tier": exec_tier,
++        "requires_human": exec_tier != "L1" or True,   # L1 亦需一次性确认
++        "grant_id": gid,
++        "reasons": reasons,
++    }
++
++
++def _reject(status, reason, suggested_tier, reasons=None):
++    r = list(reasons or [])
++    r.append(reason)
++    return {
++        "authorization": status,
++        "suggested_tier": suggested_tier,
++        "exec_tier": "L5",              # 拒绝即 L5，不给"部分可用"
++        "requires_human": True,
++        "grant_id": None,
++        "reasons": r,
++    }
+diff --git a/authorize.py b/authorize.py
+new file mode 100644
+index 0000000..8bca8b7
+--- /dev/null
++++ b/authorize.py
+@@ -0,0 +1,74 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++"""评测与授权分离的 CLI —— 由 GitHub Action 调用。
++
++用法：
++  python3 authorize.py --score 96 --artifact-digest sha256:... [--grant-file grant.json]
++输出：
++  人类可读一行 + `authorization=<值>`（可直接追加到 $GITHUB_OUTPUT）
++退出码：0 = GRANTED，1 = 其他（默认 fail-closed）
++
++设计：score 永远不产生权限；只有显式 grant 对象才可能 GRANTED。
++"""
++import argparse
++import hashlib
++import json
++import sys
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++import authorization as az  # noqa: E402
++
++
++def tree_digest(root: Path) -> str:
++    """对被评测目录做确定性摘要（路径 + 内容），用于把授权绑定到具体产物。"""
++    h = hashlib.sha256()
++    for p in sorted(root.rglob("*")):
++        if p.is_file():
++            h.update(str(p.relative_to(root)).encode("utf-8"))
++            h.update(b"\0")
++            h.update(p.read_bytes())
++    return "sha256:" + h.hexdigest()
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--score", type=float, required=True)
++    ap.add_argument("--evaluation-status", default="COMPLETE")
++    ap.add_argument("--grant-file", default="")
++    ap.add_argument("--artifact-digest", default="")
++    ap.add_argument("--path", default="", help="被评测目录，用于计算摘要")
++    ap.add_argument("--revoked-grants", default="", help="逗号分隔的 grant_id")
++    a = ap.parse_args()
++
++    digest = a.artifact_digest
++    if not digest and a.path:
++        p = Path(a.path)
++        if p.exists():
++            digest = tree_digest(p)
++
++    grant = None
++    if a.grant_file:
++        try:
++            grant = json.loads(Path(a.grant_file).read_text(encoding="utf-8"))
++        except Exception as e:
++            print(f"AUTHORIZATION: NOT_GRANTED (grant file unreadable: {e})")
++            print("authorization=NOT_GRANTED")
++            return 1
++
++    revoked = tuple(x.strip() for x in a.revoked_grants.split(",") if x.strip())
++    r = az.decide(score=a.score, evaluation_status=a.evaluation_status,
++                  grant=grant, artifact_digest=digest, revoked_grants=revoked)
++
++    print(f"AUTHORIZATION: {r['authorization']}  |  suggested_tier={r['suggested_tier']}"
++          f"  |  exec_tier={r['exec_tier']}  |  requires_human={r['requires_human']}")
++    for reason in r["reasons"]:
++        print(f"  - {reason}")
++    print(f"authorization={r['authorization']}")
++    print(f"exec_tier={r['exec_tier']}")
++    print(f"artifact_digest={digest or ''}")
++    return 0 if r["authorization"] == az.GRANTED else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
