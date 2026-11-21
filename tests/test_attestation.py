@@ -49,6 +49,9 @@ class AttestationFieldsTest(unittest.TestCase):
         # 红线与过期口径
         self.assertIn("不等于", att["red_lines"])
         self.assertTrue(att["stale_policy"])
+        # 运行时沙箱可用性必须显式记录，不得静默当作已隔离
+        self.assertIn("runtime_sandbox", att)
+        self.assertIn("available", att["runtime_sandbox"])
         # 失败原因：无否决时为空
         self.assertEqual(att["failure_reason"], "")
         # 指纹与树哈希仍在
