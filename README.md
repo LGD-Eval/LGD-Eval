@@ -1,6 +1,6 @@
 > **LGD 生态入口** —— 从任一入口都能走到全部入口
 >
-> [官网 medxpert.cn](https://medxpert.cn/) · [评测门禁 lgd-gate](https://github.com/LGD-Eval/lgd-gate) · [npm 包 lgd-eval](https://github.com/LGD-Eval/lgd-eval) · [公开评分卡](https://github.com/LGD-Eval/evaluation-evidence/blob/main/scores.md) · [排行榜](https://github.com/LGD-Eval/evaluation-evidence/blob/main/LEADERBOARD.md) · [一行安装（免 VPN）](https://github.com/LGD-Eval/lgd-gate/releases/download/v1.0.0/lgd-eval-1.0.0.tgz)
+> [官网 medxpert.cn](https://medxpert.cn/) · [评测门禁 lgd-gate](https://github.com/LGD-Eval/lgd-gate) · [npm 包 lgd-eval](https://github.com/LGD-Eval/lgd-eval) · [公开评分卡](https://github.com/LGD-Eval/evaluation-evidence/blob/main/scores.md) · [排行榜](https://github.com/LGD-Eval/evaluation-evidence/blob/main/LEADERBOARD.md) · [一行安装（免 VPN）](https://github.com/LGD-Eval/lgd-gate/releases/download/v1.0.1/lgd-eval-1.0.1.tgz)
 >
 > 三律：**有籍**（可追溯）· **有证**（有证据）· **有门禁**（有检查）
 
@@ -14,7 +14,7 @@ AI Agent 技能评测引擎。给任意技能目录打一个 0–100 的 Trust S
 
 ```bash
 # 方式 A（今天就能用）：从 Release 下 tgz，解包后运行 —— 这条路线已实测通过
-#   https://github.com/LGD-Eval/lgd-gate/releases/download/v1.0.0/lgd-eval-1.0.0.tgz
+#   https://github.com/LGD-Eval/lgd-gate/releases/download/v1.0.1/lgd-eval-1.0.1.tgz
 # 方式 B（尚未发布）：npx lgd-eval —— 该包还没有发布到 npm registry，
 #   现在请求 registry 的 `lgd-eval` 包元数据，返回 404，所以这条命令暂时会失败。
 npx lgd-eval ./my-skill

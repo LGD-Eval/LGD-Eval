@@ -5304,6 +5304,14 @@ def main():
             global WAIVERS_ENABLED  # noqa: PLW0603 - 单进程 CLI 一次性开关
             WAIVERS_ENABLED = False
 
+        # 外人最常见的误用：把"仓库根目录"当成"技能包"扫一次，得到 0/F，
+        # 报告里却不解释——读者会以为"这个仓很危险"。口径必须写在最前面。
+        _subject = Path(args.skill_dir)
+        if _subject.is_dir() and not (_subject / "SKILL.md").exists():
+            print("  ⚠️ 口径提示：该目录没有 SKILL.md，按通用文档口径（AGENTS.md / *.md）评测；")
+            print("     结构/目录维度会按“非标准技能包”计 0 分，这是口径差异，不是安全结论。")
+            print("     要评技能包，请指向含 SKILL.md 的目录。")
+
         result = scan_skill(args.skill_dir, args.exclude)
 
         # Lenient mode: downgrade all findings by one level
