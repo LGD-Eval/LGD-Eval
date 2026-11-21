@@ -114,4 +114,5 @@ npm 包**不含第二套打分算法**。它只是一个启动器，转发给随
 
 ## License
 
-MIT © 2026 SynomosAI / LGD Ecosystem
+CC BY 4.0 © 2026 SynomosAI / LGD Ecosystem — attribution required; see [LICENSE](LICENSE).
+Tooling in [skill-audit](https://github.com/LGD-Eval/skill-audit) is Apache-2.0; theory texts remain All Rights Reserved.

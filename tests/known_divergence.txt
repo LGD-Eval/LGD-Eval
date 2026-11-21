@@ -1,0 +1,6 @@
+# 允许存在差异的脚本副本（一行一个文件名）
+# 规则：只有在这里登记过的分叉才被允许；新增分叉会被 tests/test_copy_parity.py 拦下。
+#
+# 当前状态：**空**。2026-11-18 已将 skills/lgd-eval/scripts/ast_analyzer.py 的
+# 正则后缀排除逻辑（REGEX_SUFFIXES）同步到 vendor/scripts/，两侧逐字节一致。
+# 保持为空 —— 再登记任何一行都意味着又允许了一处"装哪个包结论不同"。
