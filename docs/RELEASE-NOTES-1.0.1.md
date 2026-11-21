@@ -62,14 +62,29 @@
 
 - `pytest tests skills/lgd-eval/tests` → **70 passed / 0 failed**
 - 双份引擎逐字节一致：`vendor/scripts/evaluate.py`、`vendor/scripts/skillgate.py`
-- 新 tgz 与源码同批 7 样本：拒判数一致（见 `docs/CROSSRUN-2026-11-21.md`）
+- 新 tgz 与源码同批 7 样本（2026-11-21 实测，`main@90edf13` vs 解包后的 `1.0.1`）：
+
+  | 探针 | 源码 | `1.0.1` 制品 |
+  |---|---|---|
+  | P1 凭证外发 | 49/D 否决 | 49/D 否决 |
+  | P2 载荷藏 demo/ | 49/D 否决 | 49/D 否决 |
+  | P3 行内 ignore 注释 | 62 不否决 | 62 不否决 |
+  | P4 仅文档 + 隐形注入 | 49/D 否决（rc=2） | 49/D 否决（rc=2） |
+  | P5 SKILL.md 内 base64 注入 | 49/D 否决（rc=2） | 49/D 否决（rc=2） |
+  | P6 未备案 allowlist | 62 不否决 | 62 不否决 |
+  | P7 scope.json 声明夹具 | 49/D 否决（rc=2） | 49/D 否决（rc=2） |
+
+  **7/7 同分同判、5/7 拒判**（旧 `1.0.0` 为 0/7）。原始输出：`redteam_probes_20261121_101.json`。
+- 口径提示在制品里同样生效：对解包目录（无 `SKILL.md`）跑
+  `python package/vendor/scripts/skillgate.py scan <目录>` 会先打印三行提示，再出报告。
 
 ## 升级方式
 
 ```bash
 curl -LO https://github.com/LGD-Eval/lgd-gate/releases/download/v1.0.1/lgd-eval-1.0.1.tgz
 tar -xzf lgd-eval-1.0.1.tgz
-node package/bin/lgd-eval.js scan ./your-skill
+node package/bin/lgd-eval.js ./your-skill          # 评分报告（evaluate 口径）
+python package/vendor/scripts/skillgate.py scan ./your-skill   # 门禁报告（含否决行）
 ```
 
 （npm 未发布，tgz 是唯一实测可用路径。）
