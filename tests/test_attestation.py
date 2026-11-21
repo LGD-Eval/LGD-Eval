@@ -67,6 +67,21 @@ class AttestationFieldsTest(unittest.TestCase):
         att = evaluate.build_attestation(self._tmp, 69, "C", {}, [], veto)
         self.assertEqual(att["failure_reason"], "shell=True 命令注入")
 
+    def test_llm_review_defaults_to_skipped(self):
+        # 未提供复核结果时，证明必须显式记 skipped，不得暗示二次复核已完成
+        att = evaluate.build_attestation(self._tmp, 87, "A", {}, [])
+        self.assertIn("llm_review", att)
+        self.assertFalse(att["llm_review"]["enabled"])
+        self.assertEqual(att["llm_review"]["status"], "skipped")
+
+    def test_llm_review_failure_is_recorded(self):
+        review = {"enabled": True, "status": "failed",
+                  "error": "connection timed out", "model": "gpt-4o-mini"}
+        att = evaluate.build_attestation(self._tmp, 87, "A", {}, [], llm_review=review)
+        self.assertEqual(att["llm_review"]["status"], "failed")
+        self.assertEqual(att["llm_review"]["error"], "connection timed out")
+        self.assertEqual(att["llm_review"]["model"], "gpt-4o-mini")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

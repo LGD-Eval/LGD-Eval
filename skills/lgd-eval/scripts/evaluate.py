@@ -1265,7 +1265,7 @@ def _git_commit(root):
 
 
 def build_attestation(root, score, grade, dims, evidence, veto=None, runtime=None,
-                      ev_grade=None):
+                      ev_grade=None, llm_review=None):
     """生成可复现的评测证明。fingerprint 只取自被测内容，不含路径与时间。"""
     payload = {
         "object": {"score": score, "grade": grade},
@@ -1305,6 +1305,8 @@ def build_attestation(root, score, grade, dims, evidence, veto=None, runtime=Non
         "safety_veto": veto if veto else {"applied": False},
         "runtime_sandbox": runtime or {"available": False, "backend": None,
                                         "note": "未探测隔离后端；运行时证据缺席，结论仅基于静态分析"},
+        "llm_review": llm_review or {"enabled": False, "status": "skipped",
+                                      "reason": "未提供 L2 复核结果；不得据此推断二次复核已完成"},
         "evidence_grade": grade_info,
         "failure_reason": failure_reason,
         "inputs": inputs,
@@ -1658,7 +1660,25 @@ if __name__ == "__main__":
         _backend = sandbox_backend()
         runtime = {"available": bool(_backend), "backend": _backend,
                    "note": "隔离后端就绪" if _backend else "无 docker/unshare，运行时沙箱未启用，结论仅基于静态分析"}
-        att = build_attestation(target, score, grade, dims, evidence, veto_info, runtime=runtime)
+        rv = None
+        review_info = {"enabled": False, "status": "skipped",
+                       "reason": "未启用 --llm-review"}
+        if args.llm_review:
+            rv = llm_review(evidence)
+            if not rv.get("enabled"):
+                review_info = {"enabled": False, "status": "skipped",
+                               "reason": rv.get("reason", "未配置复核凭证")}
+            elif rv.get("error"):
+                review_info = {"enabled": True, "status": "failed",
+                               "error": rv["error"], "model": rv.get("model")}
+            else:
+                vs = rv.get("verdicts") or []
+                tp = sum(1 for v in vs if str(v.get("verdict")) == "true_positive")
+                review_info = {"enabled": True, "status": "ok", "model": rv.get("model"),
+                               "verdicts": len(vs), "true_positive": tp,
+                               "false_positive": len(vs) - tp}
+        att = build_attestation(target, score, grade, dims, evidence, veto_info,
+                                runtime=runtime, llm_review=review_info)
 
         if args.evidence_json:
             with open(args.evidence_json, 'w', encoding='utf-8', newline='\n') as f:
@@ -1684,7 +1704,6 @@ if __name__ == "__main__":
             print(f"  🛰️ SARIF 2.1.0 已生成: {args.sarif}（可上传到 GitHub Code Scanning）")
 
         if args.llm_review:
-            rv = llm_review(evidence)
             print()
             if not rv.get("enabled"):
                 print("  ⚠️ L2 复核未启用：%s（核心检测已生效，无需联网）" % rv.get("reason"))
