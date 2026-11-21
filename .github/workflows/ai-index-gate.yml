@@ -37,7 +37,7 @@ jobs:
           fi
       - name: 上传可复跑取证包
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: repro-pack
           path: repro-pr.json
