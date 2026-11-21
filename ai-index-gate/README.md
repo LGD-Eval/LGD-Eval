@@ -130,3 +130,11 @@ python gate.py --verify pack.json                        # 离线复跑：VERDIC
 - **回归**：`--regression` 召回丢失 0 / 文档误报 5→0；`demo.py` 6/6；v4 7/7、v5 6/6、v3 19/20、v2 20/20 均未变。
 - **规模**：89 规则 / 163 模式 → **93 规则 / 174 模式**。
 
+**2026-11-22 · 精度过堂 + 越狱规则收紧（用证据改规则，而不是凭感觉）**
+
+- **先做一件事：把 6 个竞品 README 的 28 条命中逐条取出来复核**（`proactive/_precision_audit_20261122.md`）。结果：**raw 口径 P0 15 / P1 13，gating 口径（`--context-aware`）P0/P1/P2 = 0，28 条全部降为 P3** —— 即这些命中全部是"仓库在讲攻击"，不是"仓库在攻击使用者"。
+- **由此发现一条真·低精度规则**：`jailbreak` **单词即判 P1**。在变量名（`dan_jailbreak`）、注释（`# scan for jailbreaks`）、分类枚举（`{"jailbreak", "role_override"}`）里都会命中。
+- **收紧**：改为必须共现语境 —— `jailbreak mode / prompt / the model`、`enable jailbreak`、`jailbroken`，或既有的 `do anything now` / `developer mode` / `dan mode` / `unaligned mode`；仅出现单词不再命中。
+- **效果**：6 仓 raw 命中 **28 → 19**（P0 15 / P1 4），gating 仍 **0 P0/P1/P2**；`--regression` 文档误报 **5→4**（更少），召回丢失 **0**；`demo.py` 6/6（pack-benign 按新引擎重算）；红队 **BLOCK 16 / REVIEW 5 / PASS 0**；五套盲测全达标。
+- **口径纪律（写死）**：任何材料不得把「28 条命中 / P0 15」当作「发现 15 个高危」——那是 raw 中间量；对外只写「6 仓 95,827 字符，gating 口径 P0/P1/P2 = 0」。
+
