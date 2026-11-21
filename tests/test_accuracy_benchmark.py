@@ -94,6 +94,12 @@ class AccuracyBenchmark(unittest.TestCase):
             self.assertEqual(r["actual"], authz.NOT_GRANTED, cid)
             self.assertEqual(r["veto_level"], "high", cid)
 
+    def test_text_high_speech_blocked_high(self):
+        for cid in ("read-credential-high", "no-confirmation-high"):
+            r = self.by_id[cid]
+            self.assertEqual(r["actual"], authz.NOT_GRANTED, cid)
+            self.assertEqual(r["veto_level"], "high", cid)
+
 
 if __name__ == "__main__":
     unittest.main()
