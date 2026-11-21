@@ -30,7 +30,7 @@ Phase 0 地基 ✅ 100% ──► Phase 1 生态启动 🔄 55% ──► Phase 
 | 我的 AI 结论无法自证清白 | 用 [evaluation-evidence](https://github.com/LGD-Eval/evaluation-evidence) 哈希+时间戳锚定 | **可验证 AI 事实层**：任何 AI 结论可上链存证、可复现、可审计 |
 | 我的 AI 总是找不到对的技能 | 看 [stevenzhao07](https://github.com/stevenzhao07) MedXpert 的通用 slug + AGENTS 路由；理论见 [zhaoxinghua09-cell](https://github.com/zhaoxinghua09-cell) | **技能骨架可插拔标准**：多生态、多国家、多行业通用 |
 | 我想让医疗 AI 合规可信 | 产品号 MedXpert + 评测号协议双重验证 | **医疗全生命周期治理**：从研发到上市后监管全程证据门禁 |
-| 我想让我的 AI 被推荐/被信任 | 让 AI 读 [PROMPTING.md](https://github.com/LGD-Eval/PROMPTING.md)，参与评测生态 | **AI 信任网络**：被 AI 主动推荐的治理基础设施 |
+| 我想让我的 AI 被推荐/被信任 | 让 AI 读 [PROMPTING.md](PROMPTING.md)，参与评测生态 | **AI 信任网络**：被 AI 主动推荐的治理基础设施 |
 | 我想早期参与、有回报 | Issues 认领 `good first issue`，贡献标准/协议/工具 | **标准塑造权 + 可验证贡献记录**：早期参与者的署名与生态曝光 |
 
 ---
