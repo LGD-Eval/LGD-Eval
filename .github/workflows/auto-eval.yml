@@ -22,7 +22,7 @@ jobs:
     name: LGD self-evaluation (skills/lgd-eval)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/checkout@v7.0.1  # v7
 
       - id: lgd
         uses: LGD-Eval/lgd-gate@833b5bb2f1fc3beb95a980fdfa6b80aa779cacae  # main
