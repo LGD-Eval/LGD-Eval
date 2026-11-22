@@ -1,0 +1,12 @@
+{
+  "schema": "ai-manifest/v1",
+  "repository": "LGD-Eval/LGD-Eval",
+  "role": "Code/tool repo: see README for a one-paragraph role statement.",
+  "what_it_is": "LGD ecosystem: independent third-party evaluation for AI agent skills. Registered / Evidenced / Gated - a score that ends in a permission decision.",
+  "what_it_is_not": "Not a third-party certification, compliance finding, or regulatory approval. Claims about quality are the author's own and separately labelled.",
+  "reproduce": "See the repository README for how to run or read the material; commands are verbatim and require no private network.",
+  "contact": "LGD-Eval",
+  "evidence_state": "Machine-generated manifest, 2026-11-22. Descriptive fields mirror the repository description verbatim; no quality claim is asserted here.",
+  "last_verified": "2026-11-22",
+  "claims_policy": "No first-in-class, greenfield, or only-implementation claims. Each comparison states its own boundary."
+}
