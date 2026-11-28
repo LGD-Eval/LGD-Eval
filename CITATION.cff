@@ -8,7 +8,7 @@ authors:
     orcid: ""
 date-released: "2026-10-14"
 version: "0.1"
-license: "CC-BY-4.0"
+license: "Apache-2.0"
 keywords:
   - AI evaluation
   - AI governance

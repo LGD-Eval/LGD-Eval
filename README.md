@@ -114,5 +114,9 @@ npm 包**不含第二套打分算法**。它只是一个启动器，转发给随
 
 ## License
 
-CC BY 4.0 © 2026 SynomosAI / LGD Ecosystem — attribution required; see [LICENSE](LICENSE).
-Tooling in [skill-audit](https://github.com/LGD-Eval/skill-audit) is Apache-2.0; theory texts remain All Rights Reserved.
+**代码 Apache-2.0 / 正文 CC BY 4.0**（从 `v0.2.0` 起；`v0.1.0` 仍按 CC BY 4.0，不追溯）。
+
+- 代码（`bin/`、`skills/`、`ai-index-gate/`、`audit/`、`tests/`、`vendor/` 内的脚本）：[Apache-2.0](LICENSE)，含专利授权与专利报复条款。
+- 正文（`docs/`、根目录 `*.md`、`diagrams/`、`assets/`）：CC BY 4.0，署名即可引用。
+- 逐路径的判据与时间边界见 [LICENSE-CONTENT.md](LICENSE-CONTENT.md)；第三方内容以原证为准。
+- [skill-audit](https://github.com/LGD-Eval/skill-audit) 亦为 Apache-2.0；理论文本（LGD 三律）仍保留全部权利。
