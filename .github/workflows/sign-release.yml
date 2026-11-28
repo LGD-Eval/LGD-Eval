@@ -18,7 +18,7 @@ jobs:
     name: cosign keyless sign
     runs-on: ubuntu-latest
     steps:
-      - uses: sigstore/cosign-installer@v3.9.1  # v3
+      - uses: sigstore/cosign-installer@v4.1.4  # v3
       - name: Download release assets
         env:
           GH_TOKEN: ${{ github.token }}

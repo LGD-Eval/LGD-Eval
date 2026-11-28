@@ -29,7 +29,7 @@ workflows:
         - 'actions/setup-python@v7.1.0'
         - 'actions/upload-artifact@v7.0.2'
     '.github/workflows/sign-release.yml':
-        - 'sigstore/cosign-installer@v3.9.1'
+        - 'sigstore/cosign-installer@v4.1.4'
     '.github/workflows/welcome-bot.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/github-script@v9.0.0'
@@ -74,8 +74,8 @@ dependencies:
         commit: 'sha1-79b2eaad0143b03a12bdfeae09fa455b677fcf6d'
         owner_id: 342496394
         repo_id: 1436123021
-    'sigstore/cosign-installer@v3.9.1':
-        ref: 'v3.9.1'
-        commit: 'sha1-398d4b0eeef1380460a10c8013a76f728fb906ac'
+    'sigstore/cosign-installer@v4.1.4':
+        ref: 'v4.1.4'
+        commit: 'sha1-881c63bd87e38389154debd8331404ce7ca8a3ab'
         owner_id: 71096353
         repo_id: 351211695
