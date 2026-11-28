@@ -16,11 +16,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1  # v7
       - name: Generate CycloneDX SBOM
-        uses: anchore/sbom-action@v0.24.0  # v0
+        uses: anchore/sbom-action@v0.24.3  # v0
         with:
           path: .
           format: cyclonedx-json
           artifact-name: sbom.cyclonedx.json
       - name: Attach to release
         if: github.event_name == 'release'
-        uses: anchore/sbom-action/publish-sbom@v0.24.0  # v0
+        uses: anchore/sbom-action/publish-sbom@v0.24.3  # v0
